@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getCliStatus, CliStatus } from "../../lib/api";
+import { getCliStatus, CliStatus, isTauri } from "../../lib/api";
 
 interface CliSetupModalProps {
   onReady: () => void;
@@ -8,6 +8,8 @@ interface CliSetupModalProps {
 export function CliSetupModal({ onReady }: CliSetupModalProps) {
   const [status, setStatus] = useState<CliStatus | null>(null);
   const [checking, setChecking] = useState(true);
+  const [serverConnected, setServerConnected] = useState<boolean | null>(null);
+  const inBrowser = !isTauri();
 
   const checkStatus = async () => {
     setChecking(true);
@@ -19,14 +21,20 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
 
       const result = await Promise.race([getCliStatus(), timeoutPromise]);
       setStatus(result);
+      setServerConnected(true);
       if (result.installed) {
         onReady();
       }
     } catch (err) {
       console.error("Failed to check CLI status:", err);
-      // On error/timeout, assume CLI is available and let user proceed
-      // They'll get a proper error when trying to create an agent
-      setStatus({ installed: false, path: null, version: null });
+      if (inBrowser) {
+        // In browser mode, failed connection means server not running
+        setServerConnected(false);
+        setStatus(null);
+      } else {
+        // In Tauri mode, assume CLI is available
+        setStatus({ installed: false, path: null, version: null });
+      }
     } finally {
       setChecking(false);
     }
@@ -34,6 +42,11 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
 
   useEffect(() => {
     checkStatus();
+    // In browser mode, keep polling for server connection
+    if (inBrowser) {
+      const interval = setInterval(checkStatus, 3000);
+      return () => clearInterval(interval);
+    }
   }, []);
 
   if (checking && !status) {
@@ -66,6 +79,83 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
 
   if (status?.installed) {
     return null;
+  }
+
+  // Browser mode - server not connected
+  if (inBrowser && serverConnected === false) {
+    return (
+      <div style={overlayStyle}>
+        <div style={modalStyle}>
+          <h2 style={{ margin: 0, marginBottom: 8 }}>Local Server Required</h2>
+          <p style={{ color: "var(--text-secondary)", margin: 0, marginBottom: 24 }}>
+            Virtual Agency runs on your local machine to use your Claude CLI.
+            Download and run the server to get started.
+          </p>
+
+          <div style={instructionsStyle}>
+            <h3 style={{ margin: 0, marginBottom: 16, fontSize: 14 }}>
+              Step 1: Download the Server
+            </h3>
+            <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+              <a
+                href="/downloads/virtual-agency-server-macos"
+                download
+                style={downloadButtonStyle}
+              >
+                macOS (Intel & Apple Silicon)
+              </a>
+              <a
+                href="/downloads/virtual-agency-server.exe"
+                download
+                style={downloadButtonStyle}
+              >
+                Windows
+              </a>
+            </div>
+
+            <h3 style={{ margin: 0, marginBottom: 12, fontSize: 14 }}>
+              Step 2: Run the Server
+            </h3>
+            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0, marginBottom: 12 }}>
+              <strong>macOS:</strong> Open Terminal and run:
+            </p>
+            <code style={codeBlockStyle}>chmod +x ~/Downloads/virtual-agency-server-macos && ~/Downloads/virtual-agency-server-macos</code>
+
+            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0, marginTop: 16, marginBottom: 12 }}>
+              <strong>Windows:</strong> Double-click the downloaded .exe file
+            </p>
+
+            <h3 style={{ margin: 0, marginTop: 20, marginBottom: 12, fontSize: 14 }}>
+              Step 3: Install Claude CLI (if not already installed)
+            </h3>
+            <code style={codeBlockStyle}>npm install -g @anthropic-ai/claude-code</code>
+          </div>
+
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 12,
+            marginTop: 20,
+            padding: "12px 16px",
+            background: "rgba(255, 107, 107, 0.1)",
+            borderRadius: 8,
+            border: "1px solid rgba(255, 107, 107, 0.3)",
+          }}>
+            <div style={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: "#ff6b6b",
+              animation: "pulse 2s infinite",
+            }} />
+            <span style={{ color: "#ff6b6b", fontSize: 13 }}>
+              Waiting for local server connection...
+            </span>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -182,4 +272,19 @@ const spinnerStyle: React.CSSProperties = {
   borderTopColor: "var(--accent)",
   borderRadius: "50%",
   animation: "spin 1s linear infinite",
+};
+
+const downloadButtonStyle: React.CSSProperties = {
+  flex: 1,
+  padding: "12px 16px",
+  background: "linear-gradient(135deg, #ff6b6b, #ff1493)",
+  border: "none",
+  borderRadius: 8,
+  color: "white",
+  fontWeight: 600,
+  fontSize: 13,
+  textDecoration: "none",
+  textAlign: "center",
+  cursor: "pointer",
+  transition: "transform 0.2s, box-shadow 0.2s",
 };
