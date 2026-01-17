@@ -1,0 +1,40 @@
+{
+  "name": "@virtual-agency/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "dev:tauri": "tauri dev",
+    "dev:browser": "vite --port 3000",
+    "build": "tsc && vite build",
+    "build:tauri": "tauri build",
+    "build:browser": "tsc && vite build --outDir dist-browser",
+    "preview": "vite preview",
+    "preview:browser": "vite preview --outDir dist-browser --port 3000",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.117.0",
+    "@react-three/fiber": "^8.17.0",
+    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/plugin-fs": "^2.2.0",
+    "@tauri-apps/plugin-shell": "^2.2.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
+    "@virtual-agency/shared": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "three": "^0.170.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.170.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
