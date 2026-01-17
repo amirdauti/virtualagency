@@ -135,12 +135,9 @@ export async function getCliStatus(): Promise<CliStatus> {
     return tauriInvoke("get_cli_status");
   } else {
     // In browser mode, check server health as a proxy for CLI status
-    try {
-      await fetchApi('/api/health');
-      return { installed: true, path: 'server', version: null };
-    } catch {
-      return { installed: false, path: null, version: null };
-    }
+    // Let errors propagate so the modal knows the server isn't running
+    await fetchApi('/api/health');
+    return { installed: true, path: 'server', version: null };
   }
 }
 

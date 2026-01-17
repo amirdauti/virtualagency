@@ -7,12 +7,13 @@ interface CliSetupModalProps {
 
 export function CliSetupModal({ onReady }: CliSetupModalProps) {
   const [status, setStatus] = useState<CliStatus | null>(null);
-  const [checking, setChecking] = useState(true);
+  const [initialCheck, setInitialCheck] = useState(true);
   const [serverConnected, setServerConnected] = useState<boolean | null>(null);
   const inBrowser = !isTauri();
 
-  const checkStatus = async () => {
-    setChecking(true);
+  const checkStatus = async (isInitial = false) => {
+    // Only show loading state on initial check to prevent flickering
+    if (isInitial) setInitialCheck(true);
     try {
       // Add timeout to prevent hanging
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -36,20 +37,21 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
         setStatus({ installed: false, path: null, version: null });
       }
     } finally {
-      setChecking(false);
+      setInitialCheck(false);
     }
   };
 
   useEffect(() => {
-    checkStatus();
+    checkStatus(true); // Initial check
     // In browser mode, keep polling for server connection
     if (inBrowser) {
-      const interval = setInterval(checkStatus, 3000);
+      const interval = setInterval(() => checkStatus(false), 3000);
       return () => clearInterval(interval);
     }
   }, []);
 
-  if (checking && !status) {
+  // Only show loading spinner on initial check
+  if (initialCheck && !status && serverConnected === null) {
     return (
       <div style={overlayStyle}>
         <div style={modalStyle}>
@@ -94,39 +96,31 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
 
           <div style={instructionsStyle}>
             <h3 style={{ margin: 0, marginBottom: 16, fontSize: 14 }}>
-              Step 1: Download the Server
+              Step 1: Download & Run the Server
             </h3>
-            <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+            <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
               <a
-                href="/downloads/virtual-agency-server-macos"
+                href="/downloads/VirtualAgencyServer-macOS.zip"
                 download
                 style={downloadButtonStyle}
               >
-                macOS (Intel & Apple Silicon)
+                Download for macOS
               </a>
               <a
                 href="/downloads/virtual-agency-server.exe"
                 download
                 style={downloadButtonStyle}
               >
-                Windows
+                Download for Windows
               </a>
             </div>
 
+            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "0 0 16px 0" }}>
+              Extract the zip and double-click the app to start the server.
+            </p>
+
             <h3 style={{ margin: 0, marginBottom: 12, fontSize: 14 }}>
-              Step 2: Run the Server
-            </h3>
-            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0, marginBottom: 12 }}>
-              <strong>macOS:</strong> Open Terminal and run:
-            </p>
-            <code style={codeBlockStyle}>chmod +x ~/Downloads/virtual-agency-server-macos && ~/Downloads/virtual-agency-server-macos</code>
-
-            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0, marginTop: 16, marginBottom: 12 }}>
-              <strong>Windows:</strong> Double-click the downloaded .exe file
-            </p>
-
-            <h3 style={{ margin: 0, marginTop: 20, marginBottom: 12, fontSize: 14 }}>
-              Step 3: Install Claude CLI (if not already installed)
+              Step 2: Install Claude CLI (if not already installed)
             </h3>
             <code style={codeBlockStyle}>npm install -g @anthropic-ai/claude-code</code>
           </div>
@@ -184,20 +178,19 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
 
         <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
           <button
-            onClick={checkStatus}
-            disabled={checking}
+            onClick={() => checkStatus(false)}
             style={{
               padding: "10px 20px",
               background: "var(--accent)",
               border: "none",
               borderRadius: 6,
               color: "white",
-              cursor: checking ? "not-allowed" : "pointer",
+              cursor: "pointer",
               fontWeight: 600,
               flex: 1,
             }}
           >
-            {checking ? "Checking..." : "Check Again"}
+            Check Again
           </button>
           <button
             onClick={onReady}
