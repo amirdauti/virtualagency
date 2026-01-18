@@ -10,6 +10,8 @@ use tauri::{AppHandle, Emitter};
 pub struct AgentProcess {
     pub id: String,
     pub working_dir: String,
+    pub model: String,
+    pub thinking_enabled: bool,
     session_id: Arc<Mutex<Option<String>>>,
     current_child: Arc<Mutex<Option<Child>>>,
     app_handle: AppHandle,
@@ -58,13 +60,21 @@ fn find_claude_cli() -> Result<PathBuf, String> {
 }
 
 impl AgentProcess {
-    pub fn new(id: String, working_dir: String, app_handle: AppHandle) -> Result<Self, String> {
+    pub fn new(
+        id: String,
+        working_dir: String,
+        app_handle: AppHandle,
+        model: String,
+        thinking_enabled: bool,
+    ) -> Result<Self, String> {
         // Verify claude CLI exists
         find_claude_cli()?;
 
         Ok(Self {
             id,
             working_dir,
+            model,
+            thinking_enabled,
             session_id: Arc::new(Mutex::new(None)),
             current_child: Arc::new(Mutex::new(None)),
             app_handle,
@@ -112,6 +122,16 @@ impl AgentProcess {
             "--dangerously-skip-permissions".to_string(),
         ];
 
+        // Add model selection
+        args.push("--model".to_string());
+        args.push(self.model.clone());
+
+        // Enable/disable extended thinking via CLI settings
+        if self.thinking_enabled {
+            args.push("--settings".to_string());
+            args.push(r#"{"alwaysThinkingEnabled": true}"#.to_string());
+        }
+
         // Check if we have a session ID for continuation
         let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
         if let Some(ref sid) = session_id_opt {
@@ -122,14 +142,15 @@ impl AgentProcess {
         // Log the command being executed for debugging
         eprintln!("[AgentProcess] Executing: {} {:?}", claude_path.display(), args);
 
-        // Spawn the claude process
-        let mut child = match Command::new(&claude_path)
-            .current_dir(&self.working_dir)
+        let mut cmd = Command::new(&claude_path);
+        cmd.current_dir(&self.working_dir)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+
+        // Spawn the claude process
+        let mut child = match cmd.spawn()
         {
             Ok(child) => child,
             Err(e) => {
@@ -287,6 +308,19 @@ impl AgentProcess {
             *guard = None;
         }
         Ok(())
+    }
+
+    pub fn update_settings(&mut self, model: Option<String>, thinking_enabled: Option<bool>) {
+        if let Some(m) = model {
+            self.model = m;
+        }
+        if let Some(t) = thinking_enabled {
+            self.thinking_enabled = t;
+        }
+    }
+
+    pub fn get_settings(&self) -> (String, bool) {
+        (self.model.clone(), self.thinking_enabled)
     }
 }
 

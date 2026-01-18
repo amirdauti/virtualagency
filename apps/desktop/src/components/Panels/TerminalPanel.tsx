@@ -9,12 +9,17 @@ interface TerminalPanelProps {
 export function TerminalPanel({ lines, onClear }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when new lines arrive
+  // Track line count and last line content to avoid scrolling when
+  // other agents' output changes (lines array reference changes but content is same)
+  const lineCount = lines.length;
+  const lastLineData = lines[lines.length - 1]?.data;
+
+  // Auto-scroll to bottom when new lines arrive for THIS terminal
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [lines]);
+  }, [lineCount, lastLineData]);
 
   return (
     <div

@@ -18,6 +18,7 @@ pub fn run() {
             commands::agent::kill_agent,
             commands::agent::send_message,
             commands::agent::list_agents,
+            commands::agent::update_agent_settings,
             commands::settings::get_cli_status,
             commands::settings::save_settings,
             commands::settings::load_settings,

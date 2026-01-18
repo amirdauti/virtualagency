@@ -1,5 +1,5 @@
-import { useState, useCallback, KeyboardEvent, ClipboardEvent } from "react";
-import { sendMessage } from "../../lib/api";
+import { useState, useCallback, useRef, KeyboardEvent, ClipboardEvent, ChangeEvent, useEffect } from "react";
+import { sendMessage, stopAgent, isTauri, updateAgentSettings, ClaudeModel } from "../../lib/api";
 import { useChatStore } from "../../stores/chatStore";
 import { useAgentStore } from "../../stores/agentStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -11,73 +11,150 @@ interface ChatPanelProps {
   agentId: string;
 }
 
+// Track both file paths (for Tauri) and File objects (for browser)
+interface AttachedImage {
+  path: string; // File path for Tauri, or object URL for browser
+  file?: File;  // Original File object for browser mode (for upload)
+}
+
+const MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
+  { value: "sonnet", label: "Sonnet" },
+  { value: "opus", label: "Opus" },
+  { value: "haiku", label: "Haiku" },
+];
+
 export function ChatPanel({ agentId }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const addUserMessage = useChatStore((state) => state.addUserMessage);
   const updateAgent = useAgentStore((state) => state.updateAgent);
+  const agent = useAgentStore((state) => state.agents.find(a => a.id === agentId));
+
+  // Local state for model and thinking, initialized from agent
+  const [selectedModel, setSelectedModel] = useState<ClaudeModel>(agent?.model || "sonnet");
+  const [thinkingEnabled, setThinkingEnabled] = useState(agent?.thinkingEnabled || false);
+
+  // Sync with agent state when it changes
+  useEffect(() => {
+    if (agent) {
+      if (agent.model) setSelectedModel(agent.model);
+      if (agent.thinkingEnabled !== undefined) setThinkingEnabled(agent.thinkingEnabled);
+    }
+  }, [agent?.model, agent?.thinkingEnabled]);
+
+  const handleModelChange = useCallback(async (newModel: ClaudeModel) => {
+    setSelectedModel(newModel);
+    updateAgent(agentId, { model: newModel });
+    try {
+      await updateAgentSettings(agentId, newModel, undefined);
+    } catch (err) {
+      console.error("[ChatPanel] Failed to update model:", err);
+    }
+  }, [agentId, updateAgent]);
+
+  const handleThinkingToggle = useCallback(async () => {
+    const newValue = !thinkingEnabled;
+    setThinkingEnabled(newValue);
+    updateAgent(agentId, { thinkingEnabled: newValue });
+    try {
+      await updateAgentSettings(agentId, undefined, newValue);
+    } catch (err) {
+      console.error("[ChatPanel] Failed to update thinking mode:", err);
+    }
+  }, [agentId, thinkingEnabled, updateAgent]);
 
   const handlePaste = useCallback(async (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    console.log("[ChatPanel] Paste event triggered");
+    console.log("[ChatPanel] Paste event triggered, isTauri:", isTauri());
+    console.log("[ChatPanel] clipboardData:", e.clipboardData);
 
     // First, try the web clipboard API for images from the event
     const items = e.clipboardData?.items;
     let foundWebImage = false;
 
     if (items) {
+      console.log("[ChatPanel] Clipboard items count:", items.length);
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        console.log("[ChatPanel] Clipboard item:", item.type);
+        console.log("[ChatPanel] Clipboard item:", item.type, "kind:", item.kind);
         if (item.type.startsWith("image/")) {
           foundWebImage = true;
+          console.log("[ChatPanel] Found image item!");
           break;
         }
       }
+    } else {
+      console.log("[ChatPanel] No clipboard items found");
     }
 
     // If web API found an image, use the old method
     if (foundWebImage && items) {
-      console.log("[ChatPanel] Using web clipboard API");
+      console.log("[ChatPanel] Using web clipboard API for image");
       e.preventDefault();
 
       try {
-        const tempPath = await tempDir();
-        const normalizedTempPath = tempPath.endsWith('/') ? tempPath : `${tempPath}/`;
-        const pastedImagesDir = `${normalizedTempPath}virtual-agency-pasted-images`;
-
-        try {
-          await mkdir("virtual-agency-pasted-images", { baseDir: BaseDirectory.Temp });
-        } catch (dirErr) {
-          // Directory may already exist
-        }
-
-        const newImagePaths: string[] = [];
+        const newImages: AttachedImage[] = [];
 
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
           if (!item.type.startsWith("image/")) continue;
 
+          console.log("[ChatPanel] Processing image item:", item.type);
           const blob = item.getAsFile();
-          if (!blob) continue;
+          if (!blob) {
+            console.log("[ChatPanel] Could not get blob from item");
+            continue;
+          }
 
-          const extension = blob.type.split("/")[1] || "png";
-          const fileName = `pasted-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
-          const filePath = `${pastedImagesDir}/${fileName}`;
+          console.log("[ChatPanel] Got blob:", blob.size, "bytes, type:", blob.type);
 
-          const arrayBuffer = await blob.arrayBuffer();
-          const uint8Array = new Uint8Array(arrayBuffer);
+          if (isTauri()) {
+            // Tauri mode: save to temp directory
+            try {
+              const tempPath = await tempDir();
+              const normalizedTempPath = tempPath.endsWith('/') ? tempPath : `${tempPath}/`;
+              const pastedImagesDir = `${normalizedTempPath}virtual-agency-pasted-images`;
 
-          await writeFile(`virtual-agency-pasted-images/${fileName}`, uint8Array, {
-            baseDir: BaseDirectory.Temp,
-          });
-          console.log("[ChatPanel] File written via web API:", filePath);
+              try {
+                await mkdir("virtual-agency-pasted-images", { baseDir: BaseDirectory.Temp });
+              } catch (dirErr) {
+                // Directory may already exist
+              }
 
-          newImagePaths.push(filePath);
+              const extension = blob.type.split("/")[1] || "png";
+              const fileName = `pasted-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+              const filePath = `${pastedImagesDir}/${fileName}`;
+
+              const arrayBuffer = await blob.arrayBuffer();
+              const uint8Array = new Uint8Array(arrayBuffer);
+
+              await writeFile(`virtual-agency-pasted-images/${fileName}`, uint8Array, {
+                baseDir: BaseDirectory.Temp,
+              });
+              console.log("[ChatPanel] File written via web API:", filePath);
+
+              newImages.push({ path: filePath });
+            } catch (tauriErr) {
+              // Tauri APIs not actually available (e.g., running in browser with Tauri globals present)
+              console.log("[ChatPanel] Tauri file APIs not available, falling back to browser mode:", tauriErr);
+              const objectUrl = URL.createObjectURL(blob);
+              console.log("[ChatPanel] Created object URL for pasted image:", objectUrl);
+              newImages.push({ path: objectUrl, file: blob });
+            }
+          } else {
+            // Browser mode: use object URL for preview, keep File for upload
+            const objectUrl = URL.createObjectURL(blob);
+            console.log("[ChatPanel] Created object URL for pasted image:", objectUrl);
+            newImages.push({ path: objectUrl, file: blob });
+          }
         }
 
-        if (newImagePaths.length > 0) {
-          setAttachedImages((prev) => [...prev, ...newImagePaths]);
+        if (newImages.length > 0) {
+          console.log("[ChatPanel] Adding", newImages.length, "images to attachedImages");
+          setAttachedImages((prev) => [...prev, ...newImages]);
+        } else {
+          console.log("[ChatPanel] No images were processed");
         }
         return;
       } catch (err) {
@@ -85,7 +162,12 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       }
     }
 
-    // Fallback: Try native Tauri clipboard API for images
+    // Fallback: Try native Tauri clipboard API for images (only in Tauri mode)
+    if (!isTauri()) {
+      console.log("[ChatPanel] Not in Tauri mode, skipping native clipboard API");
+      return;
+    }
+
     console.log("[ChatPanel] Trying native Tauri clipboard API");
     try {
       const imageData = await readImage();
@@ -142,7 +224,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               });
               console.log("[ChatPanel] File written via native API:", filePath);
 
-              setAttachedImages((prev) => [...prev, filePath]);
+              setAttachedImages((prev) => [...prev, { path: filePath }]);
             }
           }
         } else {
@@ -162,19 +244,27 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
     const messageContent = input.trim() || "(image attached)";
     const imagesToSend = [...attachedImages];
+
+    // Extract paths for API call and preview URLs for chat history
+    const imagePaths = imagesToSend.map(img => img.path);
+
     setSending(true);
 
     // Set agent to thinking state immediately for visual feedback
     updateAgent(agentId, { status: "thinking" });
 
     // Add user message to chat history immediately with images
-    addUserMessage(agentId, messageContent, imagesToSend.length > 0 ? imagesToSend : undefined);
+    addUserMessage(agentId, messageContent, imagePaths.length > 0 ? imagePaths : undefined);
     setInput("");
+
+    // Note: We intentionally don't revoke blob URLs here because they're used
+    // by the chat history for displaying image previews. They'll be cleaned up
+    // when the page is closed/refreshed.
     setAttachedImages([]);
 
     try {
-      console.log("[ChatPanel] Sending message:", { agentId, messageContent, imagesToSend });
-      await sendMessage(agentId, messageContent, imagesToSend);
+      console.log("[ChatPanel] Sending message:", { agentId, messageContent, imagePaths });
+      await sendMessage(agentId, messageContent, imagePaths);
       console.log("[ChatPanel] Message sent successfully");
     } catch (err) {
       console.error("[ChatPanel] Failed to send message:", err);
@@ -192,33 +282,85 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     }
   };
 
-  const handleImageSelect = useCallback(async () => {
-    console.log("[ChatPanel] Opening file dialog");
+  const handleStop = useCallback(async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const selected = await open({
-        multiple: true,
-        filters: [
-          {
-            name: "Images",
-            extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"],
-          },
-        ],
-      });
-
-      console.log("[ChatPanel] File dialog result:", selected);
-      if (selected) {
-        const paths = Array.isArray(selected) ? selected : [selected];
-        console.log("[ChatPanel] Selected paths:", paths);
-        setAttachedImages((prev) => [...prev, ...paths]);
-      }
+      console.log("[ChatPanel] Stopping agent:", agentId);
+      await stopAgent(agentId);
+      console.log("[ChatPanel] Agent stopped successfully");
     } catch (err) {
-      console.error("[ChatPanel] Failed to open file dialog:", err);
+      console.error("[ChatPanel] Failed to stop agent:", err);
+    }
+  }, [agentId]);
+
+  // Check if agent is currently working (thinking or working status)
+  const isAgentWorking = agent?.status === "thinking" || agent?.status === "working";
+
+  const handleImageSelect = useCallback(async () => {
+    console.log("[ChatPanel] Opening file dialog, isTauri:", isTauri());
+
+    if (isTauri()) {
+      // Tauri mode: use native file dialog
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const selected = await open({
+          multiple: true,
+          filters: [
+            {
+              name: "Images",
+              extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"],
+            },
+          ],
+        });
+
+        console.log("[ChatPanel] File dialog result:", selected);
+        if (selected) {
+          const paths = Array.isArray(selected) ? selected : [selected];
+          console.log("[ChatPanel] Selected paths:", paths);
+          setAttachedImages((prev) => [...prev, ...paths.map(p => ({ path: p }))]);
+        }
+      } catch (err) {
+        console.error("[ChatPanel] Failed to open file dialog:", err);
+      }
+    } else {
+      // Browser mode: trigger hidden file input
+      fileInputRef.current?.click();
     }
   }, []);
 
+  // Handle file selection from browser file input
+  const handleFileInputChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    console.log("[ChatPanel] Browser file input selected:", files.length, "files");
+
+    const newImages: AttachedImage[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file.type.startsWith("image/")) continue;
+
+      const objectUrl = URL.createObjectURL(file);
+      console.log("[ChatPanel] Created object URL for selected image:", objectUrl);
+      newImages.push({ path: objectUrl, file });
+    }
+
+    if (newImages.length > 0) {
+      setAttachedImages((prev) => [...prev, ...newImages]);
+    }
+
+    // Reset the input so the same file can be selected again
+    e.target.value = "";
+  }, []);
+
   const removeImage = useCallback((index: number) => {
-    setAttachedImages((prev) => prev.filter((_, i) => i !== index));
+    setAttachedImages((prev) => {
+      const imageToRemove = prev[index];
+      // Clean up object URL for browser mode
+      if (imageToRemove?.file && imageToRemove.path.startsWith('blob:')) {
+        URL.revokeObjectURL(imageToRemove.path);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   }, []);
 
   const canSend = input.trim() || attachedImages.length > 0;
@@ -233,18 +375,52 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         borderTop: "1px solid var(--border)",
       }}
     >
+      {/* Model and Thinking Mode Controls */}
+      <div style={settingsBarStyle}>
+        <div style={settingGroupStyle}>
+          <label style={settingLabelStyle}>Model:</label>
+          <select
+            value={selectedModel}
+            onChange={(e) => handleModelChange(e.target.value as ClaudeModel)}
+            disabled={sending}
+            style={selectStyle}
+          >
+            {MODEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={settingGroupStyle}>
+          <label style={checkboxLabelStyle}>
+            <input
+              type="checkbox"
+              checked={thinkingEnabled}
+              onChange={handleThinkingToggle}
+              disabled={sending}
+              style={checkboxStyle}
+            />
+            Thinking
+          </label>
+        </div>
+      </div>
+
       {attachedImages.length > 0 && (
         <div style={imagePreviewContainerStyle}>
-          {attachedImages.map((path, index) => {
-            const imgSrc = convertFileSrc(path);
-            console.log("[ChatPanel] Image preview src:", path, "->", imgSrc);
+          {attachedImages.map((img, index) => {
+            // For browser mode (object URLs), use the path directly
+            // For Tauri mode (file paths), use convertFileSrc
+            const imgSrc = img.file ? img.path : convertFileSrc(img.path);
+            const fileName = img.file ? img.file.name : img.path.split("/").pop() || "image";
+            console.log("[ChatPanel] Image preview src:", img.path, "->", imgSrc);
             return (
-              <div key={`${path}-${index}`} style={imagePreviewStyle}>
+              <div key={`${img.path}-${index}`} style={imagePreviewStyle}>
                 <img
                   src={imgSrc}
                   alt={`Attachment ${index + 1}`}
                   style={imagePreviewImgStyle}
-                  onError={(e) => console.error("[ChatPanel] Image load error:", path, e)}
+                  onError={(e) => console.error("[ChatPanel] Image load error:", img.path, e)}
                 />
                 <button
                   onClick={() => removeImage(index)}
@@ -254,7 +430,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
                   x
                 </button>
                 <span style={imageNameStyle}>
-                  {path.split("/").pop()?.slice(0, 15)}...
+                  {fileName.slice(0, 15)}...
                 </span>
               </div>
             );
@@ -283,6 +459,15 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             <polyline points="21 15 16 10 5 21" />
           </svg>
         </button>
+        {/* Hidden file input for browser mode */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+          multiple
+          onChange={handleFileInputChange}
+          style={{ display: "none" }}
+        />
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -304,23 +489,42 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             outline: "none",
           }}
         />
-        <button
-          onClick={handleSend}
-          disabled={!canSend || sending}
-          style={{
-            padding: "10px 16px",
-            background: !canSend || sending ? "#444" : "var(--accent)",
-            border: "none",
-            borderRadius: 8,
-            color: "white",
-            cursor: !canSend || sending ? "not-allowed" : "pointer",
-            fontWeight: 600,
-            fontSize: 13,
-            alignSelf: "flex-end",
-          }}
-        >
-          {sending ? "..." : "Send"}
-        </button>
+        {isAgentWorking ? (
+          <button
+            onClick={handleStop}
+            style={{
+              padding: "10px 16px",
+              background: "#ef4444",
+              border: "none",
+              borderRadius: 8,
+              color: "white",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 13,
+              alignSelf: "flex-end",
+            }}
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!canSend || sending}
+            style={{
+              padding: "10px 16px",
+              background: !canSend || sending ? "#444" : "var(--accent)",
+              border: "none",
+              borderRadius: 8,
+              color: "white",
+              cursor: !canSend || sending ? "not-allowed" : "pointer",
+              fontWeight: 600,
+              fontSize: 13,
+              alignSelf: "flex-end",
+            }}
+          >
+            {sending ? "..." : "Send"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -392,4 +596,48 @@ const imageNameStyle: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+
+const settingsBarStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 16,
+  padding: "4px 0",
+};
+
+const settingGroupStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const settingLabelStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--text-secondary)",
+};
+
+const selectStyle: React.CSSProperties = {
+  padding: "4px 8px",
+  background: "var(--bg-primary)",
+  border: "1px solid var(--border)",
+  borderRadius: 4,
+  color: "var(--text-primary)",
+  fontSize: 12,
+  cursor: "pointer",
+  outline: "none",
+};
+
+const checkboxLabelStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  fontSize: 12,
+  color: "var(--text-secondary)",
+  cursor: "pointer",
+};
+
+const checkboxStyle: React.CSSProperties = {
+  width: 14,
+  height: 14,
+  cursor: "pointer",
 };

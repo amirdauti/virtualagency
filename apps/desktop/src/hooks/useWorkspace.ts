@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { useWorkspaceStore, setupAutoSave } from "../stores/workspaceStore";
 
-export function useWorkspaceInit() {
+export function useWorkspaceInit(ready: boolean = true) {
   const [initialized, setInitialized] = useState(false);
   const load = useWorkspaceStore((state) => state.load);
   const isLoading = useWorkspaceStore((state) => state.isLoading);
 
   useEffect(() => {
-    if (!initialized) {
+    // Only load workspace after server/CLI is ready
+    if (ready && !initialized) {
       // Load saved workspace on startup
       load()
         .then(() => {
@@ -22,7 +23,7 @@ export function useWorkspaceInit() {
           setInitialized(true);
         });
     }
-  }, [initialized, load]);
+  }, [ready, initialized, load]);
 
   return { initialized, isLoading };
 }

@@ -7,9 +7,17 @@ pub fn create_agent(
     app_handle: AppHandle,
     id: String,
     working_dir: String,
+    model: Option<String>,
+    thinking_enabled: Option<bool>,
 ) -> Result<(), String> {
     let mut manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_agent(id, working_dir, app_handle)
+    manager.create_agent(
+        id,
+        working_dir,
+        app_handle,
+        model.unwrap_or_else(|| "sonnet".to_string()),
+        thinking_enabled.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -28,4 +36,15 @@ pub fn send_message(state: State<AppState>, id: String, message: String, images:
 pub fn list_agents(state: State<AppState>) -> Result<Vec<String>, String> {
     let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     Ok(manager.list_agents())
+}
+
+#[tauri::command]
+pub fn update_agent_settings(
+    state: State<AppState>,
+    id: String,
+    model: Option<String>,
+    thinking_enabled: Option<bool>,
+) -> Result<(), String> {
+    let mut manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    manager.update_agent_settings(&id, model, thinking_enabled)
 }

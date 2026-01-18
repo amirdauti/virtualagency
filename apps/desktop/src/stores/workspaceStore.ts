@@ -24,6 +24,9 @@ function agentToSaved(agent: Agent): SavedAgent {
     name: agent.name,
     working_directory: agent.workingDirectory,
     position: agent.position,
+    avatar_id: agent.avatarId,
+    model: agent.model,
+    thinking_enabled: agent.thinkingEnabled,
   };
 }
 
@@ -47,6 +50,9 @@ function savedToAgent(saved: SavedAgent, index: number): Agent {
     position,
     workingDirectory: saved.working_directory,
     createdAt: new Date().toISOString(),
+    avatarId: saved.avatar_id,
+    model: saved.model,
+    thinkingEnabled: saved.thinking_enabled,
   };
 }
 

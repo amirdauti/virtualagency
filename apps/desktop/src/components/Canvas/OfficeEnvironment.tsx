@@ -661,14 +661,10 @@ function CityBelow() {
     const result: { x: number; z: number; height: number; width: number; depth: number }[] = [];
 
     // Buildings spread around below the office, but NOT on the ocean side (negative z)
-    // Ocean is at negative z, camera looks from positive z toward center
-    // Place buildings in the positive z hemisphere (behind/around the camera view)
     for (let i = 0; i < 150; i++) {
-      // Place buildings from -90deg to +90deg (positive z side, away from ocean)
-      const baseAngle = (i / 150) * Math.PI; // Spread over 180 degrees
-      const angle = baseAngle - Math.PI / 2; // Start at -90 degrees, end at +90 degrees
+      const baseAngle = (i / 150) * Math.PI;
+      const angle = baseAngle - Math.PI / 2;
 
-      // Deterministic distance and size based on index
       const distance = 60 + ((i * 31) % 200);
       const height = 10 + ((i * 17) % 60);
 
@@ -804,23 +800,49 @@ function Roads() {
 
 function CoastalRoad() {
   // Road runs along the coast on the grass, parallel to the sand/grass boundary
-  // The sand starts at around z = -50 (Shoreline group position)
-  // So we place the road on the grass side, at z = -40 to -30
   const roadZ = -35;
   const roadLength = 1500;
 
-  // Car configurations - deterministic colors and starting positions
+  // Car configurations
   const cars = useMemo(() => {
     const carColors = ["#ff3333", "#3366ff", "#ffcc00", "#33cc33", "#ff66cc", "#ffffff", "#333333", "#ff6600"];
     return Array.from({ length: 20 }, (_, i) => ({
       id: i,
       color: carColors[i % carColors.length],
-      startX: -750 + (i * 75), // Spread cars along the road
-      speed: 15 + (i % 5) * 3, // Varying speeds between 15-27
-      direction: i % 2 === 0 ? 1 : -1, // Alternating directions
-      lane: i % 2, // Two lanes
+      startX: -750 + (i * 75),
+      speed: 15 + (i % 5) * 3,
+      direction: i % 2 === 0 ? 1 : -1,
+      lane: i % 2,
     }));
   }, []);
+
+  // Single refs array for all car groups
+  const carRefs = useRef<(THREE.Group | null)[]>([]);
+
+  // Single useFrame for all cars instead of one per car
+  useFrame((state) => {
+    const time = state.clock.elapsedTime;
+    const halfLength = roadLength / 2;
+
+    cars.forEach((car, index) => {
+      const carRef = carRefs.current[index];
+      if (carRef) {
+        let x = car.startX + time * car.speed * car.direction;
+        // Wrap around
+        if (x > halfLength) {
+          x = -halfLength + ((x - halfLength) % roadLength);
+        } else if (x < -halfLength) {
+          x = halfLength - ((-halfLength - x) % roadLength);
+        }
+        carRef.position.x = x;
+      }
+    });
+  });
+
+  // Road dashes
+  const roadDashes = useMemo(() =>
+    Array.from({ length: 150 }, (_, i) => -750 + i * 10 + 2.5),
+  []);
 
   return (
     <group position={[0, 0, roadZ]}>
@@ -831,8 +853,8 @@ function CoastalRoad() {
       </mesh>
 
       {/* Road center line (dashed yellow) */}
-      {Array.from({ length: 150 }).map((_, i) => (
-        <mesh key={`dash-${i}`} rotation={[-Math.PI / 2, 0, 0]} position={[-750 + i * 10 + 2.5, 0.22, 0]}>
+      {roadDashes.map((x, i) => (
+        <mesh key={`dash-${i}`} rotation={[-Math.PI / 2, 0, 0]} position={[x, 0.22, 0]}>
           <planeGeometry args={[5, 0.3]} />
           <meshBasicMaterial color="#ffcc00" />
         </mesh>
@@ -848,62 +870,25 @@ function CoastalRoad() {
         <meshBasicMaterial color="#ffffff" />
       </mesh>
 
-      {/* Moving cars */}
-      {cars.map((car) => (
-        <MovingCar
+      {/* Cars - now using shared refs */}
+      {cars.map((car, index) => (
+        <group
           key={car.id}
-          color={car.color}
-          startX={car.startX}
-          speed={car.speed}
-          direction={car.direction}
-          lane={car.lane}
-          roadLength={roadLength}
-        />
+          ref={(el) => { carRefs.current[index] = el; }}
+          position={[car.startX, 0.5, car.lane === 0 ? -2.5 : 2.5]}
+          rotation={[0, car.direction === 1 ? 0 : Math.PI, 0]}
+        >
+          <CarBody color={car.color} />
+        </group>
       ))}
     </group>
   );
 }
 
-function MovingCar({
-  color,
-  startX,
-  speed,
-  direction,
-  lane,
-  roadLength,
-}: {
-  color: string;
-  startX: number;
-  speed: number;
-  direction: number;
-  lane: number;
-  roadLength: number;
-}) {
-  const carRef = useRef<THREE.Group>(null);
-
-  useFrame((state) => {
-    if (carRef.current) {
-      // Calculate position based on time
-      const time = state.clock.elapsedTime;
-      let x = startX + time * speed * direction;
-
-      // Wrap around when car goes off the road
-      const halfLength = roadLength / 2;
-      if (x > halfLength) {
-        x = -halfLength + ((x - halfLength) % roadLength);
-      } else if (x < -halfLength) {
-        x = halfLength - ((-halfLength - x) % roadLength);
-      }
-
-      carRef.current.position.x = x;
-    }
-  });
-
-  // Lane offset: lane 0 = z: -2.5 (towards ocean), lane 1 = z: 2.5 (towards city)
-  const laneZ = lane === 0 ? -2.5 : 2.5;
-
+// Static car body component - no useFrame, animation handled by parent
+function CarBody({ color }: { color: string }) {
   return (
-    <group ref={carRef} position={[startX, 0.5, laneZ]} rotation={[0, direction === 1 ? 0 : Math.PI, 0]}>
+    <>
       {/* Car body */}
       <mesh position={[0, 0.3, 0]}>
         <boxGeometry args={[3.5, 0.6, 1.6]} />
@@ -916,44 +901,32 @@ function MovingCar({
         <meshStandardMaterial color="#1a1a2a" metalness={0.8} roughness={0.2} />
       </mesh>
 
-      {/* Windows */}
+      {/* Windows - simplified to 2 instead of 4 */}
       <mesh position={[0.2, 0.75, 0.71]}>
         <planeGeometry args={[1.6, 0.4]} />
         <meshStandardMaterial color="#88ccff" metalness={0.9} roughness={0.1} transparent opacity={0.7} />
       </mesh>
-      <mesh position={[0.2, 0.75, -0.71]} rotation={[0, Math.PI, 0]}>
-        <planeGeometry args={[1.6, 0.4]} />
-        <meshStandardMaterial color="#88ccff" metalness={0.9} roughness={0.1} transparent opacity={0.7} />
-      </mesh>
 
-      {/* Wheels */}
+      {/* Wheels - simplified geometry */}
       {[[-1, -0.8], [-1, 0.8], [1, -0.8], [1, 0.8]].map(([x, z], i) => (
         <mesh key={i} position={[x, 0, z]} rotation={[Math.PI / 2, 0, 0]}>
-          <cylinderGeometry args={[0.3, 0.3, 0.2, 12]} />
+          <cylinderGeometry args={[0.3, 0.3, 0.2, 8]} />
           <meshStandardMaterial color="#1a1a1a" roughness={0.9} />
         </mesh>
       ))}
 
       {/* Headlights */}
-      <mesh position={[1.76, 0.3, 0.5]}>
-        <boxGeometry args={[0.05, 0.15, 0.25]} />
-        <meshBasicMaterial color="#ffffcc" />
-      </mesh>
-      <mesh position={[1.76, 0.3, -0.5]}>
-        <boxGeometry args={[0.05, 0.15, 0.25]} />
+      <mesh position={[1.76, 0.3, 0]}>
+        <boxGeometry args={[0.05, 0.15, 0.8]} />
         <meshBasicMaterial color="#ffffcc" />
       </mesh>
 
       {/* Taillights */}
-      <mesh position={[-1.76, 0.3, 0.5]}>
-        <boxGeometry args={[0.05, 0.15, 0.25]} />
+      <mesh position={[-1.76, 0.3, 0]}>
+        <boxGeometry args={[0.05, 0.15, 0.8]} />
         <meshBasicMaterial color="#ff3333" />
       </mesh>
-      <mesh position={[-1.76, 0.3, -0.5]}>
-        <boxGeometry args={[0.05, 0.15, 0.25]} />
-        <meshBasicMaterial color="#ff3333" />
-      </mesh>
-    </group>
+    </>
   );
 }
 
@@ -971,9 +944,9 @@ function Shoreline() {
         <PalmTree
           key={i}
           position={[
-            -700 + i * 14 + ((i * 7) % 5), // Wide spread left to right
+            -700 + i * 14 + ((i * 7) % 5),
             0,
-            -60 + ((i * 11) % 40), // All trees on the sand (z from -60 to -20)
+            -60 + ((i * 11) % 40),
           ]}
         />
       ))}
@@ -983,7 +956,8 @@ function Shoreline() {
 
 function PalmFrond({ angle, droopFactor }: { angle: number; droopFactor: number }) {
   const leafSegments = 8;
-  const frondLength = 5 + Math.random() * 1.5;
+  // Use deterministic value based on angle instead of random
+  const frondLength = 5 + ((Math.abs(angle) * 7) % 15) / 10;
 
   return (
     <group rotation={[0, (angle * Math.PI) / 180, 0]}>
@@ -1044,25 +1018,19 @@ function PalmFrond({ angle, droopFactor }: { angle: number; droopFactor: number 
 }
 
 function PalmTree({ position }: { position: [number, number, number] }) {
-  const groupRef = useRef<THREE.Group>(null);
-  const trunkHeight = 10 + Math.random() * 4;
+  // Use deterministic values based on position to avoid Math.random() on each render
+  const trunkHeight = useMemo(() => 10 + ((Math.abs(position[0] * 17 + position[2] * 31)) % 40) / 10, [position]);
   const trunkSegments = 12;
   const frondAngles = useMemo(() =>
     Array.from({ length: 9 }, (_, i) => ({
-      angle: i * 40 + (Math.random() - 0.5) * 15,
-      droop: Math.random() * 0.8
+      angle: i * 40 + ((position[0] * 13 + i * 7) % 15) - 7.5,
+      droop: ((position[2] * 11 + i * 5) % 80) / 100
     })),
-  []);
+  [position]);
 
-  useFrame((state) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.5 + position[0]) * 0.015;
-      groupRef.current.rotation.z = Math.sin(state.clock.elapsedTime * 0.3 + position[2]) * 0.015;
-    }
-  });
-
+  // Removed useFrame animation - saves 100 callbacks per frame
   return (
-    <group ref={groupRef} position={position}>
+    <group position={position}>
       {/* Trunk with segments and slight curve */}
       {Array.from({ length: trunkSegments }).map((_, i) => {
         const t = i / trunkSegments;
