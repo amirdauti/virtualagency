@@ -78,6 +78,8 @@ pub struct AgentProcess {
     pub id: String,
     pub name: String,
     pub working_dir: String,
+    pub model: String,
+    pub thinking_enabled: bool,
     session_id: Arc<Mutex<Option<String>>>,
     current_child: Arc<Mutex<Option<Child>>>,
     broadcast_tx: broadcast::Sender<BroadcastMessage>,
@@ -88,6 +90,8 @@ impl AgentProcess {
         id: String,
         name: String,
         working_dir: String,
+        model: String,
+        thinking_enabled: bool,
         broadcast_tx: broadcast::Sender<BroadcastMessage>,
     ) -> Result<Self, String> {
         find_claude_cli()?;
@@ -96,6 +100,8 @@ impl AgentProcess {
             id,
             name,
             working_dir,
+            model,
+            thinking_enabled,
             session_id: Arc::new(Mutex::new(None)),
             current_child: Arc::new(Mutex::new(None)),
             broadcast_tx,
@@ -132,6 +138,16 @@ impl AgentProcess {
             "--dangerously-skip-permissions".to_string(),
         ];
 
+        // Add model selection
+        args.push("--model".to_string());
+        args.push(self.model.clone());
+
+        // Enable/disable extended thinking via CLI settings
+        if self.thinking_enabled {
+            args.push("--settings".to_string());
+            args.push(r#"{"alwaysThinkingEnabled": true}"#.to_string());
+        }
+
         // Check for session continuation
         let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
         if let Some(ref sid) = session_id_opt {
@@ -141,13 +157,14 @@ impl AgentProcess {
 
         tracing::debug!("[AgentProcess] Executing: {} {:?}", claude_path.display(), args);
 
-        let mut child = match Command::new(&claude_path)
-            .current_dir(&self.working_dir)
+        let mut cmd = Command::new(&claude_path);
+        cmd.current_dir(&self.working_dir)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+
+        let mut child = match cmd.spawn()
         {
             Ok(child) => child,
             Err(e) => {
@@ -259,6 +276,22 @@ impl AgentProcess {
         Ok(())
     }
 
+    /// Stop the current operation by killing the child process, but keep the agent alive
+    pub fn stop(&self) -> Result<(), String> {
+        if let Ok(mut guard) = self.current_child.lock() {
+            if let Some(ref mut child) = *guard {
+                child.kill().map_err(|e| format!("Failed to stop process: {}", e))?;
+                *guard = None;
+                // Emit idle status after stopping
+                let _ = self.broadcast_tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
+                    agent_id: self.id.clone(),
+                    status: AgentStatus::Idle,
+                }));
+            }
+        }
+        Ok(())
+    }
+
     pub fn kill(&mut self) -> Result<(), String> {
         if let Ok(mut guard) = self.current_child.lock() {
             if let Some(ref mut child) = *guard {
@@ -267,6 +300,19 @@ impl AgentProcess {
             *guard = None;
         }
         Ok(())
+    }
+
+    pub fn update_settings(&mut self, model: Option<String>, thinking_enabled: Option<bool>) {
+        if let Some(m) = model {
+            self.model = m;
+        }
+        if let Some(t) = thinking_enabled {
+            self.thinking_enabled = t;
+        }
+    }
+
+    pub fn get_settings(&self) -> (String, bool) {
+        (self.model.clone(), self.thinking_enabled)
     }
 }
 
@@ -289,12 +335,22 @@ impl AgentManager {
         }
     }
 
-    pub fn create_agent(&mut self, name: &str, working_dir: &str) -> Result<String, String> {
-        let id = uuid::Uuid::new_v4().to_string();
+    pub fn create_agent(
+        &mut self,
+        id: Option<&str>,
+        name: &str,
+        working_dir: &str,
+        model: &str,
+        thinking_enabled: bool,
+    ) -> Result<String, String> {
+        // Use provided ID or generate a new one
+        let id = id.map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let agent = AgentProcess::new(
             id.clone(),
             name.to_string(),
             working_dir.to_string(),
+            model.to_string(),
+            thinking_enabled,
             self.broadcast_tx.clone(),
         )?;
         self.agents.insert(id.clone(), agent);
@@ -317,10 +373,35 @@ impl AgentManager {
         }
     }
 
-    pub fn list_agents(&self) -> Vec<(String, String, String)> {
+    pub fn stop_agent(&self, id: &str) -> Result<(), String> {
+        if let Some(agent) = self.agents.get(id) {
+            agent.stop()
+        } else {
+            Err(format!("Agent not found: {}", id))
+        }
+    }
+
+    pub fn list_agents(&self) -> Vec<(String, String, String, String, bool)> {
         self.agents
             .iter()
-            .map(|(id, agent)| (id.clone(), agent.name.clone(), agent.working_dir.clone()))
+            .map(|(id, agent)| {
+                let (model, thinking_enabled) = agent.get_settings();
+                (id.clone(), agent.name.clone(), agent.working_dir.clone(), model, thinking_enabled)
+            })
             .collect()
+    }
+
+    pub fn update_agent_settings(
+        &mut self,
+        id: &str,
+        model: Option<String>,
+        thinking_enabled: Option<bool>,
+    ) -> Result<(), String> {
+        if let Some(agent) = self.agents.get_mut(id) {
+            agent.update_settings(model, thinking_enabled);
+            Ok(())
+        } else {
+            Err(format!("Agent not found: {}", id))
+        }
     }
 }

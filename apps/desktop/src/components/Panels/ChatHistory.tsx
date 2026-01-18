@@ -1,23 +1,54 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ChatMessage, useChatStore } from "../../stores/chatStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { isTauri } from "../../lib/api";
 
 interface ChatHistoryProps {
   messages: ChatMessage[];
   agentId: string;
 }
 
+// Threshold in pixels - if user is within this distance from bottom, consider them "at bottom"
+const SCROLL_THRESHOLD = 50;
+
 export function ChatHistory({ messages, agentId }: ChatHistoryProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const isUserAtBottomRef = useRef(true); // Track if user is at/near bottom
   const activity = useChatStore((state) => state.activities[agentId]);
 
-  // Auto-scroll to bottom when new messages arrive or activity changes
+  // Track message count and last message content for this specific agent
+  const messageCount = messages.length;
+  const lastMessageContent = messages[messages.length - 1]?.content;
+  const lastMessageStreaming = messages[messages.length - 1]?.isStreaming;
+
+  // Check if user is at/near the bottom of the scroll container
+  const checkIfAtBottom = useCallback(() => {
+    if (!containerRef.current) return true;
+    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+    return scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+  }, []);
+
+  // Handle scroll events to track user's scroll position
+  const handleScroll = useCallback(() => {
+    isUserAtBottomRef.current = checkIfAtBottom();
+  }, [checkIfAtBottom]);
+
+  // Auto-scroll to bottom only if user is already at/near bottom
   useEffect(() => {
-    if (containerRef.current) {
+    if (containerRef.current && isUserAtBottomRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [messages, activity]);
+  }, [messageCount, lastMessageContent, lastMessageStreaming, activity]);
+
+  // When new conversation starts (messages go from 0 to 1+), always scroll to bottom
+  useEffect(() => {
+    if (messageCount === 1 && containerRef.current) {
+      isUserAtBottomRef.current = true;
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  }, [messageCount]);
 
   if (messages.length === 0 && !activity) {
     return (
@@ -32,7 +63,7 @@ export function ChatHistory({ messages, agentId }: ChatHistoryProps) {
   }
 
   return (
-    <div ref={containerRef} style={containerStyle}>
+    <div ref={containerRef} style={containerStyle} onScroll={handleScroll}>
       {messages.map((message) => (
         <MessageBubble key={message.id} message={message} />
       ))}
@@ -92,15 +123,19 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <div>
             {message.images && message.images.length > 0 && (
               <div style={messageImagesContainerStyle}>
-                {message.images.map((imagePath, idx) => (
-                  <img
-                    key={`${imagePath}-${idx}`}
-                    src={convertFileSrc(imagePath)}
-                    alt={`Attached image ${idx + 1}`}
-                    style={messageImageStyle}
-                    onClick={() => window.open(convertFileSrc(imagePath), "_blank")}
-                  />
-                ))}
+                {message.images.map((imagePath, idx) => {
+                  // For browser mode (blob: URLs), use directly; for Tauri, use convertFileSrc
+                  const imgSrc = imagePath.startsWith('blob:') ? imagePath : (isTauri() ? convertFileSrc(imagePath) : imagePath);
+                  return (
+                    <img
+                      key={`${imagePath}-${idx}`}
+                      src={imgSrc}
+                      alt={`Attached image ${idx + 1}`}
+                      style={messageImageStyle}
+                      onClick={() => window.open(imgSrc, "_blank")}
+                    />
+                  );
+                })}
               </div>
             )}
             <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
@@ -110,6 +145,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         ) : (
           <div style={markdownContainerStyle}>
             <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
               components={{
                 // Style code blocks
                 code: ({ className, children, ...props }) => {
@@ -167,6 +203,26 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 ),
                 blockquote: ({ children }) => (
                   <blockquote style={blockquoteStyle}>{children}</blockquote>
+                ),
+                table: ({ children }) => (
+                  <div style={tableWrapperStyle}>
+                    <table style={tableStyle}>{children}</table>
+                  </div>
+                ),
+                thead: ({ children }) => (
+                  <thead style={theadStyle}>{children}</thead>
+                ),
+                tbody: ({ children }) => (
+                  <tbody>{children}</tbody>
+                ),
+                tr: ({ children }) => (
+                  <tr style={trStyle}>{children}</tr>
+                ),
+                th: ({ children }) => (
+                  <th style={thStyle}>{children}</th>
+                ),
+                td: ({ children }) => (
+                  <td style={tdStyle}>{children}</td>
                 ),
               }}
             >
@@ -341,4 +397,40 @@ const messageImageStyle: React.CSSProperties = {
   cursor: "pointer",
   objectFit: "cover",
   border: "1px solid rgba(255, 255, 255, 0.2)",
+};
+
+// Table styles for markdown tables
+const tableWrapperStyle: React.CSSProperties = {
+  overflowX: "auto",
+  margin: "12px 0",
+  borderRadius: 8,
+};
+
+const tableStyle: React.CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontSize: 13,
+  background: "rgba(0, 0, 0, 0.2)",
+  borderRadius: 8,
+};
+
+const theadStyle: React.CSSProperties = {
+  background: "rgba(0, 0, 0, 0.3)",
+};
+
+const trStyle: React.CSSProperties = {
+  borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
+};
+
+const thStyle: React.CSSProperties = {
+  padding: "10px 12px",
+  textAlign: "left",
+  fontWeight: 600,
+  color: "#e2e8f0",
+  borderBottom: "2px solid rgba(255, 255, 255, 0.2)",
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: "8px 12px",
+  color: "#cbd5e1",
 };

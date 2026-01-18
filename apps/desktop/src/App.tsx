@@ -11,6 +11,7 @@ import { Toolbar } from "./components/Toolbar/Toolbar";
 import { AgentAvatar } from "./components/Canvas/AgentAvatar";
 import { OfficeEnvironment, getDeskPosition, getLoungePosition, OFFICE_SIZE } from "./components/Canvas/OfficeEnvironment";
 import { CliSetupModal } from "./components/Setup/CliSetupModal";
+import { EditorView } from "./components/FileExplorer/EditorView";
 
 function Scene() {
   const agents = useAgentStore((state) => state.agents);
@@ -79,9 +80,12 @@ function Scene() {
 
 function App() {
   const [cliReady, setCliReady] = useState(false);
-  const { initialized: workspaceInitialized, isLoading: workspaceLoading } = useWorkspaceInit();
+  const [viewMode, setViewMode] = useState<"canvas" | "editor">("canvas");
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const { getOutputForAgent, clearOutput } = useAgentOutput();
+
+  // Only initialize workspace after server is ready
+  const { initialized: workspaceInitialized, isLoading: workspaceLoading } = useWorkspaceInit(cliReady);
 
   // Parse Claude CLI output into chat messages
   useChatMessages();
@@ -94,8 +98,8 @@ function App() {
 
   const outputLines = selectedAgent ? getOutputForAgent(selectedAgent.id) : [];
 
-  // Show loading state while workspace is initializing
-  if (!workspaceInitialized || workspaceLoading) {
+  // Show loading state while workspace is initializing (after CLI is ready)
+  if (cliReady && (!workspaceInitialized || workspaceLoading)) {
     return (
       <div style={{
         position: "fixed",
@@ -152,26 +156,58 @@ function App() {
         display: "flex",
         overflow: "hidden",
       }}>
+        {/* View toggle button */}
+        <button
+          onClick={() => setViewMode(viewMode === "canvas" ? "editor" : "canvas")}
+          style={{
+            position: "absolute",
+            top: 16,
+            right: 16,
+            zIndex: 1000,
+            padding: "8px 16px",
+            background: "var(--bg-tertiary)",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            color: "var(--text-primary)",
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+          }}
+        >
+          {viewMode === "canvas" ? "📝 Editor" : "🏢 Office"}
+        </button>
+
         <div style={{
           flex: 1,
           position: "relative",
           minWidth: 0,
+          height: "100%",
+          overflow: "hidden",
         }}>
-          <Canvas
-            camera={{
-              position: [0, 30, 40],
-              fov: 55,
-              near: 0.1,
-              far: 500,
-            }}
-            shadows
-            style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
-            gl={{ antialias: true, alpha: false }}
-          >
-            <Scene />
-          </Canvas>
-          <Toolbar />
-          {!selectedAgent && <WorkspacePanel />}
+          {viewMode === "canvas" ? (
+            <>
+              <Canvas
+                camera={{
+                  position: [0, 30, 40],
+                  fov: 55,
+                  near: 0.1,
+                  far: 500,
+                }}
+                shadows
+                style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+                gl={{ antialias: true, alpha: false }}
+              >
+                <Scene />
+              </Canvas>
+              <Toolbar />
+              {!selectedAgent && <WorkspacePanel />}
+            </>
+          ) : (
+            <EditorView />
+          )}
         </div>
         {selectedAgent && (
           <AgentPanel

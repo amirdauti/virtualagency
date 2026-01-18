@@ -1,9 +1,10 @@
-import { useRef, useMemo, useState, useEffect } from "react";
+import React, { useRef, useMemo, useEffect, Suspense, useState } from "react";
 import * as THREE from "three";
-import { Mesh, Group } from "three";
+import { Mesh, Group, Box3, Vector3 } from "three";
 import { useFrame } from "@react-three/fiber";
-import { Text } from "@react-three/drei";
-import type { Agent } from "@virtual-agency/shared";
+import { Text, useGLTF, useAnimations } from "@react-three/drei";
+import type { Agent, AvatarConfig } from "@virtual-agency/shared";
+import { AVATAR_OPTIONS } from "@virtual-agency/shared";
 import { generatePath, Point2D } from "../../lib/pathfinding";
 
 // Walking animation configuration
@@ -26,7 +27,349 @@ const handleMeshClick = (onClick: () => void) => (event: { stopPropagation: () =
   onClick();
 };
 
+// Get avatar config from avatar ID
+function getAvatarConfig(avatarId?: string): AvatarConfig | null {
+  if (!avatarId || avatarId === "default") return null;
+  const avatar = AVATAR_OPTIONS.find(a => a.id === avatarId);
+  return avatar?.path ? avatar : null;
+}
+
+// Find matching animation from available names
+function findAnimation(names: string[], patterns: string[]): string | null {
+  for (const pattern of patterns) {
+    const found = names.find(n =>
+      n.toLowerCase().includes(pattern.toLowerCase())
+    );
+    if (found) return found;
+  }
+  return null;
+}
+
+// GLB Model Avatar Component
+interface GLBModelAvatarProps {
+  config: AvatarConfig;
+  agent: Agent;
+  isSelected: boolean;
+  onClick: () => void;
+}
+
+function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarProps) {
+  const groupRef = useRef<Group>(null);
+  const modelRef = useRef<Group>(null);
+  const { scene, animations } = useGLTF(config.path!);
+  const { actions, names } = useAnimations(animations, modelRef);
+
+  // Clone the scene and compute proper scale/offset
+  const { clonedScene, computedScale, computedYOffset } = useMemo(() => {
+    const clone = scene.clone();
+
+    // Compute bounding box to determine model size
+    const box = new Box3().setFromObject(clone);
+    const size = new Vector3();
+    box.getSize(size);
+
+    // Target height for avatars (similar to chibi)
+    const targetHeight = 1.8;
+    const modelHeight = size.y;
+
+    // Use config scale or auto-compute
+    let scale = config.scale ?? 1.0;
+    if (modelHeight > 0) {
+      const autoScale = targetHeight / modelHeight;
+      // Blend config scale with auto-computed scale
+      scale = config.scale !== undefined ? config.scale : autoScale;
+    }
+
+    // Compute Y offset to place feet on ground
+    const minY = box.min.y * scale;
+    const yOffset = config.yOffset ?? -minY;
+
+    return { clonedScene: clone, computedScale: scale, computedYOffset: yOffset };
+  }, [scene, config.scale, config.yOffset]);
+
+  // Position refs for walking
+  // Initialize to a sentinel value to detect first render
+  const currentPositionRef = useRef<{ x: number; z: number } | null>(null);
+  const pathRef = useRef<Point2D[]>([]);
+  const currentWaypointIndex = useRef(0);
+  const isWalkingRef = useRef(false);
+  const isAtDesk = agent.status === "working" || agent.status === "thinking";
+  const currentRotationY = useRef(isAtDesk ? Math.PI : 0);
+  const finalDestination = useRef<{ x: number; z: number } | null>(null);
+  const currentAnimRef = useRef<string | null>(null);
+
+  // Initialize position on first render - snap to target position immediately
+  if (currentPositionRef.current === null) {
+    currentPositionRef.current = { x: agent.position.x, z: agent.position.z };
+    finalDestination.current = { x: agent.position.x, z: agent.position.z };
+  }
+
+  // Log available animations for debugging
+  useEffect(() => {
+    if (names.length > 0) {
+      console.log(`[${agent.name}] Available animations:`, names);
+    } else {
+      console.log(`[${agent.name}] No animations found in model`);
+    }
+  }, [names, agent.name]);
+
+  // Animation switching logic
+  const playAnimation = (animName: string | null) => {
+    if (!animName || animName === currentAnimRef.current) return;
+
+    // Fade out current animation
+    if (currentAnimRef.current && actions[currentAnimRef.current]) {
+      actions[currentAnimRef.current]?.fadeOut(0.2);
+    }
+
+    // Fade in new animation
+    if (actions[animName]) {
+      actions[animName]?.reset().fadeIn(0.2).play();
+      currentAnimRef.current = animName;
+    }
+  };
+
+  // Find idle and walk animations
+  const idleAnimPatterns = config.idleAnims ?? ["idle", "Idle", "stand", "Stand"];
+  const walkAnimPatterns = config.walkAnims ?? ["walk", "Walk", "run", "Run", "locomotion"];
+
+  const idleAnim = useMemo(
+    () => findAnimation(names, idleAnimPatterns) || names[0] || null,
+    [names, idleAnimPatterns]
+  );
+  const walkAnim = useMemo(
+    () => findAnimation(names, walkAnimPatterns),
+    [names, walkAnimPatterns]
+  );
+
+  // Play initial animation
+  useEffect(() => {
+    if (idleAnim) {
+      playAnimation(idleAnim);
+    }
+
+    return () => {
+      names.forEach(name => actions[name]?.stop());
+    };
+  }, [idleAnim, actions, names]);
+
+  // Set initial rotation based on agent status
+  useEffect(() => {
+    if (groupRef.current) {
+      const isAtDesk = agent.status === "working" || agent.status === "thinking";
+      const targetRotation = isAtDesk ? Math.PI : 0;
+      groupRef.current.rotation.y = targetRotation;
+      currentRotationY.current = targetRotation;
+    }
+  }, [agent.status]);
+
+  // Detect position changes and trigger walking
+  useEffect(() => {
+    if (!currentPositionRef.current || !finalDestination.current) return;
+
+    const incomingX = agent.position.x;
+    const incomingZ = agent.position.z;
+    const dx = Math.abs(incomingX - finalDestination.current.x);
+    const dz = Math.abs(incomingZ - finalDestination.current.z);
+
+    if (dx > 0.1 || dz > 0.1) {
+      const path = generatePath(
+        { x: currentPositionRef.current.x, z: currentPositionRef.current.z },
+        { x: incomingX, z: incomingZ }
+      );
+      pathRef.current = path;
+      currentWaypointIndex.current = 0;
+      finalDestination.current = { x: incomingX, z: incomingZ };
+      isWalkingRef.current = true;
+
+      // Switch to walk animation if available
+      if (walkAnim) {
+        playAnimation(walkAnim);
+      }
+    }
+  }, [agent.position.x, agent.position.z, walkAnim]);
+
+  useFrame((_, delta) => {
+    if (!groupRef.current || !currentPositionRef.current) return;
+
+    // Handle walking
+    if (isWalkingRef.current && pathRef.current.length > 0) {
+      const currentWaypoint = pathRef.current[currentWaypointIndex.current];
+      const dx = currentWaypoint.x - currentPositionRef.current.x;
+      const dz = currentWaypoint.z - currentPositionRef.current.z;
+      const distance = Math.sqrt(dx * dx + dz * dz);
+
+      if (distance < 0.1) {
+        currentPositionRef.current = { ...currentWaypoint };
+        currentWaypointIndex.current++;
+        if (currentWaypointIndex.current >= pathRef.current.length) {
+          isWalkingRef.current = false;
+          pathRef.current = [];
+          const isAtDesk = agent.status === "working" || agent.status === "thinking";
+          const targetRotation = isAtDesk ? Math.PI : 0;
+          currentRotationY.current = targetRotation;
+          groupRef.current.rotation.y = targetRotation;
+
+          // Switch back to idle animation
+          if (idleAnim) {
+            playAnimation(idleAnim);
+          }
+        }
+      } else {
+        const moveAmount = Math.min(WALK_SPEED * delta, distance);
+        const moveRatio = moveAmount / distance;
+        currentPositionRef.current.x += dx * moveRatio;
+        currentPositionRef.current.z += dz * moveRatio;
+
+        // Rotate toward movement direction
+        const targetAngle = Math.atan2(dx, dz);
+        const angleDiff = targetAngle - currentRotationY.current;
+        const normalizedDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+        currentRotationY.current += normalizedDiff * Math.min(ROTATION_SPEED * delta, 1);
+        groupRef.current.rotation.y = currentRotationY.current;
+      }
+
+      groupRef.current.position.x = currentPositionRef.current.x;
+      groupRef.current.position.z = currentPositionRef.current.z;
+    }
+  });
+
+  const statusColor =
+    agent.status === "working" ? "#4ade80" :
+    agent.status === "thinking" ? "#fbbf24" :
+    agent.status === "error" ? "#ef4444" : "#6b7280";
+
+  // Calculate label position based on scaled model height
+  const labelY = 2.0; // Approximate height above ground for label
+
+  // Get current position with fallback to agent position
+  const currentPos = currentPositionRef.current ?? { x: agent.position.x, z: agent.position.z };
+
+  return (
+    <group ref={groupRef} position={[currentPos.x, 0, currentPos.z]}>
+      {/* Invisible hitbox */}
+      <mesh position={[0, 0.9, 0]} onClick={handleMeshClick(onClick)}>
+        <boxGeometry args={[1.2, 2, 1.2]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+
+      {/* The loaded GLB model - with computed scale and Y offset */}
+      <group ref={modelRef} position={[0, computedYOffset, 0]}>
+        <primitive
+          object={clonedScene}
+          scale={computedScale}
+        />
+      </group>
+
+      {/* Selection ring */}
+      {isSelected && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+          <ringGeometry args={[0.6, 0.7, 32]} />
+          <meshBasicMaterial color="#ff6b9d" transparent opacity={0.8} />
+        </mesh>
+      )}
+
+      {/* Status indicator */}
+      <mesh position={[0, labelY - 0.2, 0]}>
+        <sphereGeometry args={[0.08, 12, 12]} />
+        <meshStandardMaterial
+          color={statusColor}
+          emissive={statusColor}
+          emissiveIntensity={1.0}
+          transparent
+          opacity={0.9}
+        />
+      </mesh>
+
+      {/* Name label */}
+      <Text
+        position={[0, labelY, 0]}
+        fontSize={0.15}
+        color="white"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.02}
+        outlineColor="#000000"
+      >
+        {agent.name}
+      </Text>
+
+      {/* Status text */}
+      <Text
+        position={[0, 0.0, 0]}
+        fontSize={0.09}
+        color={statusColor}
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.015}
+        outlineColor="#000000"
+      >
+        {agent.status}
+      </Text>
+    </group>
+  );
+}
+
+// Error boundary wrapper for GLB model loading
+function GLBModelAvatarWithErrorBoundary({ config, agent, isSelected, onClick }: GLBModelAvatarProps) {
+  const [hasError, setHasError] = useState(false);
+
+  if (hasError) {
+    console.warn(`[${agent.name}] Failed to load model, using default avatar`);
+    return <DefaultChibiAvatar agent={agent} isSelected={isSelected} onClick={onClick} />;
+  }
+
+  return (
+    <Suspense fallback={<DefaultChibiAvatar agent={agent} isSelected={isSelected} onClick={onClick} />}>
+      <ErrorCatcher onError={() => setHasError(true)}>
+        <GLBModelAvatar
+          config={config}
+          agent={agent}
+          isSelected={isSelected}
+          onClick={onClick}
+        />
+      </ErrorCatcher>
+    </Suspense>
+  );
+}
+
+// Simple error catcher component
+function ErrorCatcher({ children, onError }: { children: React.ReactNode; onError: () => void }) {
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      if (event.message?.includes('useGLTF') || event.message?.includes('GLB') || event.message?.includes('GLTF')) {
+        onError();
+      }
+    };
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, [onError]);
+
+  return <>{children}</>;
+}
+
+// Main AgentAvatar component that chooses between GLB and default chibi
 export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
+  const avatarConfig = getAvatarConfig(agent.avatarId);
+
+  // If custom avatar is selected, use GLB model with error boundary
+  if (avatarConfig) {
+    return (
+      <GLBModelAvatarWithErrorBoundary
+        config={avatarConfig}
+        agent={agent}
+        isSelected={isSelected}
+        onClick={onClick}
+      />
+    );
+  }
+
+  // Otherwise use the default chibi avatar
+  return <DefaultChibiAvatar agent={agent} isSelected={isSelected} onClick={onClick} />;
+}
+
+// The original chibi avatar, now as a separate component
+function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
   const groupRef = useRef<Group>(null);
   const bodyRef = useRef<Mesh>(null);
   const headRef = useRef<Group>(null);
@@ -36,19 +379,37 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
   const leftLegRef = useRef<Group>(null);
   const rightLegRef = useRef<Group>(null);
 
-  // Position state for walking animation
-  const [currentPosition, setCurrentPosition] = useState({
-    x: agent.position.x,
-    z: agent.position.z,
-  });
+  // Position refs for walking animation (avoid state updates in useFrame)
+  // Initialize to a sentinel value to detect first render
+  const currentPositionRef = useRef<{ x: number; z: number } | null>(null);
   const pathRef = useRef<Point2D[]>([]);
   const currentWaypointIndex = useRef(0);
   const isWalking = useRef(false);
-  const currentRotationY = useRef(0);
-  const finalDestination = useRef({ x: agent.position.x, z: agent.position.z });
+  // Initialize rotation based on status - working/thinking face ocean (Math.PI), idle face city (0)
+  const isAtDesk = agent.status === "working" || agent.status === "thinking";
+  const currentRotationY = useRef(isAtDesk ? Math.PI : 0);
+  const finalDestination = useRef<{ x: number; z: number } | null>(null);
+
+  // Initialize position on first render - snap to target position immediately
+  if (currentPositionRef.current === null) {
+    currentPositionRef.current = { x: agent.position.x, z: agent.position.z };
+    finalDestination.current = { x: agent.position.x, z: agent.position.z };
+  }
+
+  // Set initial rotation based on agent status
+  useEffect(() => {
+    if (groupRef.current) {
+      const isAtDesk = agent.status === "working" || agent.status === "thinking";
+      const targetRotation = isAtDesk ? Math.PI : 0;
+      groupRef.current.rotation.y = targetRotation;
+      currentRotationY.current = targetRotation;
+    }
+  }, [agent.status]);
 
   // Detect position changes and trigger walking with pathfinding
   useEffect(() => {
+    if (!currentPositionRef.current || !finalDestination.current) return;
+
     const incomingX = agent.position.x;
     const incomingZ = agent.position.z;
 
@@ -58,7 +419,7 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
     if (dx > 0.1 || dz > 0.1) {
       // Generate path with waypoints to avoid obstacles
       const path = generatePath(
-        { x: currentPosition.x, z: currentPosition.z },
+        { x: currentPositionRef.current.x, z: currentPositionRef.current.z },
         { x: incomingX, z: incomingZ }
       );
 
@@ -79,15 +440,15 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
     const t = state.clock.elapsedTime;
 
     // Handle walking animation with waypoints
-    if (isWalking.current && groupRef.current && pathRef.current.length > 0) {
+    if (isWalking.current && groupRef.current && pathRef.current.length > 0 && currentPositionRef.current) {
       const currentWaypoint = pathRef.current[currentWaypointIndex.current];
-      const dx = currentWaypoint.x - currentPosition.x;
-      const dz = currentWaypoint.z - currentPosition.z;
+      const dx = currentWaypoint.x - currentPositionRef.current.x;
+      const dz = currentWaypoint.z - currentPositionRef.current.z;
       const distance = Math.sqrt(dx * dx + dz * dz);
 
       if (distance < 0.1) {
         // Reached current waypoint
-        setCurrentPosition({ ...currentWaypoint });
+        currentPositionRef.current = { ...currentWaypoint };
 
         // Move to next waypoint or finish
         currentWaypointIndex.current++;
@@ -98,15 +459,23 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
           // Reset leg positions for smooth transition
           if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
           if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+
+          // Set final rotation based on status:
+          // - Working/thinking agents face the desk (negative Z, towards ocean view)
+          // - Idle agents face the lounge center (positive Z, towards city)
+          const isAtDesk = agent.status === "working" || agent.status === "thinking";
+          const targetRotation = isAtDesk ? Math.PI : 0; // PI = face negative Z (ocean), 0 = face positive Z (city)
+          currentRotationY.current = targetRotation;
+          groupRef.current.rotation.y = targetRotation;
         }
       } else {
         // Continue walking
         const moveAmount = Math.min(WALK_SPEED * delta, distance);
         const moveRatio = moveAmount / distance;
 
-        const newX = currentPosition.x + dx * moveRatio;
-        const newZ = currentPosition.z + dz * moveRatio;
-        setCurrentPosition({ x: newX, z: newZ });
+        const newX = currentPositionRef.current.x + dx * moveRatio;
+        const newZ = currentPositionRef.current.z + dz * moveRatio;
+        currentPositionRef.current = { x: newX, z: newZ };
 
         // Smoothly rotate toward movement direction
         const targetAngle = Math.atan2(dx, dz);
@@ -157,6 +526,10 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
         // Reset body lean while walking
         groupRef.current.rotation.x = 0;
       }
+
+      // Update group position directly (avoid React re-renders)
+      groupRef.current.position.x = currentPositionRef.current.x;
+      groupRef.current.position.z = currentPositionRef.current.z;
       return; // Skip status animations while walking
     }
 
@@ -169,9 +542,9 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
         headRef.current.position.y = 1.05 + Math.sin(t * 1.5 + animOffset) * 0.03;
         statusRef.current.position.y = 1.55 + Math.sin(t * 1.5 + animOffset) * 0.03;
 
-        // Subtle side-to-side sway
+        // Idle agents face towards city (positive Z) with subtle sway
         if (groupRef.current) {
-          groupRef.current.rotation.y = Math.sin(t * 0.5 + animOffset) * 0.05;
+          groupRef.current.rotation.y = 0 + Math.sin(t * 0.5 + animOffset) * 0.05;
         }
 
         // Arms relaxed
@@ -188,6 +561,11 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
         // Head tilts side to side
         headRef.current.rotation.z = Math.sin(t * 0.8 + animOffset) * 0.15;
         headRef.current.rotation.x = Math.sin(t * 0.6 + animOffset) * 0.1;
+
+        // Thinking agents face desk/ocean (negative Z = Math.PI)
+        if (groupRef.current) {
+          groupRef.current.rotation.y = Math.PI;
+        }
 
         // Pulsing status indicator
         const pulse = 0.5 + Math.sin(t * 4) * 0.3;
@@ -227,10 +605,10 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
           rightArmRef.current.rotation.x = -0.8 + Math.sin(t * 12) * 0.2;
         }
 
-        // Subtle body lean forward
+        // Working agents face desk/ocean (negative Z = Math.PI) with subtle lean forward
         if (groupRef.current) {
           groupRef.current.rotation.x = 0.05;
-          groupRef.current.rotation.y = 0;
+          groupRef.current.rotation.y = Math.PI; // Face ocean/desk
         }
 
         // Status indicator active glow
@@ -335,10 +713,13 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
 
   const selectionGlow = isSelected ? 0.5 : 0;
 
+  // Get current position with fallback to agent position
+  const currentPos = currentPositionRef.current ?? { x: agent.position.x, z: agent.position.z };
+
   // Gacha chibi proportions: ~55% head, ~45% body
   // Head radius 0.32, body height 0.5, total ~1.5 units
   return (
-    <group ref={groupRef} position={[currentPosition.x, 0, currentPosition.z]}>
+    <group ref={groupRef} position={[currentPos.x, 0, currentPos.z]}>
       {/* Invisible hitbox */}
       <mesh position={[0, 0.75, 0]} onClick={handleMeshClick(onClick)}>
         <boxGeometry args={[0.9, 1.5, 0.7]} />

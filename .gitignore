@@ -28,3 +28,6 @@ npm-debug.log*
 
 # Tauri
 apps/desktop/src-tauri/target/
+
+DeveloperIDG2CA.cer
+DEPLOY.md

@@ -9,6 +9,12 @@ pub struct SavedAgent {
     pub name: String,
     pub working_directory: String,
     pub position: Position,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

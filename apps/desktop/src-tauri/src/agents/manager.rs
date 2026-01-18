@@ -18,12 +18,14 @@ impl AgentManager {
         id: String,
         working_dir: String,
         app_handle: AppHandle,
+        model: String,
+        thinking_enabled: bool,
     ) -> Result<(), String> {
         if self.agents.contains_key(&id) {
             return Err("Agent with this ID already exists".to_string());
         }
 
-        let agent = AgentProcess::new(id.clone(), working_dir, app_handle)?;
+        let agent = AgentProcess::new(id.clone(), working_dir, app_handle, model, thinking_enabled)?;
         self.agents.insert(id, agent);
         Ok(())
     }
@@ -47,5 +49,27 @@ impl AgentManager {
 
     pub fn list_agents(&self) -> Vec<String> {
         self.agents.keys().cloned().collect()
+    }
+
+    pub fn update_agent_settings(
+        &mut self,
+        id: &str,
+        model: Option<String>,
+        thinking_enabled: Option<bool>,
+    ) -> Result<(), String> {
+        match self.agents.get_mut(id) {
+            Some(agent) => {
+                agent.update_settings(model, thinking_enabled);
+                Ok(())
+            }
+            None => Err("Agent not found".to_string()),
+        }
+    }
+
+    pub fn get_agent_settings(&self, id: &str) -> Result<(String, bool), String> {
+        match self.agents.get(id) {
+            Some(agent) => Ok(agent.get_settings()),
+            None => Err("Agent not found".to_string()),
+        }
     }
 }

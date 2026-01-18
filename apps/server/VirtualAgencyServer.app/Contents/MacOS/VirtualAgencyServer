@@ -1,0 +1,10 @@
+#!/bin/bash
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SERVER_BIN="$DIR/server-binary"
+
+osascript <<EOF
+tell application "Terminal"
+    activate
+    do script "clear && echo 'Starting Virtual Agency Server...' && echo '' && \"$SERVER_BIN\"; echo ''; echo 'Server stopped. Press any key to close.'; read -n 1"
+end tell
+EOF
