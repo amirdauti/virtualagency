@@ -179,26 +179,29 @@ export function TerminalTabs({
             </button>
           </div>
         ) : (
-          terminals.map((terminal) => (
-            <div
-              key={terminal.id}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                visibility: activeTerminalId === terminal.id ? "visible" : "hidden",
-              }}
-            >
-              <TerminalWrapper
-                terminal={terminal}
-                onSendInput={onSendInput}
-                onResize={onResize}
-                registerOutputCallback={registerOutputCallback}
-              />
-            </div>
-          ))
+          <div style={{ width: "100%", height: "100%", position: "relative" }}>
+            {terminals.map((terminal) => (
+              <div
+                key={terminal.id}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  display: activeTerminalId === terminal.id ? "block" : "none",
+                }}
+              >
+                <TerminalWrapper
+                  terminal={terminal}
+                  isActive={activeTerminalId === terminal.id}
+                  onSendInput={onSendInput}
+                  onResize={onResize}
+                  registerOutputCallback={registerOutputCallback}
+                />
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -208,11 +211,13 @@ export function TerminalTabs({
 // Wrapper component to handle individual terminal state
 function TerminalWrapper({
   terminal,
+  isActive,
   onSendInput,
   onResize,
   registerOutputCallback,
 }: {
   terminal: TerminalSession;
+  isActive: boolean;
   onSendInput: (terminalId: string, data: string) => void;
   onResize: (terminalId: string, cols: number, rows: number) => void;
   registerOutputCallback: (
@@ -253,7 +258,7 @@ function TerminalWrapper({
   }, []);
 
   return (
-    <div style={{ width: "100%", height: "100%" }}>
+    <div style={{ width: "100%", height: "100%", display: isActive ? "block" : "none" }}>
       <InteractiveTerminal
         terminalId={terminal.id}
         onData={handleData}

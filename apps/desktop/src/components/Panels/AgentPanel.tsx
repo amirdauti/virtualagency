@@ -12,6 +12,7 @@ import { useAgentStore } from "../../stores/agentStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useTerminals } from "../../hooks/useTerminals";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
+import { useTerminalStore } from "../../stores/terminalStore";
 
 interface AgentPanelProps {
   agent: Agent;
@@ -41,6 +42,7 @@ export function AgentPanel({
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(0);
   const removeAgent = useAgentStore((state) => state.removeAgent);
+  const clearTerminalsForAgent = useTerminalStore((state) => state.clearTerminalsForAgent);
 
   // Terminal management
   const {
@@ -50,7 +52,7 @@ export function AgentPanel({
     sendInput,
     sendResize,
     registerOutputCallback,
-  } = useTerminals();
+  } = useTerminals(agent.id);
 
   const handleCreateTerminal = useCallback(() => {
     createTerminal(agent.workingDirectory, `Terminal ${terminals.length + 1}`);
@@ -119,6 +121,12 @@ export function AgentPanel({
 
   const handleKill = async () => {
     try {
+      // Kill all terminals for this agent first
+      for (const terminal of terminals) {
+        await killTerminal(terminal.id);
+      }
+      clearTerminalsForAgent(agent.id);
+
       await killAgent(agent.id);
       removeAgent(agent.id);
     } catch (err) {
