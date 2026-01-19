@@ -80,6 +80,7 @@ pub struct AgentProcess {
     pub working_dir: String,
     pub model: String,
     pub thinking_enabled: bool,
+    pub mcp_servers: Vec<String>,
     session_id: Arc<Mutex<Option<String>>>,
     current_child: Arc<Mutex<Option<Child>>>,
     broadcast_tx: broadcast::Sender<BroadcastMessage>,
@@ -92,6 +93,7 @@ impl AgentProcess {
         working_dir: String,
         model: String,
         thinking_enabled: bool,
+        mcp_servers: Vec<String>,
         broadcast_tx: broadcast::Sender<BroadcastMessage>,
     ) -> Result<Self, String> {
         find_claude_cli()?;
@@ -102,6 +104,7 @@ impl AgentProcess {
             working_dir,
             model,
             thinking_enabled,
+            mcp_servers,
             session_id: Arc::new(Mutex::new(None)),
             current_child: Arc::new(Mutex::new(None)),
             broadcast_tx,
@@ -161,6 +164,15 @@ impl AgentProcess {
         // Enable extended thinking via environment variable
         if self.thinking_enabled {
             cmd.env("MAX_THINKING_TOKENS", "31999");
+        }
+
+        // Configure MCP servers via environment variable
+        // Claude CLI reads CLAUDE_MCP_SERVERS as a JSON array
+        if !self.mcp_servers.is_empty() {
+            let mcp_config = serde_json::to_string(&self.mcp_servers)
+                .unwrap_or_else(|_| "[]".to_string());
+            cmd.env("CLAUDE_MCP_SERVERS", mcp_config);
+            tracing::info!("[AgentProcess] Configured MCP servers: {:?}", self.mcp_servers);
         }
 
         let mut child = match cmd.spawn()
@@ -301,17 +313,20 @@ impl AgentProcess {
         Ok(())
     }
 
-    pub fn update_settings(&mut self, model: Option<String>, thinking_enabled: Option<bool>) {
+    pub fn update_settings(&mut self, model: Option<String>, thinking_enabled: Option<bool>, mcp_servers: Option<Vec<String>>) {
         if let Some(m) = model {
             self.model = m;
         }
         if let Some(t) = thinking_enabled {
             self.thinking_enabled = t;
         }
+        if let Some(s) = mcp_servers {
+            self.mcp_servers = s;
+        }
     }
 
-    pub fn get_settings(&self) -> (String, bool) {
-        (self.model.clone(), self.thinking_enabled)
+    pub fn get_settings(&self) -> (String, bool, Vec<String>) {
+        (self.model.clone(), self.thinking_enabled, self.mcp_servers.clone())
     }
 }
 
@@ -341,6 +356,7 @@ impl AgentManager {
         working_dir: &str,
         model: &str,
         thinking_enabled: bool,
+        mcp_servers: Vec<String>,
     ) -> Result<String, String> {
         // Use provided ID or generate a new one
         let id = id.map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -350,6 +366,7 @@ impl AgentManager {
             working_dir.to_string(),
             model.to_string(),
             thinking_enabled,
+            mcp_servers,
             self.broadcast_tx.clone(),
         )?;
         self.agents.insert(id.clone(), agent);
@@ -380,12 +397,12 @@ impl AgentManager {
         }
     }
 
-    pub fn list_agents(&self) -> Vec<(String, String, String, String, bool)> {
+    pub fn list_agents(&self) -> Vec<(String, String, String, String, bool, Vec<String>)> {
         self.agents
             .iter()
             .map(|(id, agent)| {
-                let (model, thinking_enabled) = agent.get_settings();
-                (id.clone(), agent.name.clone(), agent.working_dir.clone(), model, thinking_enabled)
+                let (model, thinking_enabled, mcp_servers) = agent.get_settings();
+                (id.clone(), agent.name.clone(), agent.working_dir.clone(), model, thinking_enabled, mcp_servers)
             })
             .collect()
     }
@@ -395,9 +412,10 @@ impl AgentManager {
         id: &str,
         model: Option<String>,
         thinking_enabled: Option<bool>,
+        mcp_servers: Option<Vec<String>>,
     ) -> Result<(), String> {
         if let Some(agent) = self.agents.get_mut(id) {
-            agent.update_settings(model, thinking_enabled);
+            agent.update_settings(model, thinking_enabled, mcp_servers);
             Ok(())
         } else {
             Err(format!("Agent not found: {}", id))

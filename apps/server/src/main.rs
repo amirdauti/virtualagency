@@ -224,8 +224,8 @@ async fn get_file_tree(
 
     let working_dir = agents
         .iter()
-        .find(|(id, _, _, _, _)| id == &agent_id)
-        .map(|(_, _, working_dir, _, _)| PathBuf::from(working_dir))
+        .find(|(id, _, _, _, _, _)| id == &agent_id)
+        .map(|(_, _, working_dir, _, _, _)| PathBuf::from(working_dir))
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
 
     drop(manager);
@@ -247,8 +247,8 @@ async fn read_file(
 
     let working_dir = agents
         .iter()
-        .find(|(id, _, _, _, _)| id == &agent_id)
-        .map(|(_, _, working_dir, _, _)| PathBuf::from(working_dir))
+        .find(|(id, _, _, _, _, _)| id == &agent_id)
+        .map(|(_, _, working_dir, _, _, _)| PathBuf::from(working_dir))
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
 
     drop(manager);
@@ -270,8 +270,8 @@ async fn write_file(
 
     let working_dir = agents
         .iter()
-        .find(|(id, _, _, _, _)| id == &agent_id)
-        .map(|(_, _, working_dir, _, _)| PathBuf::from(working_dir))
+        .find(|(id, _, _, _, _, _)| id == &agent_id)
+        .map(|(_, _, working_dir, _, _, _)| PathBuf::from(working_dir))
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
 
     drop(manager);
@@ -292,6 +292,8 @@ struct CreateAgentRequest {
     model: String,
     #[serde(default)]
     thinking_enabled: bool,
+    #[serde(default)]
+    mcp_servers: Vec<String>,
 }
 
 fn default_model() -> String {
@@ -305,6 +307,7 @@ struct AgentInfo {
     working_dir: String,
     model: String,
     thinking_enabled: bool,
+    mcp_servers: Vec<String>,
 }
 
 async fn create_agent(
@@ -312,8 +315,8 @@ async fn create_agent(
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<AgentInfo>, (StatusCode, String)> {
     tracing::info!(
-        "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}",
-        req.id, req.name, req.working_dir, req.model, req.thinking_enabled
+        "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}, mcp_servers: {:?}",
+        req.id, req.name, req.working_dir, req.model, req.thinking_enabled, req.mcp_servers
     );
 
     let mut manager = state.agent_manager.write().await;
@@ -324,6 +327,7 @@ async fn create_agent(
         &req.working_dir,
         &req.model,
         req.thinking_enabled,
+        req.mcp_servers.clone(),
     ) {
         Ok(id) => {
             tracing::info!("[create_agent] Successfully created agent with id: {}", id);
@@ -333,6 +337,7 @@ async fn create_agent(
                 working_dir: req.working_dir,
                 model: req.model,
                 thinking_enabled: req.thinking_enabled,
+                mcp_servers: req.mcp_servers,
             }))
         },
         Err(e) => {
@@ -345,12 +350,13 @@ async fn create_agent(
 async fn list_agents(State(state): State<SharedState>) -> Json<Vec<AgentInfo>> {
     let manager = state.agent_manager.read().await;
     let agents = manager.list_agents();
-    Json(agents.into_iter().map(|(id, name, working_dir, model, thinking_enabled)| AgentInfo {
+    Json(agents.into_iter().map(|(id, name, working_dir, model, thinking_enabled, mcp_servers)| AgentInfo {
         id,
         name,
         working_dir,
         model,
         thinking_enabled,
+        mcp_servers,
     }).collect())
 }
 
@@ -370,6 +376,7 @@ async fn kill_agent(
 struct UpdateAgentRequest {
     model: Option<String>,
     thinking_enabled: Option<bool>,
+    mcp_servers: Option<Vec<String>>,
 }
 
 async fn update_agent_settings(
@@ -378,13 +385,13 @@ async fn update_agent_settings(
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     tracing::info!(
-        "[update_agent_settings] Updating agent {} - model: {:?}, thinking: {:?}",
-        id, req.model, req.thinking_enabled
+        "[update_agent_settings] Updating agent {} - model: {:?}, thinking: {:?}, mcp_servers: {:?}",
+        id, req.model, req.thinking_enabled, req.mcp_servers
     );
 
     let mut manager = state.agent_manager.write().await;
 
-    match manager.update_agent_settings(&id, req.model, req.thinking_enabled) {
+    match manager.update_agent_settings(&id, req.model, req.thinking_enabled, req.mcp_servers) {
         Ok(_) => {
             tracing::info!("[update_agent_settings] Successfully updated agent: {}", id);
             Ok(StatusCode::OK)
@@ -418,7 +425,7 @@ async fn send_message(
 
     let manager = state.agent_manager.read().await;
     let existing_agents = manager.list_agents();
-    tracing::info!("[send_message] Existing agents: {:?}", existing_agents.iter().map(|(id, _, _, _, _)| id).collect::<Vec<_>>());
+    tracing::info!("[send_message] Existing agents: {:?}", existing_agents.iter().map(|(id, _, _, _, _, _)| id).collect::<Vec<_>>());
 
     // Convert base64 images to temp files
     let mut image_paths: Vec<String> = Vec::new();

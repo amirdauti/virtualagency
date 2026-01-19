@@ -90,15 +90,17 @@ export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export interface AgentOptions {
   model?: ClaudeModel;
   thinkingEnabled?: boolean;
+  mcpServers?: string[]; // Array of MCP server IDs
 }
 
 // Agent APIs
 export async function createAgent(id: string, workingDir: string, options?: AgentOptions): Promise<void> {
   const model = options?.model || "sonnet";
   const thinkingEnabled = options?.thinkingEnabled || false;
+  const mcpServers = options?.mcpServers || [];
 
   if (isTauri()) {
-    return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled });
+    return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled, mcpServers });
   } else {
     // Pass the client-generated ID so the server uses it
     await fetchApi('/api/agents', {
@@ -109,6 +111,7 @@ export async function createAgent(id: string, workingDir: string, options?: Agen
         working_dir: workingDir,
         model,
         thinking_enabled: thinkingEnabled,
+        mcp_servers: mcpServers,
       }),
     });
   }

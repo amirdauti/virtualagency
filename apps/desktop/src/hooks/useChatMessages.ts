@@ -102,7 +102,9 @@ export function useChatMessages() {
                   agentId,
                   activityInfo.text,
                   activityInfo.type,
-                  activityInfo.details
+                  activityInfo.details,
+                  activityInfo.diffData,
+                  activityInfo.todoData
                 );
               }
 
@@ -187,7 +189,9 @@ export function useChatMessages() {
               agentId,
               activityInfo.text,
               activityInfo.type,
-              activityInfo.details
+              activityInfo.details,
+              activityInfo.diffData,
+              activityInfo.todoData
             );
             break;
           }
@@ -266,7 +270,13 @@ export function useChatMessages() {
 function getActivityInfo(
   toolName: string,
   input?: Record<string, unknown>
-): { text: string; type: ChatMessage["activityType"]; details?: string } {
+): {
+  text: string;
+  type: ChatMessage["activityType"];
+  details?: string;
+  diffData?: ChatMessage["diffData"];
+  todoData?: ChatMessage["todoData"];
+} {
   switch (toolName) {
     case "Read":
       return {
@@ -274,18 +284,43 @@ function getActivityInfo(
         type: "read",
         details: input?.file_path as string,
       };
-    case "Write":
+    case "Write": {
+      const filePath = input?.file_path as string;
+      const content = input?.content as string;
+      const lineCount = content ? content.split('\n').length : 0;
       return {
-        text: `Wrote ${getShortPath(input?.file_path as string)}`,
+        text: `Write ${getShortPath(filePath)}`,
         type: "write",
-        details: input?.file_path as string,
+        details: filePath,
+        diffData: {
+          filePath,
+          newContent: content,
+          linesAdded: lineCount,
+        },
       };
+    }
     case "Edit": {
       const filePath = input?.file_path as string;
+      const oldString = input?.old_string as string;
+      const newString = input?.new_string as string;
+
+      // Calculate lines added/removed
+      const oldLines = oldString ? oldString.split('\n').length : 0;
+      const newLines = newString ? newString.split('\n').length : 0;
+      const linesAdded = Math.max(0, newLines - oldLines);
+      const linesRemoved = Math.max(0, oldLines - newLines);
+
       return {
-        text: `Edited ${getShortPath(filePath)}`,
+        text: `Edit ${getShortPath(filePath)}`,
         type: "edit",
         details: filePath,
+        diffData: {
+          filePath,
+          oldContent: oldString,
+          newContent: newString,
+          linesAdded,
+          linesRemoved,
+        },
       };
     }
     case "Bash": {
@@ -329,6 +364,20 @@ function getActivityInfo(
         type: "tool",
         details: input?.description as string,
       };
+    case "TodoWrite": {
+      const todos = input?.todos as Array<{
+        content: string;
+        status: "pending" | "in_progress" | "completed";
+        activeForm: string;
+      }>;
+      return {
+        text: `Update Todos`,
+        type: "todo",
+        todoData: {
+          todos: todos || [],
+        },
+      };
+    }
     default:
       return {
         text: `${toolName}`,

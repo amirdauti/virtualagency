@@ -9,15 +9,35 @@ export interface ChatMessage {
   timestamp: number;
   isStreaming?: boolean;
   // Activity-specific fields
-  activityType?: "read" | "write" | "edit" | "bash" | "search" | "tool";
+  activityType?: "read" | "write" | "edit" | "bash" | "search" | "tool" | "thinking" | "todo";
   activityDetails?: string; // e.g., file path, command
   // Image attachments (for user messages)
   images?: string[]; // Array of image file paths
+  // Thinking content (for expandable thinking blocks)
+  thinkingContent?: string;
+  thinkingTokens?: number;
+  // Diff data for Edit/Write activities
+  diffData?: {
+    filePath: string;
+    oldContent?: string;
+    newContent?: string;
+    linesAdded?: number;
+    linesRemoved?: number;
+  };
+  // Todo data for TodoWrite activities
+  todoData?: {
+    todos: Array<{
+      content: string;
+      status: "pending" | "in_progress" | "completed";
+      activeForm: string;
+    }>;
+  };
 }
 
 interface ChatState {
   messages: ChatMessage[];
   activities: Record<string, string>; // agentId -> current activity
+  draftMessages: Record<string, string>; // agentId -> draft message text
   addUserMessage: (agentId: string, content: string, images?: string[]) => void;
   addAssistantMessage: (agentId: string, content: string) => void;
   appendToLastAssistantMessage: (agentId: string, content: string) => void;
@@ -26,9 +46,19 @@ interface ChatState {
   getMessagesForAgent: (agentId: string) => ChatMessage[];
   clearMessagesForAgent: (agentId: string) => void;
   addActivity: (agentId: string, activity: string) => void;
-  addActivityMessage: (agentId: string, content: string, type: ChatMessage["activityType"], details?: string) => void;
+  addActivityMessage: (
+    agentId: string,
+    content: string,
+    type: ChatMessage["activityType"],
+    details?: string,
+    diffData?: ChatMessage["diffData"],
+    todoData?: ChatMessage["todoData"]
+  ) => void;
   clearActivity: (agentId: string) => void;
   getActivity: (agentId: string) => string | undefined;
+  setDraft: (agentId: string, draft: string) => void;
+  getDraft: (agentId: string) => string;
+  clearDraft: (agentId: string) => void;
 }
 
 const CHAT_STORAGE_KEY = "virtual-agency-chat";
@@ -39,6 +69,7 @@ export const useChatStore = create<ChatState>()(
     (set, get) => ({
       messages: [],
       activities: {},
+      draftMessages: {},
 
       addUserMessage: (agentId, content, images) => {
         const message: ChatMessage = {
@@ -142,7 +173,7 @@ export const useChatStore = create<ChatState>()(
         }));
       },
 
-      addActivityMessage: (agentId, content, activityType, activityDetails) => {
+      addActivityMessage: (agentId, content, activityType, activityDetails, diffData, todoData) => {
         const message: ChatMessage = {
           id: `${agentId}-activity-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           agentId,
@@ -151,6 +182,8 @@ export const useChatStore = create<ChatState>()(
           timestamp: Date.now(),
           activityType,
           activityDetails,
+          diffData,
+          todoData,
         };
         set((state) => ({
           messages: [...state.messages, message],
@@ -167,6 +200,24 @@ export const useChatStore = create<ChatState>()(
 
       getActivity: (agentId) => {
         return get().activities[agentId];
+      },
+
+      setDraft: (agentId, draft) => {
+        set((state) => ({
+          draftMessages: { ...state.draftMessages, [agentId]: draft },
+        }));
+      },
+
+      getDraft: (agentId) => {
+        return get().draftMessages[agentId] || "";
+      },
+
+      clearDraft: (agentId) => {
+        set((state) => {
+          const draftMessages = { ...state.draftMessages };
+          delete draftMessages[agentId];
+          return { draftMessages };
+        });
       },
     }),
     {

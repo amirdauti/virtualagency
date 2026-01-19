@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   --bg-primary: #1a1a2e;
   --bg-secondary: #16213e;
@@ -6,6 +8,19 @@
   --text-primary: #eaeaea;
   --text-secondary: #a0a0a0;
   --border: #2a2a4a;
+
+  /* VS Code File Explorer Theme */
+  --vscode-sideBar-background: #1e1e2e;
+  --vscode-sideBarSectionHeader-background: #181825;
+  --vscode-list-hoverBackground: rgba(90, 93, 107, 0.31);
+  --vscode-list-activeSelectionBackground: #45475a;
+  --vscode-list-activeSelectionForeground: #cdd6f4;
+  --vscode-list-inactiveSelectionBackground: #313244;
+  --vscode-list-focusOutline: #89b4fa;
+  --vscode-foreground: #cdd6f4;
+  --vscode-descriptionForeground: #a6adc8;
+  --vscode-icon-foreground: #89b4fa;
+  --vscode-tree-indentGuidesStroke: #45475a;
 }
 
 body {
@@ -48,4 +63,33 @@ body {
   50% {
     opacity: 0.4;
   }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Chat textarea scrollbar styling */
+.chat-textarea::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-textarea::-webkit-scrollbar-thumb {
+  background: #3c3c3c;
+  border-radius: 4px;
+}
+
+.chat-textarea::-webkit-scrollbar-thumb:hover {
+  background: #007fd4;
 }

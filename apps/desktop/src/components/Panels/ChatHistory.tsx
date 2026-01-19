@@ -1,20 +1,35 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatMessage, useChatStore } from "../../stores/chatStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { isTauri } from "../../lib/api";
+import { DiffView, ThinkingBlock, TodoCard } from "../Activities/ActivityComponents";
 
 interface ChatHistoryProps {
   messages: ChatMessage[];
   agentId: string;
+  scrollContainerRef?: React.RefObject<HTMLDivElement>;
 }
 
 // Threshold in pixels - if user is within this distance from bottom, consider them "at bottom"
 const SCROLL_THRESHOLD = 50;
 
-export function ChatHistory({ messages, agentId }: ChatHistoryProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+// Activity color system for consistent visual hierarchy
+const ACTIVITY_COLORS = {
+  read: { border: "#60a5fa", bg: "rgba(96, 165, 250, 0.08)", icon: "📖" },
+  write: { border: "#22c55e", bg: "rgba(34, 197, 94, 0.08)", icon: "✨" },
+  edit: { border: "#f59e0b", bg: "rgba(245, 158, 11, 0.08)", icon: "✏️" },
+  bash: { border: "#8b5cf6", bg: "rgba(139, 92, 246, 0.08)", icon: "⚡" },
+  search: { border: "#ec4899", bg: "rgba(236, 72, 153, 0.08)", icon: "🔍" },
+  thinking: { border: "#8b5cf6", bg: "rgba(139, 92, 246, 0.08)", icon: "💭" },
+  todo: { border: "#22c55e", bg: "rgba(34, 197, 94, 0.08)", icon: "✅" },
+  tool: { border: "#64748b", bg: "rgba(100, 116, 139, 0.08)", icon: "🔧" },
+} as const;
+
+export function ChatHistory({ messages, agentId, scrollContainerRef }: ChatHistoryProps) {
+  const fallbackRef = useRef<HTMLDivElement>(null);
+  const containerRef = scrollContainerRef || fallbackRef;
   const isUserAtBottomRef = useRef(true); // Track if user is at/near bottom
   const activity = useChatStore((state) => state.activities[agentId]);
 
@@ -50,6 +65,19 @@ export function ChatHistory({ messages, agentId }: ChatHistoryProps) {
     }
   }, [messageCount]);
 
+  // Attach scroll handler to the parent container if provided
+  useEffect(() => {
+    if (!scrollContainerRef?.current) return;
+
+    const container = scrollContainerRef.current;
+    container.addEventListener("scroll", handleScroll);
+
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+    };
+  }, [scrollContainerRef, handleScroll]);
+
+  // Early return MUST come after all hooks to satisfy Rules of Hooks
   if (messages.length === 0 && !activity) {
     return (
       <div style={emptyStyle}>
@@ -63,35 +91,213 @@ export function ChatHistory({ messages, agentId }: ChatHistoryProps) {
   }
 
   return (
-    <div ref={containerRef} style={containerStyle} onScroll={handleScroll}>
-      {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} />
-      ))}
-      {activity && <ActivityIndicator activity={activity} />}
+    <div style={containerStyle}>
+      <div style={{ width: "100%", maxWidth: 800, margin: "0 auto" }}>
+        {messages.map((message, index) => {
+          const prevMessage = messages[index - 1];
+          return (
+            <div key={message.id}>
+              {shouldShowDivider(message, prevMessage) && (
+                <MessageDivider timestamp={message.timestamp} />
+              )}
+              <MessageBubble message={message} previousMessage={prevMessage} />
+            </div>
+          );
+        })}
+        {activity && <ActivityIndicator activity={activity} />}
+      </div>
     </div>
+  );
+}
+
+function ActivitySpinner() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      style={{ animation: "spin 1s linear infinite" }}
+    >
+      <circle cx="12" cy="12" r="10" opacity="0.25" />
+      <path d="M12 2 A10 10 0 0 1 22 12" opacity="0.75" />
+    </svg>
   );
 }
 
 function ActivityIndicator({ activity }: { activity: string }) {
   return (
-    <div style={activityStyle}>
-      <span style={activityDotStyle}>●</span>
+    <div
+      style={{
+        ...activityStyle,
+        background: "rgba(139, 92, 246, 0.08)",
+        borderRadius: 6,
+        border: "1px solid rgba(139, 92, 246, 0.3)",
+        padding: "8px 12px",
+      }}
+    >
+      <ActivitySpinner />
       <span>{activity}</span>
     </div>
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function TruncatedText({ text, maxLength = 100 }: { text: string; maxLength?: number }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const needsTruncation = text.length > maxLength;
+
+  if (!needsTruncation) {
+    return <span>{text}</span>;
+  }
+
+  return (
+    <span>
+      {isExpanded ? text : text.slice(0, maxLength) + "..."}
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        style={{
+          marginLeft: 6,
+          color: "#60a5fa",
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 11,
+          textDecoration: "underline",
+          padding: 0,
+        }}
+      >
+        {isExpanded ? "Show less" : "Show more"}
+      </button>
+    </span>
+  );
+}
+
+function shouldShowDivider(currentMsg: ChatMessage, prevMsg?: ChatMessage): boolean {
+  if (!prevMsg) return false;
+
+  const timeDiff = currentMsg.timestamp - prevMsg.timestamp;
+  const THIRTY_MINUTES = 30 * 60 * 1000;
+
+  // Show divider if more than 30 minutes apart
+  if (timeDiff > THIRTY_MINUTES) return true;
+
+  // Show divider if switching between user and assistant
+  if (
+    currentMsg.role !== prevMsg.role &&
+    currentMsg.role !== "activity" &&
+    prevMsg.role !== "activity"
+  ) {
+    return timeDiff > 5 * 60 * 1000; // 5 minutes
+  }
+
+  return false;
+}
+
+function MessageDivider({ timestamp }: { timestamp: number }) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+
+  let label = "";
+  if (isToday) {
+    label = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } else {
+    label = date.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        margin: "20px 0",
+        gap: 12,
+      }}
+    >
+      <div
+        style={{
+          flex: 1,
+          height: 1,
+          background: "rgba(255, 255, 255, 0.1)",
+        }}
+      />
+      <span
+        style={{
+          fontSize: 11,
+          color: "#64748b",
+          fontWeight: 500,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        }}
+      >
+        {label}
+      </span>
+      <div
+        style={{
+          flex: 1,
+          height: 1,
+          background: "rgba(255, 255, 255, 0.1)",
+        }}
+      />
+    </div>
+  );
+}
+
+function MessageBubble({
+  message,
+  previousMessage,
+}: {
+  message: ChatMessage;
+  previousMessage?: ChatMessage;
+}) {
   const isUser = message.role === "user";
   const isActivity = message.role === "activity";
 
-  // Activity messages get a compact, distinct style
+  // Activity messages get a compact, distinct style with enhanced rendering
   if (isActivity) {
+    const colors = ACTIVITY_COLORS[message.activityType as keyof typeof ACTIVITY_COLORS] || ACTIVITY_COLORS.tool;
     return (
-      <div style={activityMessageStyle}>
-        <span style={activityIconStyle}>{getActivityIcon(message.activityType)}</span>
-        <span style={activityTextStyle}>{message.content}</span>
-        <span style={activityTimeStyle}>{formatTime(message.timestamp)}</span>
+      <div style={activityMessageContainerStyle}>
+        <div
+          style={getActivityMessageStyle(message.activityType)}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = colors.bg.replace('0.08', '0.12');
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = colors.bg;
+          }}
+        >
+          <span style={activityIconStyle}>{getActivityIcon(message.activityType)}</span>
+          <span style={activityTextStyle}>
+            <TruncatedText text={message.content} maxLength={100} />
+          </span>
+          {formatTime(message.timestamp, previousMessage?.timestamp) && (
+            <span style={activityTimeStyle}>
+              {formatTime(message.timestamp, previousMessage?.timestamp)}
+            </span>
+          )}
+        </div>
+
+        {/* Render specialized activity components */}
+        {(message.activityType === 'edit' || message.activityType === 'write') && message.diffData && (
+          <DiffView message={message} />
+        )}
+
+        {message.activityType === 'thinking' && message.thinkingContent && (
+          <ThinkingBlock message={message} />
+        )}
+
+        {message.activityType === 'todo' && message.todoData && (
+          <TodoCard message={message} />
+        )}
       </div>
     );
   }
@@ -102,21 +308,27 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         display: "flex",
         flexDirection: "column",
         alignItems: isUser ? "flex-end" : "flex-start",
-        marginBottom: 16,
+        marginBottom: 20,
+        paddingLeft: 8,
+        paddingRight: 8,
+        animation: "slideIn 0.3s ease-out",
       }}
     >
       <div style={labelStyle}>
         {isUser ? "You" : "Claude"}
-        <span style={{ marginLeft: 8, opacity: 0.5 }}>
-          {formatTime(message.timestamp)}
-        </span>
+        {formatTime(message.timestamp, previousMessage?.timestamp) && (
+          <span style={{ marginLeft: 8, opacity: 0.5 }}>
+            {formatTime(message.timestamp, previousMessage?.timestamp)}
+          </span>
+        )}
       </div>
       <div
         style={{
           ...bubbleStyle,
-          backgroundColor: isUser ? "#2563eb" : "#1e293b",
-          borderBottomRightRadius: isUser ? 4 : 16,
-          borderBottomLeftRadius: isUser ? 16 : 4,
+          backgroundColor: isUser ? "#0078d4" : "#2d2d2d",
+          borderBottomRightRadius: isUser ? 4 : 12,
+          borderBottomLeftRadius: isUser ? 12 : 4,
+          border: isUser ? "1px solid #0098ff" : "1px solid #3c3c3c",
         }}
       >
         {isUser ? (
@@ -238,17 +450,44 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function formatTime(timestamp: number): string {
+function formatTime(timestamp: number, previousTimestamp?: number): string {
+  // If previous message exists and is within 2 minutes, don't show timestamp
+  if (previousTimestamp && (timestamp - previousTimestamp) < 120000) {
+    return "";
+  }
+
   const date = new Date(timestamp);
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const now = new Date();
+  const diff = now.getTime() - timestamp;
+
+  // If today, show time only
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // If yesterday
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) {
+    return "Yesterday " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // If within last week
+  if (diff < 7 * 24 * 60 * 60 * 1000) {
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    return days[date.getDay()] + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Otherwise show full date
+  return date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 const containerStyle: React.CSSProperties = {
-  flex: 1,
-  overflowY: "auto",
-  padding: "12px 8px",
   display: "flex",
   flexDirection: "column",
+  padding: "16px 12px",
+  alignItems: "center",
+  width: "100%",
 };
 
 const emptyStyle: React.CSSProperties = {
@@ -270,12 +509,13 @@ const labelStyle: React.CSSProperties = {
 };
 
 const bubbleStyle: React.CSSProperties = {
-  maxWidth: "90%",
+  maxWidth: "85%",
   padding: "12px 16px",
-  borderRadius: 16,
+  borderRadius: 12,
   fontSize: 14,
   lineHeight: 1.6,
   color: "#fff",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.2)",
 };
 
 const markdownContainerStyle: React.CSSProperties = {
@@ -331,27 +571,32 @@ const activityStyle: React.CSSProperties = {
   fontStyle: "italic",
 };
 
-const activityDotStyle: React.CSSProperties = {
-  color: "#fbbf24",
-  animation: "pulse 1s infinite",
+// Activity message styles (persistent activity log)
+const activityMessageContainerStyle: React.CSSProperties = {
+  marginBottom: 16,
+  marginTop: 4,
 };
 
-// Activity message styles (persistent activity log)
-const activityMessageStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "6px 12px",
-  marginBottom: 4,
-  background: "rgba(59, 130, 246, 0.1)",
-  borderRadius: 8,
-  borderLeft: "3px solid #3b82f6",
+const getActivityMessageStyle = (activityType?: string): React.CSSProperties => {
+  const colors = ACTIVITY_COLORS[activityType as keyof typeof ACTIVITY_COLORS] || ACTIVITY_COLORS.tool;
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "8px 14px",
+    background: colors.bg,
+    borderRadius: 6,
+    borderLeft: `3px solid ${colors.border}`,
+    transition: "all 0.2s ease",
+    cursor: "default",
+  };
 };
 
 const activityIconStyle: React.CSSProperties = {
-  fontSize: 14,
-  width: 20,
+  fontSize: 16,
+  width: 24,
   textAlign: "center",
+  flexShrink: 0,
 };
 
 const activityTextStyle: React.CSSProperties = {
@@ -367,20 +612,10 @@ const activityTimeStyle: React.CSSProperties = {
 };
 
 function getActivityIcon(type?: string): string {
-  switch (type) {
-    case "read":
-      return "📖";
-    case "write":
-      return "📝";
-    case "edit":
-      return "✏️";
-    case "bash":
-      return "⚡";
-    case "search":
-      return "🔍";
-    default:
-      return "🔧";
+  if (type && type in ACTIVITY_COLORS) {
+    return ACTIVITY_COLORS[type as keyof typeof ACTIVITY_COLORS].icon;
   }
+  return "•";
 }
 
 const messageImagesContainerStyle: React.CSSProperties = {

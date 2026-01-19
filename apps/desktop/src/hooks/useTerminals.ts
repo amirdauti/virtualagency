@@ -14,6 +14,7 @@ export interface TerminalSession {
 // Global WebSocket connection (shared across all agents)
 let globalWs: WebSocket | null = null;
 let wsListeners = 0;
+let wsGeneration = 0; // Tracks which WebSocket instance is "current"
 const outputCallbacksMap = new Map<string, (data: string) => void>();
 
 // Stable empty array for when agent has no terminals
@@ -33,17 +34,23 @@ export function useTerminals(agentId: string) {
     wsListeners++;
 
     const connectWs = () => {
-      if (globalWs && globalWs.readyState === WebSocket.OPEN) {
-        return; // Already connected
+      if (globalWs && (globalWs.readyState === WebSocket.OPEN || globalWs.readyState === WebSocket.CONNECTING)) {
+        return; // Already connected or connecting
       }
 
+      // Increment generation to invalidate any pending messages from old connections
+      const currentGeneration = ++wsGeneration;
       const ws = new WebSocket(WS_URL);
 
       ws.onopen = () => {
-        console.log("[useTerminals] WebSocket connected");
+        console.log("[useTerminals] WebSocket connected (gen:", currentGeneration, ")");
       };
 
       ws.onmessage = (event) => {
+        // Ignore messages from stale WebSocket connections
+        if (currentGeneration !== wsGeneration) {
+          return;
+        }
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "terminal-output") {
@@ -60,9 +67,12 @@ export function useTerminals(agentId: string) {
       };
 
       ws.onclose = () => {
-        console.log("[useTerminals] WebSocket closed, reconnecting...");
-        globalWs = null;
-        setTimeout(connectWs, 2000);
+        // Only reconnect if this is still the current connection
+        if (currentGeneration === wsGeneration) {
+          console.log("[useTerminals] WebSocket closed, reconnecting...");
+          globalWs = null;
+          setTimeout(connectWs, 2000);
+        }
       };
 
       ws.onerror = (error) => {
@@ -80,6 +90,7 @@ export function useTerminals(agentId: string) {
       wsListeners--;
       // Only close WebSocket when no components are using it
       if (wsListeners === 0 && globalWs) {
+        wsGeneration++; // Invalidate any pending messages before close completes
         globalWs.close();
         globalWs = null;
       }

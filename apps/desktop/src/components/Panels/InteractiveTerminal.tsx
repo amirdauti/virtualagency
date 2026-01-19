@@ -60,8 +60,35 @@ export function InteractiveTerminal({
       // Move the terminal element into our container
       containerRef.current.appendChild(terminalElement);
 
-      // Don't recreate the listener - it already uses onDataRef.current
-      // which will always call the latest callback
+      // CRITICAL FIX: Dispose old listeners and create new ones for THIS component
+      // Each InteractiveTerminal component has its own onDataRef and onResizeRef objects.
+      // The old listeners capture the FIRST component's refs in closures.
+      // We must dispose them and create new ones that capture THIS component's refs.
+      if (existingInstance.dataListener) {
+        existingInstance.dataListener.dispose();
+      }
+      if (existingInstance.resizeListener) {
+        existingInstance.resizeListener.dispose();
+      }
+
+      // Create new dataListener for THIS component instance
+      const dataListener = terminal.onData((data) => {
+        onDataRef.current(data);
+      });
+
+      // Create new resizeListener for THIS component instance
+      const resizeListener = terminal.onResize(({ cols, rows }) => {
+        onResizeRef.current?.(cols, rows);
+      });
+
+      // Update the stored instance with the new listeners
+      setTerminalInstance(terminalId, {
+        terminal,
+        fitAddon,
+        element: terminalElement,
+        dataListener,
+        resizeListener,
+      });
 
       // Refit after moving to new container
       requestAnimationFrame(() => {
@@ -127,7 +154,7 @@ export function InteractiveTerminal({
       });
 
       // Handle resize
-      terminal.onResize(({ cols, rows }) => {
+      const resizeListener = terminal.onResize(({ cols, rows }) => {
         onResizeRef.current?.(cols, rows);
       });
 
@@ -137,6 +164,7 @@ export function InteractiveTerminal({
         fitAddon,
         element: terminalElement,
         dataListener,
+        resizeListener,
       });
 
       // Report initial size

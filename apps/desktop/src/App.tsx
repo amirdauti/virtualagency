@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
+import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { useAgentStore } from "./stores/agentStore";
@@ -12,6 +13,7 @@ import { AgentAvatar } from "./components/Canvas/AgentAvatar";
 import { OfficeEnvironment, getDeskPosition, getLoungePosition, OFFICE_SIZE } from "./components/Canvas/OfficeEnvironment";
 import { CliSetupModal } from "./components/Setup/CliSetupModal";
 import { EditorView } from "./components/FileExplorer/EditorView";
+import { useFileExplorerStore } from "./stores/fileExplorerStore";
 
 function Scene() {
   const agents = useAgentStore((state) => state.agents);
@@ -80,9 +82,10 @@ function Scene() {
 
 function App() {
   const [cliReady, setCliReady] = useState(false);
-  const [viewMode, setViewMode] = useState<"canvas" | "editor">("canvas");
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const { getOutputForAgent, clearOutput } = useAgentOutput();
+  const openFiles = useFileExplorerStore((state) => state.openFiles);
+  const showEditor = openFiles.length > 0;
 
   // Only initialize workspace after server is ready
   const { initialized: workspaceInitialized, isLoading: workspaceLoading } = useWorkspaceInit(cliReady);
@@ -156,30 +159,6 @@ function App() {
         display: "flex",
         overflow: "hidden",
       }}>
-        {/* View toggle button */}
-        <button
-          onClick={() => setViewMode(viewMode === "canvas" ? "editor" : "canvas")}
-          style={{
-            position: "absolute",
-            top: 16,
-            right: 16,
-            zIndex: 1000,
-            padding: "8px 16px",
-            background: "var(--bg-tertiary)",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            color: "var(--text-primary)",
-            cursor: "pointer",
-            fontSize: 14,
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-          }}
-        >
-          {viewMode === "canvas" ? "📝 Editor" : "🏢 Office"}
-        </button>
-
         <div style={{
           flex: 1,
           position: "relative",
@@ -187,7 +166,9 @@ function App() {
           height: "100%",
           overflow: "hidden",
         }}>
-          {viewMode === "canvas" ? (
+          {showEditor ? (
+            <EditorView />
+          ) : (
             <>
               <Canvas
                 camera={{
@@ -205,8 +186,6 @@ function App() {
               <Toolbar />
               {!selectedAgent && <WorkspacePanel />}
             </>
-          ) : (
-            <EditorView />
           )}
         </div>
         {selectedAgent && (

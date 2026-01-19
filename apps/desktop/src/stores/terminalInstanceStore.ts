@@ -12,6 +12,7 @@ interface TerminalInstance {
   fitAddon: FitAddon;
   element: HTMLDivElement;
   dataListener: { dispose: () => void } | null;
+  resizeListener: { dispose: () => void } | null;
 }
 
 // Global map of terminalId -> Terminal instance
@@ -30,6 +31,9 @@ export function disposeTerminalInstance(terminalId: string): void {
   if (instance) {
     if (instance.dataListener) {
       instance.dataListener.dispose();
+    }
+    if (instance.resizeListener) {
+      instance.resizeListener.dispose();
     }
     instance.terminal.dispose();
     terminalInstances.delete(terminalId);
