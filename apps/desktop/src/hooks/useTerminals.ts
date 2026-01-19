@@ -1,4 +1,6 @@
-import { useCallback, useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useTerminalStore } from "../stores/terminalStore";
+import { disposeTerminalInstance } from "../stores/terminalInstanceStore";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://127.0.0.1:3001";
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:3001/ws";
@@ -9,14 +11,32 @@ export interface TerminalSession {
   name: string;
 }
 
-export function useTerminals() {
-  const [terminals, setTerminals] = useState<TerminalSession[]>([]);
-  const outputCallbacksRef = useRef<Map<string, (data: string) => void>>(new Map());
-  const wsRef = useRef<WebSocket | null>(null);
+// Global WebSocket connection (shared across all agents)
+let globalWs: WebSocket | null = null;
+let wsListeners = 0;
+const outputCallbacksMap = new Map<string, (data: string) => void>();
 
-  // Connect to WebSocket for terminal I/O
+// Stable empty array for when agent has no terminals
+const EMPTY_TERMINALS: TerminalSession[] = [];
+
+export function useTerminals(agentId: string) {
+  // Use a proper selector that returns stable references
+  const terminals = useTerminalStore((state) =>
+    state.terminalsByAgent.get(agentId) || EMPTY_TERMINALS
+  );
+  const addTerminal = useTerminalStore((state) => state.addTerminal);
+  const removeTerminal = useTerminalStore((state) => state.removeTerminal);
+  const outputCallbacksRef = useRef<Map<string, (data: string) => void>>(new Map());
+
+  // Connect to WebSocket for terminal I/O (shared global connection)
   useEffect(() => {
+    wsListeners++;
+
     const connectWs = () => {
+      if (globalWs && globalWs.readyState === WebSocket.OPEN) {
+        return; // Already connected
+      }
+
       const ws = new WebSocket(WS_URL);
 
       ws.onopen = () => {
@@ -28,7 +48,8 @@ export function useTerminals() {
           const msg = JSON.parse(event.data);
           if (msg.type === "terminal-output") {
             const output = msg as { type: string; terminal_id: string; data: string };
-            const callback = outputCallbacksRef.current.get(output.terminal_id);
+            // Only check global map since callbacks persist there
+            const callback = outputCallbacksMap.get(output.terminal_id);
             if (callback) {
               callback(output.data);
             }
@@ -40,6 +61,7 @@ export function useTerminals() {
 
       ws.onclose = () => {
         console.log("[useTerminals] WebSocket closed, reconnecting...");
+        globalWs = null;
         setTimeout(connectWs, 2000);
       };
 
@@ -47,14 +69,19 @@ export function useTerminals() {
         console.error("[useTerminals] WebSocket error:", error);
       };
 
-      wsRef.current = ws;
+      globalWs = ws;
     };
 
-    connectWs();
+    if (!globalWs) {
+      connectWs();
+    }
 
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
+      wsListeners--;
+      // Only close WebSocket when no components are using it
+      if (wsListeners === 0 && globalWs) {
+        globalWs.close();
+        globalWs = null;
       }
     };
   }, []);
@@ -78,23 +105,23 @@ export function useTerminals() {
         }
 
         const data = await response.json();
+        const currentTerminals = useTerminalStore.getState().getTerminalsForAgent(agentId);
+        const newName = name || `Terminal ${currentTerminals.length + 1}`;
+
         const session: TerminalSession = {
           id: data.id,
           workingDir: data.working_dir,
-          name: name || `Terminal`,
+          name: newName,
         };
 
-        setTerminals((prev) => {
-          const newName = `Terminal ${prev.length + 1}`;
-          return [...prev, { ...session, name: name || newName }];
-        });
+        addTerminal(agentId, session);
         return session;
       } catch (error) {
         console.error("[useTerminals] Failed to create terminal:", error);
         return null;
       }
     },
-    []
+    [agentId, addTerminal]
   );
 
   // Kill a terminal
@@ -104,17 +131,21 @@ export function useTerminals() {
         method: "DELETE",
       });
 
-      setTerminals((prev) => prev.filter((t) => t.id !== terminalId));
+      // Dispose the xterm.js instance from the persistent store
+      disposeTerminalInstance(terminalId);
+
+      removeTerminal(agentId, terminalId);
       outputCallbacksRef.current.delete(terminalId);
+      outputCallbacksMap.delete(terminalId);
     } catch (error) {
       console.error("[useTerminals] Failed to kill terminal:", error);
     }
-  }, []);
+  }, [agentId, removeTerminal]);
 
   // Send input to a terminal
   const sendInput = useCallback((terminalId: string, data: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
+    if (globalWs && globalWs.readyState === WebSocket.OPEN) {
+      globalWs.send(
         JSON.stringify({
           type: "terminal-input",
           terminal_id: terminalId,
@@ -127,8 +158,8 @@ export function useTerminals() {
   // Send resize event
   const sendResize = useCallback(
     (terminalId: string, cols: number, rows: number) => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
+      if (globalWs && globalWs.readyState === WebSocket.OPEN) {
+        globalWs.send(
           JSON.stringify({
             type: "terminal-resize",
             terminal_id: terminalId,
@@ -145,10 +176,12 @@ export function useTerminals() {
   const registerOutputCallback = useCallback(
     (terminalId: string, callback: (data: string) => void) => {
       outputCallbacksRef.current.set(terminalId, callback);
+      outputCallbacksMap.set(terminalId, callback);
 
       // Return unregister function
       return () => {
         outputCallbacksRef.current.delete(terminalId);
+        outputCallbacksMap.delete(terminalId);
       };
     },
     []

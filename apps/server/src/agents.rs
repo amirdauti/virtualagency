@@ -142,12 +142,6 @@ impl AgentProcess {
         args.push("--model".to_string());
         args.push(self.model.clone());
 
-        // Enable/disable extended thinking via CLI settings
-        if self.thinking_enabled {
-            args.push("--settings".to_string());
-            args.push(r#"{"alwaysThinkingEnabled": true}"#.to_string());
-        }
-
         // Check for session continuation
         let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
         if let Some(ref sid) = session_id_opt {
@@ -163,6 +157,11 @@ impl AgentProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Enable extended thinking via environment variable
+        if self.thinking_enabled {
+            cmd.env("MAX_THINKING_TOKENS", "31999");
+        }
 
         let mut child = match cmd.spawn()
         {

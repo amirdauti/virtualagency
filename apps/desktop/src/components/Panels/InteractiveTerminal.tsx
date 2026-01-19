@@ -1,8 +1,12 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import {
+  getTerminalInstance,
+  setTerminalInstance,
+} from "../../stores/terminalInstanceStore";
 
 interface InteractiveTerminalProps {
   terminalId: string;
@@ -17,9 +21,7 @@ export function InteractiveTerminal({
   onResize,
   onReady,
 }: InteractiveTerminalProps) {
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const xtermRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Use refs to hold latest callbacks without triggering re-initialization
   const onDataRef = useRef(onData);
@@ -39,84 +41,130 @@ export function InteractiveTerminal({
     onReadyRef.current = onReady;
   }, [onReady]);
 
-  // Initialize terminal - only runs once per mount
+  // Initialize or reattach terminal
   useEffect(() => {
-    if (!terminalRef.current || xtermRef.current) return;
+    if (!containerRef.current) return;
 
-    const terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: "block",
-      fontSize: 13,
-      fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
-      theme: {
-        background: "#0d0d0d",
-        foreground: "#e5e5e5",
-        cursor: "#ffffff",
-        cursorAccent: "#0d0d0d",
-        selectionBackground: "rgba(255, 255, 255, 0.3)",
-        black: "#000000",
-        red: "#ef4444",
-        green: "#4ade80",
-        yellow: "#fbbf24",
-        blue: "#3b82f6",
-        magenta: "#a855f7",
-        cyan: "#22d3ee",
-        white: "#e5e5e5",
-        brightBlack: "#666666",
-        brightRed: "#f87171",
-        brightGreen: "#86efac",
-        brightYellow: "#fde047",
-        brightBlue: "#60a5fa",
-        brightMagenta: "#c084fc",
-        brightCyan: "#67e8f9",
-        brightWhite: "#ffffff",
-      },
-      allowProposedApi: true,
-    });
+    let terminal: Terminal;
+    let fitAddon: FitAddon;
+    let terminalElement: HTMLDivElement;
 
-    const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
+    const existingInstance = getTerminalInstance(terminalId);
 
-    terminal.loadAddon(fitAddon);
-    terminal.loadAddon(webLinksAddon);
+    if (existingInstance) {
+      // Reuse existing terminal instance
+      terminal = existingInstance.terminal;
+      fitAddon = existingInstance.fitAddon;
+      terminalElement = existingInstance.element;
 
-    terminal.open(terminalRef.current);
-    fitAddon.fit();
+      // Move the terminal element into our container
+      containerRef.current.appendChild(terminalElement);
 
-    // Handle user input - send to backend (use ref for latest callback)
-    terminal.onData((data) => {
-      onDataRef.current(data);
-    });
+      // Don't recreate the listener - it already uses onDataRef.current
+      // which will always call the latest callback
 
-    // Handle resize (use ref for latest callback)
-    terminal.onResize(({ cols, rows }) => {
-      onResizeRef.current?.(cols, rows);
-    });
+      // Refit after moving to new container
+      requestAnimationFrame(() => {
+        fitAddon.fit();
+        onResizeRef.current?.(terminal.cols, terminal.rows);
+      });
 
-    xtermRef.current = terminal;
-    fitAddonRef.current = fitAddon;
+      // Provide write function to parent
+      const writeFunc = (data: string) => {
+        terminal.write(data);
+      };
+      onReadyRef.current?.(writeFunc);
+    } else {
+      // Create new terminal instance
+      terminalElement = document.createElement("div");
+      terminalElement.style.width = "100%";
+      terminalElement.style.height = "100%";
+      containerRef.current.appendChild(terminalElement);
 
-    // Report initial size
-    onResizeRef.current?.(terminal.cols, terminal.rows);
+      terminal = new Terminal({
+        cursorBlink: true,
+        cursorStyle: "block",
+        fontSize: 13,
+        fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+        theme: {
+          background: "#0d0d0d",
+          foreground: "#e5e5e5",
+          cursor: "#ffffff",
+          cursorAccent: "#0d0d0d",
+          selectionBackground: "rgba(255, 255, 255, 0.3)",
+          black: "#000000",
+          red: "#ef4444",
+          green: "#4ade80",
+          yellow: "#fbbf24",
+          blue: "#3b82f6",
+          magenta: "#a855f7",
+          cyan: "#22d3ee",
+          white: "#e5e5e5",
+          brightBlack: "#666666",
+          brightRed: "#f87171",
+          brightGreen: "#86efac",
+          brightYellow: "#fde047",
+          brightBlue: "#60a5fa",
+          brightMagenta: "#c084fc",
+          brightCyan: "#67e8f9",
+          brightWhite: "#ffffff",
+        },
+        allowProposedApi: true,
+      });
 
-    // Provide write function to parent via callback
-    const writeFunc = (data: string) => {
-      terminal.write(data);
-    };
-    onReadyRef.current?.(writeFunc);
+      fitAddon = new FitAddon();
+      const webLinksAddon = new WebLinksAddon();
 
+      terminal.loadAddon(fitAddon);
+      terminal.loadAddon(webLinksAddon);
+
+      terminal.open(terminalElement);
+      fitAddon.fit();
+
+      // Handle user input
+      const dataListener = terminal.onData((data) => {
+        onDataRef.current(data);
+      });
+
+      // Handle resize
+      terminal.onResize(({ cols, rows }) => {
+        onResizeRef.current?.(cols, rows);
+      });
+
+      // Store the instance for future reuse
+      setTerminalInstance(terminalId, {
+        terminal,
+        fitAddon,
+        element: terminalElement,
+        dataListener,
+      });
+
+      // Report initial size
+      onResizeRef.current?.(terminal.cols, terminal.rows);
+
+      // Provide write function to parent
+      const writeFunc = (data: string) => {
+        terminal.write(data);
+      };
+      onReadyRef.current?.(writeFunc);
+    }
+
+    // Cleanup: detach from DOM but don't dispose terminal
     return () => {
-      terminal.dispose();
-      xtermRef.current = null;
-      fitAddonRef.current = null;
+      // Just remove from DOM, don't dispose - terminal stays in store
+      // Data listener stays attached for when we reattach
+      if (terminalElement.parentNode) {
+        terminalElement.parentNode.removeChild(terminalElement);
+      }
     };
-  }, [terminalId]); // Only re-init if terminalId changes
+  }, [terminalId]);
 
   // Handle window resize
   useEffect(() => {
     const handleResize = () => {
-      if (fitAddonRef.current && xtermRef.current) {
-        fitAddonRef.current.fit();
+      const instance = getTerminalInstance(terminalId);
+      if (instance) {
+        instance.fitAddon.fit();
       }
     };
 
@@ -127,34 +175,19 @@ export function InteractiveTerminal({
       handleResize();
     });
 
-    if (terminalRef.current) {
-      resizeObserver.observe(terminalRef.current);
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
     }
 
     return () => {
       window.removeEventListener("resize", handleResize);
       resizeObserver.disconnect();
     };
-  }, []);
-
-  // Write data to terminal (called from parent when receiving output)
-  const writeData = useCallback((data: string) => {
-    if (xtermRef.current) {
-      xtermRef.current.write(data);
-    }
-  }, []);
-
-  // Expose write method via ref pattern
-  useEffect(() => {
-    // Store write function on the DOM element for parent access
-    if (terminalRef.current) {
-      (terminalRef.current as any).__writeData = writeData;
-    }
-  }, [writeData]);
+  }, [terminalId]);
 
   return (
     <div
-      ref={terminalRef}
+      ref={containerRef}
       data-terminal-id={terminalId}
       style={{
         width: "100%",
@@ -164,4 +197,3 @@ export function InteractiveTerminal({
     />
   );
 }
-
