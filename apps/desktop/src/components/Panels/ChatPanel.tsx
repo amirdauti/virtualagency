@@ -24,13 +24,18 @@ const MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
 ];
 
 export function ChatPanel({ agentId }: ChatPanelProps) {
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const addUserMessage = useChatStore((state) => state.addUserMessage);
+  const setDraft = useChatStore((state) => state.setDraft);
+  const getDraft = useChatStore((state) => state.getDraft);
+  const clearDraft = useChatStore((state) => state.clearDraft);
   const updateAgent = useAgentStore((state) => state.updateAgent);
   const agent = useAgentStore((state) => state.agents.find(a => a.id === agentId));
+
+  // Initialize input from draft if available
+  const [input, setInput] = useState(() => getDraft(agentId));
+  const [sending, setSending] = useState(false);
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
 
   // Local state for model and thinking, initialized from agent
   const [selectedModel, setSelectedModel] = useState<ClaudeModel>(agent?.model || "sonnet");
@@ -43,6 +48,17 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       if (agent.thinkingEnabled !== undefined) setThinkingEnabled(agent.thinkingEnabled);
     }
   }, [agent?.model, agent?.thinkingEnabled]);
+
+  // Load draft when agentId changes (switching between agents)
+  useEffect(() => {
+    const draft = getDraft(agentId);
+    setInput(draft);
+  }, [agentId, getDraft]);
+
+  // Save draft whenever input changes
+  useEffect(() => {
+    setDraft(agentId, input);
+  }, [input, agentId, setDraft]);
 
   const handleModelChange = useCallback(async (newModel: ClaudeModel) => {
     setSelectedModel(newModel);
@@ -256,6 +272,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     // Add user message to chat history immediately with images
     addUserMessage(agentId, messageContent, imagePaths.length > 0 ? imagePaths : undefined);
     setInput("");
+    clearDraft(agentId); // Clear the draft after sending
 
     // Note: We intentionally don't revoke blob URLs here because they're used
     // by the chat history for displaying image previews. They'll be cleaned up
@@ -273,7 +290,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     } finally {
       setSending(false);
     }
-  }, [agentId, input, attachedImages, sending, addUserMessage, updateAgent]);
+  }, [agentId, input, attachedImages, sending, addUserMessage, updateAgent, clearDraft]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -366,15 +383,16 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const canSend = input.trim() || attachedImages.length > 0;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        padding: "12px 0 0 0",
-        borderTop: "1px solid var(--border)",
-      }}
-    >
+    <div style={{ display: "flex", background: "#1a1a1a", borderTop: "1px solid var(--border)" }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          padding: "16px 16px 20px 16px",
+          width: "100%",
+        }}
+      >
       {/* Model and Thinking Mode Controls */}
       <div style={settingsBarStyle}>
         <div style={settingGroupStyle}>
@@ -437,12 +455,54 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           })}
         </div>
       )}
-      <div style={{ display: "flex", gap: 8 }}>
+      {/* Hidden file input for browser mode */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+        multiple
+        onChange={handleFileInputChange}
+        style={{ display: "none" }}
+      />
+
+      {/* Modern input container with buttons inside */}
+      <div style={{
+        position: "relative",
+        width: "100%",
+        display: "flex",
+        alignItems: "flex-end",
+        background: "#252526",
+        border: "1px solid #3c3c3c",
+        borderRadius: 8,
+        transition: "border-color 0.2s ease",
+      }}
+        onFocus={(e) => e.currentTarget.style.borderColor = "#007fd4"}
+        onBlur={(e) => e.currentTarget.style.borderColor = "#3c3c3c"}
+      >
+        {/* Attach image button - inside input on left */}
         <button
           onClick={handleImageSelect}
           disabled={sending}
-          style={attachButtonStyle}
-          title="Attach image"
+          style={{
+            padding: "10px",
+            background: "transparent",
+            border: "none",
+            color: sending ? "#666" : "#969696",
+            cursor: sending ? "not-allowed" : "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+            transition: "color 0.2s ease",
+          }}
+          title="Attach image (Ctrl+V to paste)"
+          aria-label="Attach image"
+          onMouseEnter={(e) => {
+            if (!sending) e.currentTarget.style.color = "#cccccc";
+          }}
+          onMouseLeave={(e) => {
+            if (!sending) e.currentTarget.style.color = "#969696";
+          }}
         >
           <svg
             width="20"
@@ -459,50 +519,60 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             <polyline points="21 15 16 10 5 21" />
           </svg>
         </button>
-        {/* Hidden file input for browser mode */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
-          multiple
-          onChange={handleFileInputChange}
-          style={{ display: "none" }}
-        />
+
+        {/* Textarea */}
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="Type a message or paste an image... (Enter to send)"
+          placeholder="Ask me anything... (Shift+Enter for new line, Ctrl+V to paste images)"
           disabled={sending}
           rows={2}
+          className="chat-textarea"
           style={{
             flex: 1,
-            padding: 10,
-            background: "var(--bg-primary)",
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            color: "var(--text-primary)",
+            padding: "12px 8px",
+            background: "transparent",
+            border: "none",
+            color: "#cccccc",
             fontFamily: "inherit",
             fontSize: 13,
             resize: "none",
+            minHeight: 44,
+            maxHeight: 200,
             outline: "none",
           }}
         />
+
+        {/* Send/Stop button - inside input on right */}
         {isAgentWorking ? (
           <button
             onClick={handleStop}
             style={{
-              padding: "10px 16px",
-              background: "#ef4444",
-              border: "none",
-              borderRadius: 8,
-              color: "white",
+              margin: "6px",
+              padding: "8px 16px",
+              background: "#854d0e",
+              border: "1px solid #a16207",
+              borderRadius: 6,
+              color: "#fef3c7",
               cursor: "pointer",
-              fontWeight: 600,
+              fontWeight: 500,
               fontSize: 13,
-              alignSelf: "flex-end",
+              flexShrink: 0,
+              height: 32,
+              transition: "all 0.2s ease",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
             }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "#a16207";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "#854d0e";
+            }}
+            aria-label="Stop agent"
           >
             Stop
           </button>
@@ -511,39 +581,42 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             onClick={handleSend}
             disabled={!canSend || sending}
             style={{
-              padding: "10px 16px",
-              background: !canSend || sending ? "#444" : "var(--accent)",
-              border: "none",
-              borderRadius: 8,
-              color: "white",
+              margin: "6px",
+              padding: "8px 16px",
+              background: !canSend || sending ? "#2d2d2d" : "#007fd4",
+              border: "1px solid " + (!canSend || sending ? "#3c3c3c" : "#0098ff"),
+              borderRadius: 6,
+              color: !canSend || sending ? "#666" : "white",
               cursor: !canSend || sending ? "not-allowed" : "pointer",
-              fontWeight: 600,
+              fontWeight: 500,
               fontSize: 13,
-              alignSelf: "flex-end",
+              flexShrink: 0,
+              height: 32,
+              transition: "all 0.2s ease",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
             }}
+            onMouseEnter={(e) => {
+              if (canSend && !sending) {
+                e.currentTarget.style.background = "#0098ff";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (canSend && !sending) {
+                e.currentTarget.style.background = "#007fd4";
+              }
+            }}
+            aria-label="Send message"
           >
-            {sending ? "..." : "Send"}
+            {sending ? "Sending..." : "Send"}
           </button>
         )}
+      </div>
       </div>
     </div>
   );
 }
-
-const attachButtonStyle: React.CSSProperties = {
-  padding: 8,
-  background: "transparent",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  color: "var(--text-primary)",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  alignSelf: "flex-end",
-  height: 40,
-  width: 40,
-};
 
 const imagePreviewContainerStyle: React.CSSProperties = {
   display: "flex",
@@ -601,14 +674,14 @@ const imageNameStyle: React.CSSProperties = {
 const settingsBarStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 16,
-  padding: "4px 0",
+  gap: 12,
 };
 
 const settingGroupStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 6,
+  height: 28,
 };
 
 const settingLabelStyle: React.CSSProperties = {
@@ -618,6 +691,7 @@ const settingLabelStyle: React.CSSProperties = {
 
 const selectStyle: React.CSSProperties = {
   padding: "4px 8px",
+  height: 28,
   background: "var(--bg-primary)",
   border: "1px solid var(--border)",
   borderRadius: 4,
@@ -630,14 +704,23 @@ const selectStyle: React.CSSProperties = {
 const checkboxLabelStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 6,
+  gap: 8,
   fontSize: 12,
   color: "var(--text-secondary)",
   cursor: "pointer",
+  height: 28,
+  padding: "0 10px",
+  borderRadius: 4,
+  border: "1px solid var(--border)",
+  background: "var(--bg-primary)",
+  transition: "all 0.2s ease",
+  userSelect: "none",
 };
 
 const checkboxStyle: React.CSSProperties = {
-  width: 14,
-  height: 14,
+  width: 16,
+  height: 16,
   cursor: "pointer",
+  accentColor: "#3b82f6",
+  flexShrink: 0,
 };

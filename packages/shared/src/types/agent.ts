@@ -1,3 +1,5 @@
+import { MCPServerId } from "./mcpServers";
+
 export type AgentStatus = "idle" | "thinking" | "working" | "error";
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 
@@ -116,4 +118,5 @@ export interface Agent {
   model?: ClaudeModel;
   thinkingEnabled?: boolean;
   avatarId?: AvatarId;
+  mcpServers?: MCPServerId[]; // List of enabled MCP server IDs
 }

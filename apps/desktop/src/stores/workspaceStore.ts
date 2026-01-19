@@ -96,8 +96,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           const agent = savedToAgent(saved, index);
 
           try {
-            // Spawn the CLI process for this agent
-            await createAgent(agent.id, agent.workingDirectory);
+            // Spawn the CLI process for this agent with saved model settings
+            await createAgent(agent.id, agent.workingDirectory, {
+              model: agent.model,
+              thinkingEnabled: agent.thinkingEnabled,
+            });
             agentStore.addAgent(agent);
           } catch (err) {
             console.error(`Failed to spawn agent ${agent.name}:`, err);

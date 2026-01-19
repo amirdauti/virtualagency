@@ -1,4 +1,4 @@
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -17,6 +17,7 @@ pub struct TerminalSession {
     pub id: String,
     pub working_dir: String,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     _reader_handle: tokio::task::JoinHandle<()>,
     shutdown_tx: mpsc::Sender<()>,
 }
@@ -34,11 +35,17 @@ impl TerminalSession {
     }
 
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
-        // Note: portable-pty doesn't support resize after creation easily
-        // This would require keeping a reference to the master pty
-        // For now, we'll log and skip
+        let master = self.master.lock().await;
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to resize PTY: {}", e))?;
         tracing::debug!(
-            "Resize requested for terminal {}: {}x{}",
+            "Resized terminal {} to {}x{}",
             self.id,
             cols,
             rows
@@ -110,13 +117,12 @@ impl TerminalManager {
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
 
-        // Get reader and writer
-        let reader = pair
-            .master
+        // Get reader and writer from master PTY
+        let master = pair.master;
+        let reader = master
             .try_clone_reader()
             .map_err(|e| format!("Failed to clone reader: {}", e))?;
-        let writer = pair
-            .master
+        let writer = master
             .take_writer()
             .map_err(|e| format!("Failed to take writer: {}", e))?;
 
@@ -177,6 +183,7 @@ impl TerminalManager {
             id: terminal_id.clone(),
             working_dir: working_dir.to_string(),
             writer: Arc::new(Mutex::new(writer)),
+            master: Arc::new(Mutex::new(master)),
             _reader_handle: reader_handle,
             shutdown_tx,
         };
