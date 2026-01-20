@@ -1,8 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { InteractiveTerminal } from "./InteractiveTerminal";
 import type { TerminalSession } from "../../hooks/useTerminals";
+import { useTerminalStore } from "../../stores/terminalStore";
 
 interface TerminalTabsProps {
+  agentId: string;
   terminals: TerminalSession[];
   onCreateTerminal: () => void;
   onCloseTerminal: (terminalId: string) => void;
@@ -15,6 +17,7 @@ interface TerminalTabsProps {
 }
 
 export function TerminalTabs({
+  agentId,
   terminals,
   onCreateTerminal,
   onCloseTerminal,
@@ -22,26 +25,38 @@ export function TerminalTabs({
   onResize,
   registerOutputCallback,
 }: TerminalTabsProps) {
-  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(
-    terminals[0]?.id || null
-  );
+  // Use global store for active terminal (per-agent)
+  const activeTerminalId = useTerminalStore((state) => state.activeTerminalByAgent[agentId] ?? null);
+  const setActiveTerminal = useTerminalStore((state) => state.setActiveTerminal);
+  const prevTerminalsLengthRef = useRef(terminals.length);
+  const prevAgentIdRef = useRef(agentId);
 
-  // Update active terminal when terminals change
+  // Reset terminal length tracking when agent changes
   useEffect(() => {
-    if (terminals.length > 0 && !terminals.find((t) => t.id === activeTerminalId)) {
-      setActiveTerminalId(terminals[0].id);
-    } else if (terminals.length === 0) {
-      setActiveTerminalId(null);
+    if (prevAgentIdRef.current !== agentId) {
+      prevTerminalsLengthRef.current = terminals.length;
+      prevAgentIdRef.current = agentId;
     }
-  }, [terminals, activeTerminalId]);
+  }, [agentId, terminals.length]);
 
-  // Auto-activate new terminal
+  // Handle terminal list changes
   useEffect(() => {
-    if (terminals.length > 0) {
-      const lastTerminal = terminals[terminals.length - 1];
-      setActiveTerminalId(lastTerminal.id);
+    const currentActive = activeTerminalId;
+    const terminalExists = terminals.some((t) => t.id === currentActive);
+
+    if (terminals.length === 0) {
+      // No terminals - clear selection
+      setActiveTerminal(agentId, null);
+    } else if (!currentActive || !terminalExists) {
+      // No selection or selection invalid - select first terminal
+      setActiveTerminal(agentId, terminals[0].id);
+    } else if (prevAgentIdRef.current === agentId && prevTerminalsLengthRef.current < terminals.length) {
+      // New terminal was created (same agent) - auto-select it
+      setActiveTerminal(agentId, terminals[terminals.length - 1].id);
     }
-  }, [terminals.length]);
+
+    prevTerminalsLengthRef.current = terminals.length;
+  }, [terminals, agentId, activeTerminalId, setActiveTerminal]);
 
   const handleCloseTab = useCallback(
     (e: React.MouseEvent, terminalId: string) => {
@@ -77,7 +92,7 @@ export function TerminalTabs({
         {terminals.map((terminal) => (
           <div
             key={terminal.id}
-            onClick={() => setActiveTerminalId(terminal.id)}
+            onClick={() => setActiveTerminal(agentId, terminal.id)}
             style={{
               display: "flex",
               alignItems: "center",

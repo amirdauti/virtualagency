@@ -1,4 +1,4 @@
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -18,6 +18,7 @@ pub struct TerminalSession {
     pub working_dir: String,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    child: Arc<std::sync::Mutex<Box<dyn Child + Send>>>,
     _reader_handle: tokio::task::JoinHandle<()>,
     shutdown_tx: mpsc::Sender<()>,
 }
@@ -51,6 +52,17 @@ impl TerminalSession {
             rows
         );
         Ok(())
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        // Ensure child process is killed when session is dropped
+        if let Ok(mut child) = self.child.lock() {
+            if let Err(e) = child.kill() {
+                tracing::debug!("Failed to kill child process on drop for terminal {}: {}", self.id, e);
+            }
+        }
     }
 }
 
@@ -112,7 +124,7 @@ impl TerminalManager {
         cmd.env("COLORTERM", "truecolor");
 
         // Spawn the shell in the PTY
-        let _child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
@@ -184,6 +196,7 @@ impl TerminalManager {
             working_dir: working_dir.to_string(),
             writer: Arc::new(Mutex::new(writer)),
             master: Arc::new(Mutex::new(master)),
+            child: Arc::new(std::sync::Mutex::new(child)),
             _reader_handle: reader_handle,
             shutdown_tx,
         };
@@ -194,8 +207,18 @@ impl TerminalManager {
 
     pub fn kill_terminal(&mut self, id: &str) -> Result<(), String> {
         if let Some(session) = self.terminals.remove(id) {
-            // Signal shutdown
+            // Signal shutdown to reader thread
             let _ = session.shutdown_tx.try_send(());
+
+            // Kill the child process
+            if let Ok(mut child) = session.child.lock() {
+                if let Err(e) = child.kill() {
+                    tracing::warn!("Failed to kill child process for terminal {}: {}", id, e);
+                } else {
+                    tracing::info!("Child process for terminal {} killed", id);
+                }
+            }
+
             tracing::info!("Terminal {} killed", id);
             Ok(())
         } else {
