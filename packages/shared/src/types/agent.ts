@@ -119,4 +119,5 @@ export interface Agent {
   thinkingEnabled?: boolean;
   avatarId?: AvatarId;
   mcpServers?: MCPServerId[]; // List of enabled MCP server IDs
+  sessionId?: string; // Claude CLI session ID for conversation continuity
 }

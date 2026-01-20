@@ -20,12 +20,13 @@ impl AgentManager {
         app_handle: AppHandle,
         model: String,
         thinking_enabled: bool,
+        session_id: Option<String>,
     ) -> Result<(), String> {
         if self.agents.contains_key(&id) {
             return Err("Agent with this ID already exists".to_string());
         }
 
-        let agent = AgentProcess::new(id.clone(), working_dir, app_handle, model, thinking_enabled)?;
+        let agent = AgentProcess::new(id.clone(), working_dir, app_handle, model, thinking_enabled, session_id)?;
         self.agents.insert(id, agent);
         Ok(())
     }

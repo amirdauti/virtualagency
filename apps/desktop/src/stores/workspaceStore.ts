@@ -27,6 +27,7 @@ function agentToSaved(agent: Agent): SavedAgent {
     avatar_id: agent.avatarId,
     model: agent.model,
     thinking_enabled: agent.thinkingEnabled,
+    session_id: agent.sessionId,
   };
 }
 
@@ -53,6 +54,7 @@ function savedToAgent(saved: SavedAgent, index: number): Agent {
     avatarId: saved.avatar_id,
     model: saved.model,
     thinkingEnabled: saved.thinking_enabled,
+    sessionId: saved.session_id,
   };
 }
 
@@ -96,10 +98,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           const agent = savedToAgent(saved, index);
 
           try {
-            // Spawn the CLI process for this agent with saved model settings
+            // Spawn the CLI process for this agent with saved model settings and session ID
             await createAgent(agent.id, agent.workingDirectory, {
               model: agent.model,
               thinkingEnabled: agent.thinkingEnabled,
+              sessionId: agent.sessionId, // Pass session ID to resume conversation
             });
             agentStore.addAgent(agent);
           } catch (err) {

@@ -69,6 +69,10 @@ export function useChatMessages() {
             // System init message - session starting
             if (json.subtype === "init") {
               updateAgent(agentId, { status: "working" });
+              // Capture session_id for conversation continuity
+              if (json.session_id) {
+                updateAgent(agentId, { sessionId: json.session_id });
+              }
               // Reset message state for new conversation turn
               state.currentMessageUuid = null;
               state.hasStartedMessage = false;
@@ -213,6 +217,11 @@ export function useChatMessages() {
                 // The result contains the final complete text
                 replaceLastAssistantMessage(agentId, json.result);
               }
+            }
+
+            // Capture session_id for conversation continuity (also included in result)
+            if (json.session_id) {
+              updateAgent(agentId, { sessionId: json.session_id });
             }
 
             // Finish streaming and reset state
