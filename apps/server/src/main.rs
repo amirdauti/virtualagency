@@ -294,6 +294,8 @@ struct CreateAgentRequest {
     thinking_enabled: bool,
     #[serde(default)]
     mcp_servers: Vec<String>,
+    #[serde(default)]
+    session_id: Option<String>, // Session ID to resume conversation
 }
 
 fn default_model() -> String {
@@ -315,8 +317,8 @@ async fn create_agent(
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<AgentInfo>, (StatusCode, String)> {
     tracing::info!(
-        "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}, mcp_servers: {:?}",
-        req.id, req.name, req.working_dir, req.model, req.thinking_enabled, req.mcp_servers
+        "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}, mcp_servers: {:?}, session_id: {:?}",
+        req.id, req.name, req.working_dir, req.model, req.thinking_enabled, req.mcp_servers, req.session_id
     );
 
     let mut manager = state.agent_manager.write().await;
@@ -328,6 +330,7 @@ async fn create_agent(
         &req.model,
         req.thinking_enabled,
         req.mcp_servers.clone(),
+        req.session_id.clone(),
     ) {
         Ok(id) => {
             tracing::info!("[create_agent] Successfully created agent with id: {}", id);

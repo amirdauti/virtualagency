@@ -91,6 +91,7 @@ export interface AgentOptions {
   model?: ClaudeModel;
   thinkingEnabled?: boolean;
   mcpServers?: string[]; // Array of MCP server IDs
+  sessionId?: string; // Session ID to resume conversation
 }
 
 // Agent APIs
@@ -98,9 +99,10 @@ export async function createAgent(id: string, workingDir: string, options?: Agen
   const model = options?.model || "sonnet";
   const thinkingEnabled = options?.thinkingEnabled || false;
   const mcpServers = options?.mcpServers || [];
+  const sessionId = options?.sessionId;
 
   if (isTauri()) {
-    return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled, mcpServers });
+    return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled, mcpServers, sessionId });
   } else {
     // Pass the client-generated ID so the server uses it
     await fetchApi('/api/agents', {
@@ -112,6 +114,7 @@ export async function createAgent(id: string, workingDir: string, options?: Agen
         model,
         thinking_enabled: thinkingEnabled,
         mcp_servers: mcpServers,
+        session_id: sessionId,
       }),
     });
   }
@@ -311,6 +314,7 @@ export interface SavedAgent {
   avatar_id?: string;
   model?: ClaudeModel;
   thinking_enabled?: boolean;
+  session_id?: string; // Claude CLI session ID for conversation continuity
 }
 
 export interface WorkspaceData {

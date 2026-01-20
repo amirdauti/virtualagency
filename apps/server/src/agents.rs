@@ -95,6 +95,7 @@ impl AgentProcess {
         thinking_enabled: bool,
         mcp_servers: Vec<String>,
         broadcast_tx: broadcast::Sender<BroadcastMessage>,
+        initial_session_id: Option<String>,
     ) -> Result<Self, String> {
         find_claude_cli()?;
 
@@ -105,7 +106,7 @@ impl AgentProcess {
             model,
             thinking_enabled,
             mcp_servers,
-            session_id: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(initial_session_id)),
             current_child: Arc::new(Mutex::new(None)),
             broadcast_tx,
         })
@@ -357,9 +358,15 @@ impl AgentManager {
         model: &str,
         thinking_enabled: bool,
         mcp_servers: Vec<String>,
+        session_id: Option<String>,
     ) -> Result<String, String> {
         // Use provided ID or generate a new one
         let id = id.map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        if session_id.is_some() {
+            tracing::info!("[AgentManager] Creating agent {} with existing session ID for conversation resumption", id);
+        }
+
         let agent = AgentProcess::new(
             id.clone(),
             name.to_string(),
@@ -368,6 +375,7 @@ impl AgentManager {
             thinking_enabled,
             mcp_servers,
             self.broadcast_tx.clone(),
+            session_id,
         )?;
         self.agents.insert(id.clone(), agent);
         Ok(id)

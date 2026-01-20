@@ -66,6 +66,7 @@ impl AgentProcess {
         app_handle: AppHandle,
         model: String,
         thinking_enabled: bool,
+        initial_session_id: Option<String>,
     ) -> Result<Self, String> {
         // Verify claude CLI exists
         find_claude_cli()?;
@@ -75,7 +76,7 @@ impl AgentProcess {
             working_dir,
             model,
             thinking_enabled,
-            session_id: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(initial_session_id)),
             current_child: Arc::new(Mutex::new(None)),
             app_handle,
         })

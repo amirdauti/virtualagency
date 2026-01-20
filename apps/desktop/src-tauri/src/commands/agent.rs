@@ -9,6 +9,7 @@ pub fn create_agent(
     working_dir: String,
     model: Option<String>,
     thinking_enabled: Option<bool>,
+    session_id: Option<String>,
 ) -> Result<(), String> {
     let mut manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     manager.create_agent(
@@ -17,6 +18,7 @@ pub fn create_agent(
         app_handle,
         model.unwrap_or_else(|| "sonnet".to_string()),
         thinking_enabled.unwrap_or(false),
+        session_id,
     )
 }
 
