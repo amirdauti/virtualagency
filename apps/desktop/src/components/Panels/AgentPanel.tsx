@@ -23,15 +23,13 @@ import { useAgentStore } from "../../stores/agentStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useTerminals } from "../../hooks/useTerminals";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
-import { useTerminalStore } from "../../stores/terminalStore";
+import { useTerminalStore, type TabType } from "../../stores/terminalStore";
 
 interface AgentPanelProps {
   agent: Agent;
   outputLines: OutputLine[];
   onClearOutput: () => void;
 }
-
-type TabType = "chat" | "output" | "terminal" | "files";
 
 const PANEL_WIDTH_KEY = "virtual-agency-panel-width";
 const DEFAULT_WIDTH = 550;
@@ -77,7 +75,10 @@ export function AgentPanel({
   outputLines,
   onClearOutput,
 }: AgentPanelProps) {
-  const [activeTab, setActiveTab] = useState<TabType>("chat");
+  // Use global store for active tab (per-agent)
+  const activeTab = useTerminalStore((state) => state.activeTabByAgent[agent.id] ?? "chat") as TabType;
+  const setActiveTabStore = useTerminalStore((state) => state.setActiveTab);
+  const setActiveTab = useCallback((tab: TabType) => setActiveTabStore(agent.id, tab), [agent.id, setActiveTabStore]);
   const [panelWidth, setPanelWidth] = useState(() => {
     const saved = localStorage.getItem(PANEL_WIDTH_KEY);
     return saved ? Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, parseInt(saved, 10))) : DEFAULT_WIDTH;
@@ -467,6 +468,7 @@ export function AgentPanel({
             /* Interactive terminal view */
             <div className="flex-1 overflow-hidden">
               <TerminalTabs
+                agentId={agent.id}
                 terminals={terminals}
                 onCreateTerminal={handleCreateTerminal}
                 onCloseTerminal={killTerminal}
