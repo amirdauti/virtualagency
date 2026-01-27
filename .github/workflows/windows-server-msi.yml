@@ -1,0 +1,75 @@
+name: Build Windows MSI (server)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "MSI version (MSI format: major.minor.build). Default uses run number."
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Windows server exe (MSVC)
+        shell: pwsh
+        run: |
+          cargo build --release -p virtual-agency-server --target x86_64-pc-windows-msvc
+
+      - name: Install WiX Toolset (dotnet tool)
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          $env:Path += ";$env:USERPROFILE\.dotnet\tools"
+          wix --version
+          wix extension add -g WixToolset.UI.wixext
+          wix extension add -g WixToolset.Util.wixext
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $env:Path += ";$env:USERPROFILE\.dotnet\tools"
+
+          $Version = "${{ inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($Version)) {
+            $Version = "0.1.${{ github.run_number }}"
+          }
+
+          New-Item -ItemType Directory -Force -Path installer/windows/out | Out-Null
+
+          wix build installer/windows/Product.wxs `
+            -d Version=$Version `
+            -d ExePath=target/x86_64-pc-windows-msvc/release/virtual-agency-server.exe `
+            -o installer/windows/out/VirtualAgencyServer.msi
+
+      # Optional signing (requires a PFX + password in secrets).
+      # - name: Sign MSI
+      #   if: ${{ secrets.WIN_CODESIGN_PFX_B64 != '' }}
+      #   shell: pwsh
+      #   run: |
+      #     $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
+      #     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String("${{ secrets.WIN_CODESIGN_PFX_B64 }}"))
+      #     $password = ConvertTo-SecureString -String "${{ secrets.WIN_CODESIGN_PFX_PASSWORD }}" -AsPlainText -Force
+      #     Import-PfxCertificate -FilePath $pfxPath -Password $password -CertStoreLocation Cert:\CurrentUser\My | Out-Null
+      #     & signtool.exe sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /a installer/windows/out/VirtualAgencyServer.msi
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VirtualAgencyServer-windows-msi
+          path: installer/windows/out/VirtualAgencyServer.msi
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: virtual-agency-server-windows-exe
+          path: target/x86_64-pc-windows-msvc/release/virtual-agency-server.exe
+
