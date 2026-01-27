@@ -48,6 +48,8 @@ jobs:
           wix build installer/windows/Product.wxs `
             -d Version=$Version `
             -d ExePath=target/x86_64-pc-windows-msvc/release/virtual-agency-server.exe `
+            -ext WixToolset.UI.wixext `
+            -ext WixToolset.Util.wixext `
             -o installer/windows/out/VirtualAgencyServer.msi
 
       # Optional signing (requires a PFX + password in secrets).
@@ -72,4 +74,3 @@ jobs:
         with:
           name: virtual-agency-server-windows-exe
           path: target/x86_64-pc-windows-msvc/release/virtual-agency-server.exe
-

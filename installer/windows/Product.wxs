@@ -69,12 +69,13 @@
     <CustomAction
       Id="LaunchServerAfterInstall"
       FileRef="filServerExe"
+      ExeCommand=""
       Execute="immediate"
       Impersonate="yes"
       Return="asyncNoWait" />
 
     <InstallExecuteSequence>
-      <Custom Action="LaunchServerAfterInstall" After="InstallFinalize">NOT Installed</Custom>
+      <Custom Action="LaunchServerAfterInstall" After="InstallFinalize" Condition="NOT Installed" />
     </InstallExecuteSequence>
   </Package>
 </Wix>
