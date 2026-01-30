@@ -72,8 +72,8 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     clone.updateWorldMatrix(true, true);
     const box = new Box3().setFromObject(clone);
 
-    // Target height for avatars (roughly human height in our scene units)
-    const targetHeight = 1.8;
+    // Target height for avatars (match default chibi ~1.5 units)
+    const targetHeight = 1.5;
     const size = new Vector3();
     box.getSize(size);
     const modelHeight = size.y;

@@ -2,6 +2,21 @@ import { MCPServerId } from "./mcpServers";
 
 export type AgentStatus = "idle" | "thinking" | "working" | "error";
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
+export type CodexModel =
+  | "gpt-5.2-codex"
+  | "gpt-5.2"
+  | "gpt-5.1-codex-max"
+  | "gpt-5.1-codex"
+  | "gpt-5.1"
+  | "gpt-5-codex"
+  | "gpt-5"
+  | "gpt-5-mini"
+  | "o3"
+  | "o4-mini"
+  | "gpt-4.1";
+export type CliType = "claude" | "codex";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type AgentSpecialty = "normal" | "roblox_builder";
 
 export interface Position {
   x: number;
@@ -35,7 +50,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "supermodel",
     name: "Supermodel",
     path: "/models/avatars/animated_supermodel_catwalk_walking_loop.glb",
-    scale: 0.9,
+    scale: 1.0,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk", "catwalk", "Catwalk"]
   },
@@ -43,7 +58,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "astronaut",
     name: "Astronaut",
     path: "/models/avatars/astronaut_character_stylized_rigged_free_model.glb",
-    scale: 0.8,
+    scale: 1.0,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk"]
   },
@@ -51,7 +66,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "paladin",
     name: "Darien the Paladin",
     path: "/models/avatars/darien_the_paladin_moba_character.glb",
-    scale: 0.6,
+    scale: 1.0,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk", "run", "Run"]
   },
@@ -67,7 +82,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "punk_demon",
     name: "Punk Demon",
     path: "/models/avatars/neverblink__punk_demon.glb",
-    scale: 0.8,
+    scale: 1.0,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk"]
   },
@@ -75,7 +90,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "one_armed_hero",
     name: "One-Armed Hero",
     path: "/models/avatars/one-armed_hero.glb",
-    scale: 0.5,
+    scale: 1.0,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk"]
   },
@@ -91,7 +106,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "spiderman",
     name: "Spider-Man",
     path: "/models/avatars/spider_man__rigged___superhero___unityunreal.glb",
-    scale: 0.8,
+    scale: 1.0,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk", "run", "Run"]
   },
@@ -99,7 +114,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "stylized_male",
     name: "Stylized Male",
     path: "/models/avatars/stylized_male.glb",
-    scale: 0.9,
+    scale: 1.0,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk"]
   },
@@ -115,9 +130,12 @@ export interface Agent {
   workingDirectory: string;
   createdAt: string;
   lastActivity?: string;
-  model?: ClaudeModel;
-  thinkingEnabled?: boolean;
+  model?: ClaudeModel | CodexModel | string; // Model depends on CLI type
+  thinkingEnabled?: boolean; // For Claude
+  reasoningEffort?: ReasoningEffort; // For Codex
+  specialty?: AgentSpecialty;
   avatarId?: AvatarId;
   mcpServers?: MCPServerId[]; // List of enabled MCP server IDs
-  sessionId?: string; // Claude CLI session ID for conversation continuity
+  sessionId?: string; // CLI session ID for conversation continuity
+  cliType?: CliType; // CLI backend to use (claude or codex)
 }
