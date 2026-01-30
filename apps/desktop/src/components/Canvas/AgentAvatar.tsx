@@ -68,6 +68,14 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     const size = new Vector3();
     box.getSize(size);
 
+    // Recenter model on X/Z so different GLBs don't appear offset from the agent's world position.
+    // Many third-party models have their pivot far from the visible mesh, which makes the avatar
+    // look like it "spawns" in the wrong place even though the parent group is positioned correctly.
+    const center = new Vector3();
+    box.getCenter(center);
+    clone.position.x -= center.x;
+    clone.position.z -= center.z;
+
     // Target height for avatars (similar to chibi)
     const targetHeight = 1.8;
     const modelHeight = size.y;
@@ -228,10 +236,12 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         currentRotationY.current += normalizedDiff * Math.min(ROTATION_SPEED * delta, 1);
         groupRef.current.rotation.y = currentRotationY.current;
       }
-
-      groupRef.current.position.x = currentPositionRef.current.x;
-      groupRef.current.position.z = currentPositionRef.current.z;
     }
+
+    // Keep the group position in sync every frame (even when idle) to avoid any
+    // transient resets during GLTF load/animation state transitions.
+    groupRef.current.position.x = currentPositionRef.current.x;
+    groupRef.current.position.z = currentPositionRef.current.z;
   });
 
   const statusColor =
