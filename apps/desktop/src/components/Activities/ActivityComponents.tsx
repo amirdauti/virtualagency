@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChatMessage } from "../../stores/chatStore";
 
 /**
@@ -40,6 +40,88 @@ export function DiffView({ message }: { message: ChatMessage }) {
     const oldLines = oldContent.split('\n');
     const newLines = newContent.split('\n');
 
+    type RowKind = 'equal' | 'add' | 'remove';
+    type DiffRow = {
+      kind: RowKind;
+      oldLineNumber?: number;
+      oldText?: string;
+      newLineNumber?: number;
+      newText?: string;
+    };
+
+    const rows: DiffRow[] = useMemo(() => {
+      const n = oldLines.length;
+      const m = newLines.length;
+
+      // If this is huge, avoid quadratic work and fall back to a simple view.
+      // (Most tool diffs are small snippets; this keeps the UI responsive for large blocks.)
+      const maxCells = 250_000; // ~500x500
+      if (n * m > maxCells) {
+        const out: DiffRow[] = [];
+        for (let i = 0; i < n; i++) out.push({ kind: 'remove', oldLineNumber: i + 1, oldText: oldLines[i] });
+        for (let j = 0; j < m; j++) out.push({ kind: 'add', newLineNumber: j + 1, newText: newLines[j] });
+        return out;
+      }
+
+      // LCS DP to align lines
+      const dp: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          if (oldLines[i] === newLines[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+          else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+
+      const out: DiffRow[] = [];
+      let i = 0;
+      let j = 0;
+      let oldNo = 1;
+      let newNo = 1;
+
+      while (i < n && j < m) {
+        if (oldLines[i] === newLines[j]) {
+          out.push({
+            kind: 'equal',
+            oldLineNumber: oldNo++,
+            oldText: oldLines[i],
+            newLineNumber: newNo++,
+            newText: newLines[j],
+          });
+          i++;
+          j++;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+          out.push({ kind: 'remove', oldLineNumber: oldNo++, oldText: oldLines[i] });
+          i++;
+        } else {
+          out.push({ kind: 'add', newLineNumber: newNo++, newText: newLines[j] });
+          j++;
+        }
+      }
+      while (i < n) {
+        out.push({ kind: 'remove', oldLineNumber: oldNo++, oldText: oldLines[i++] });
+      }
+      while (j < m) {
+        out.push({ kind: 'add', newLineNumber: newNo++, newText: newLines[j++] });
+      }
+
+      return out;
+    }, [oldContent, newContent]);
+
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const firstChangeRef = useRef<HTMLDivElement>(null);
+    const firstChangeIndex = useMemo(
+      () => rows.findIndex((r) => r.kind !== 'equal'),
+      [rows],
+    );
+
+    useEffect(() => {
+      // Scroll to the first changed line when the diff mounts/updates.
+      // Use rAF so layout is ready.
+      requestAnimationFrame(() => {
+        firstChangeRef.current?.scrollIntoView({ block: 'center' });
+      });
+    }, [message.id]);
+
     return (
       <div style={diffContainerStyle}>
         <div style={diffHeaderStyle}>
@@ -53,25 +135,27 @@ export function DiffView({ message }: { message: ChatMessage }) {
             )}
           </span>
         </div>
-        <div style={diffCodeContainerStyle}>
-          {/* Old Content (Removed) */}
-          <div style={codeBlockHalfStyle}>
-            {oldLines.map((line, i) => (
-              <div key={i} style={removedLineStyle}>
-                <span style={lineNumberStyle}>{i + 1}</span>
-                <span style={codeContentStyle}>{line || ' '}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* New Content (Added) */}
-          <div style={codeBlockHalfStyle}>
-            {newLines.map((line, i) => (
-              <div key={i} style={addedLineStyle}>
-                <span style={lineNumberStyle}>{i + 1}</span>
-                <span style={codeContentStyle}>{line || ' '}</span>
-              </div>
-            ))}
+        <div ref={scrollContainerRef} style={diffCodeContainerStyle}>
+          <div style={diffGridStyle}>
+            {rows.map((row, idx) => {
+              const setRef = firstChangeIndex >= 0 && idx === firstChangeIndex;
+              return (
+                <div
+                  key={idx}
+                  ref={setRef ? firstChangeRef : undefined}
+                  style={diffRowStyle}
+                >
+                  <span style={lineNumberStyle}>{row.oldLineNumber ?? ''}</span>
+                  <span style={row.kind === 'remove' ? removedCellStyle : codeContentStyle}>
+                    {row.oldText ?? ' '}
+                  </span>
+                  <span style={lineNumberStyle}>{row.newLineNumber ?? ''}</span>
+                  <span style={row.kind === 'add' ? addedCellStyle : codeContentStyle}>
+                    {row.newText ?? ' '}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -90,6 +174,8 @@ export function ThinkingBlock({ message }: { message: ChatMessage }) {
 
   if (!message.thinkingContent) return null;
 
+  const label = message.content || "Thinking";
+
   return (
     <div style={thinkingContainerStyle}>
       <div
@@ -97,7 +183,7 @@ export function ThinkingBlock({ message }: { message: ChatMessage }) {
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <span style={expandIconStyle}>{isExpanded ? '▼' : '▶'}</span>
-        <span style={thinkingLabelStyle}>Thinking</span>
+        <span style={thinkingLabelStyle}>{label}</span>
         {message.thinkingTokens && (
           <span style={thinkingTokensStyle}>{message.thinkingTokens} tokens</span>
         )}
@@ -205,9 +291,9 @@ const addedCountStyle: React.CSSProperties = {
 };
 
 const diffCodeContainerStyle: React.CSSProperties = {
-  display: 'flex',
-  maxHeight: 300,
-  overflow: 'auto',
+  maxHeight: 420,
+  overflowY: 'auto',
+  overflowX: 'auto',
 };
 
 const codeBlockFullStyle: React.CSSProperties = {
@@ -217,12 +303,19 @@ const codeBlockFullStyle: React.CSSProperties = {
   lineHeight: 1.5,
 };
 
-const codeBlockHalfStyle: React.CSSProperties = {
-  flex: 1,
+const diffGridStyle: React.CSSProperties = {
   fontFamily: 'monospace',
   fontSize: 12,
   lineHeight: 1.5,
-  overflow: 'hidden',
+  minWidth: 720, // ensures both columns stay readable; container scrolls horizontally if needed
+};
+
+const diffRowStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '48px 1fr 48px 1fr',
+  alignItems: 'stretch',
+  minHeight: 20,
+  padding: '2px 0',
 };
 
 const codeLineStyle: React.CSSProperties = {
@@ -231,18 +324,21 @@ const codeLineStyle: React.CSSProperties = {
   padding: '2px 0',
 };
 
-const removedLineStyle: React.CSSProperties = {
-  display: 'flex',
-  minHeight: 20,
-  padding: '2px 0',
+const codeContentStyle: React.CSSProperties = {
+  color: '#e2e8f0',
+  whiteSpace: 'pre',
+  flex: 1,
+  paddingRight: 12,
+};
+
+const removedCellStyle: React.CSSProperties = {
+  ...codeContentStyle,
   background: 'rgba(239, 68, 68, 0.15)',
   borderLeft: '3px solid #ef4444',
 };
 
-const addedLineStyle: React.CSSProperties = {
-  display: 'flex',
-  minHeight: 20,
-  padding: '2px 0',
+const addedCellStyle: React.CSSProperties = {
+  ...codeContentStyle,
   background: 'rgba(34, 197, 94, 0.15)',
   borderLeft: '3px solid #22c55e',
 };
@@ -255,13 +351,6 @@ const lineNumberStyle: React.CSSProperties = {
   color: '#64748b',
   userSelect: 'none',
   flexShrink: 0,
-};
-
-const codeContentStyle: React.CSSProperties = {
-  color: '#e2e8f0',
-  whiteSpace: 'pre',
-  flex: 1,
-  paddingRight: 12,
 };
 
 // Thinking Block Styles
