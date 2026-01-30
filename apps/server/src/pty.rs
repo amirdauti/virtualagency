@@ -3,7 +3,24 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex};
+
+use crate::BroadcastMessage;
+
+fn get_default_shell() -> String {
+    #[cfg(windows)]
+    {
+        // Use the system default command interpreter (usually cmd.exe).
+        // This matches the most common user expectation on Windows and works
+        // well with typical Node/npm installs.
+        return std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    }
+}
 
 /// Output from a terminal session
 #[derive(Clone, Serialize, Debug)]
@@ -69,14 +86,14 @@ impl Drop for TerminalSession {
 /// Manages multiple terminal sessions
 pub struct TerminalManager {
     terminals: HashMap<String, TerminalSession>,
-    broadcast_tx: broadcast::Sender<TerminalOutput>,
+    event_tx: mpsc::UnboundedSender<BroadcastMessage>,
 }
 
 impl TerminalManager {
-    pub fn new(broadcast_tx: broadcast::Sender<TerminalOutput>) -> Self {
+    pub fn new(event_tx: mpsc::UnboundedSender<BroadcastMessage>) -> Self {
         Self {
             terminals: HashMap::new(),
-            broadcast_tx,
+            event_tx,
         }
     }
 
@@ -113,7 +130,7 @@ impl TerminalManager {
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
         // Get the default shell
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let shell = get_default_shell();
 
         // Build command
         let mut cmd = CommandBuilder::new(&shell);
@@ -122,6 +139,8 @@ impl TerminalManager {
         // Set environment variables for better terminal experience
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+
+        // No Windows-specific shell args needed for cmd.exe.
 
         // Spawn the shell in the PTY
         let child = pair
@@ -142,7 +161,7 @@ impl TerminalManager {
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
         // Clone for reader thread
-        let broadcast_tx = self.broadcast_tx.clone();
+        let event_tx = self.event_tx.clone();
         let tid = terminal_id.clone();
 
         // Spawn reader thread
@@ -172,8 +191,8 @@ impl TerminalManager {
                             terminal_id: tid.clone(),
                             data,
                         };
-                        // Ignore send errors - means no subscribers
-                        let _ = broadcast_tx.send(output);
+                        // Ignore send errors - receiver might have been dropped
+                        let _ = event_tx.send(BroadcastMessage::TerminalOutput(output));
                     }
                     Err(e) => {
                         // EAGAIN/EWOULDBLOCK means no data available (shouldn't happen with blocking read)

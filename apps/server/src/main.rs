@@ -14,12 +14,12 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
-use tokio::sync::{broadcast, RwLock};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use agents::{AgentManager, AgentOutput, AgentStatusChange};
+use agents::{AgentManager, AgentOutput, AgentSpecialty, AgentStatus, AgentStatusChange, CliType};
 use pty::{TerminalManager, TerminalOutput};
 
 type SharedState = Arc<AppState>;
@@ -49,8 +49,8 @@ async fn private_network_access_middleware(
 struct AppState {
     agent_manager: RwLock<AgentManager>,
     terminal_manager: RwLock<TerminalManager>,
-    broadcast_tx: broadcast::Sender<BroadcastMessage>,
-    terminal_broadcast_tx: broadcast::Sender<TerminalOutput>,
+    broadcast_tx: broadcast::Sender<BroadcastEnvelope>,
+    events: RwLock<EventStore>,
     workspace_dir: PathBuf,
 }
 
@@ -63,6 +63,64 @@ enum BroadcastMessage {
     AgentStatus(AgentStatusChange),
     #[serde(rename = "terminal-output")]
     TerminalOutput(TerminalOutput),
+}
+
+#[derive(Clone, Serialize)]
+struct BroadcastEnvelope {
+    seq: u64,
+    ts_ms: u64,
+    #[serde(flatten)]
+    message: BroadcastMessage,
+}
+
+struct EventStore {
+    next_seq: u64,
+    capacity: usize,
+    events: VecDeque<BroadcastEnvelope>,
+}
+
+impl EventStore {
+    fn new(capacity: usize) -> Self {
+        Self {
+            next_seq: 1,
+            capacity,
+            events: VecDeque::with_capacity(capacity),
+        }
+    }
+
+    fn latest_seq(&self) -> u64 {
+        self.next_seq.saturating_sub(1)
+    }
+
+    fn push(&mut self, message: BroadcastMessage) -> BroadcastEnvelope {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let envelope = BroadcastEnvelope { seq, ts_ms, message };
+
+        if self.events.len() >= self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(envelope.clone());
+        envelope
+    }
+
+    fn get_since(&self, since: Option<u64>) -> Vec<BroadcastEnvelope> {
+        match since {
+            Some(since_seq) => self
+                .events
+                .iter()
+                .filter(|e| e.seq > since_seq)
+                .cloned()
+                .collect(),
+            None => self.events.iter().cloned().collect(),
+        }
+    }
 }
 
 /// Incoming WebSocket messages from clients
@@ -88,9 +146,11 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Create broadcast channel for WebSocket clients
-    let (broadcast_tx, _) = broadcast::channel::<BroadcastMessage>(1000);
-    let (terminal_broadcast_tx, _) = broadcast::channel::<TerminalOutput>(1000);
+    // Create channel for server events.
+    // - mpsc collects events even when no WS clients are connected
+    // - broadcast streams events to active WS clients
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<BroadcastMessage>();
+    let (broadcast_tx, _) = broadcast::channel::<BroadcastEnvelope>(1000);
 
     // Get workspace directory from environment or use current directory
     let workspace_dir = std::env::var("WORKSPACE_DIR")
@@ -98,11 +158,23 @@ async fn main() {
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let state = Arc::new(AppState {
-        agent_manager: RwLock::new(AgentManager::new(broadcast_tx.clone())),
-        terminal_manager: RwLock::new(TerminalManager::new(terminal_broadcast_tx.clone())),
+        agent_manager: RwLock::new(AgentManager::new(event_tx.clone())),
+        terminal_manager: RwLock::new(TerminalManager::new(event_tx.clone())),
         broadcast_tx,
-        terminal_broadcast_tx,
+        events: RwLock::new(EventStore::new(5000)),
         workspace_dir,
+    });
+
+    // Distributor: persists events to ring buffer and broadcasts to WS clients.
+    let distributor_state = state.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = event_rx.recv().await {
+            let envelope = {
+                let mut store = distributor_state.events.write().await;
+                store.push(msg)
+            };
+            let _ = distributor_state.broadcast_tx.send(envelope);
+        }
     });
 
     // Build router with CORS and Private Network Access support
@@ -117,10 +189,12 @@ async fn main() {
         .route("/api/agents/:id", delete(kill_agent).patch(update_agent_settings))
         .route("/api/agents/:id/messages", post(send_message))
         .route("/api/agents/:id/stop", post(stop_agent))
+        .route("/api/events", get(get_events))
         .route("/api/terminals", get(list_terminals).post(create_terminal))
         .route("/api/terminals/:id", delete(kill_terminal))
         .route("/api/files/tree/:agent_id", get(get_file_tree))
         .route("/api/files/read/:agent_id", post(read_file))
+        .route("/api/files/read_git/:agent_id", post(read_file_git))
         .route("/api/files/write/:agent_id", post(write_file))
         .route("/api/health", get(health_check))
         .route("/api/browse", get(browse_directory))
@@ -138,6 +212,28 @@ async fn main() {
 
 async fn health_check() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    since: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct EventsResponse {
+    latest_seq: u64,
+    events: Vec<BroadcastEnvelope>,
+}
+
+async fn get_events(
+    State(state): State<SharedState>,
+    Query(query): Query<EventsQuery>,
+) -> Json<EventsResponse> {
+    let store = state.events.read().await;
+    Json(EventsResponse {
+        latest_seq: store.latest_seq(),
+        events: store.get_since(query.since),
+    })
 }
 
 #[derive(Deserialize)]
@@ -224,8 +320,8 @@ async fn get_file_tree(
 
     let working_dir = agents
         .iter()
-        .find(|(id, _, _, _, _, _)| id == &agent_id)
-        .map(|(_, _, working_dir, _, _, _)| PathBuf::from(working_dir))
+        .find(|(id, _, _, _, _, _, _, _)| id == &agent_id)
+        .map(|(_, _, working_dir, _, _, _, _, _)| PathBuf::from(working_dir))
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
 
     drop(manager);
@@ -247,13 +343,36 @@ async fn read_file(
 
     let working_dir = agents
         .iter()
-        .find(|(id, _, _, _, _, _)| id == &agent_id)
-        .map(|(_, _, working_dir, _, _, _)| PathBuf::from(working_dir))
+        .find(|(id, _, _, _, _, _, _, _)| id == &agent_id)
+        .map(|(_, _, working_dir, _, _, _, _, _)| PathBuf::from(working_dir))
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
 
     drop(manager);
 
     files::read_file(&working_dir, req)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn read_file_git(
+    State(state): State<SharedState>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<files::ReadFileRequest>,
+) -> Result<Json<files::FileContent>, (StatusCode, String)> {
+    // Get agent's working directory
+    let manager = state.agent_manager.read().await;
+    let agents = manager.list_agents();
+
+    let working_dir = agents
+        .iter()
+        .find(|(id, _, _, _, _, _, _, _)| id == &agent_id)
+        .map(|(_, _, working_dir, _, _, _, _, _)| PathBuf::from(working_dir))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
+
+    drop(manager);
+
+    files::read_file_git(&working_dir, req)
         .await
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
@@ -270,8 +389,8 @@ async fn write_file(
 
     let working_dir = agents
         .iter()
-        .find(|(id, _, _, _, _, _)| id == &agent_id)
-        .map(|(_, _, working_dir, _, _, _)| PathBuf::from(working_dir))
+        .find(|(id, _, _, _, _, _, _, _)| id == &agent_id)
+        .map(|(_, _, working_dir, _, _, _, _, _)| PathBuf::from(working_dir))
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
 
     drop(manager);
@@ -292,14 +411,24 @@ struct CreateAgentRequest {
     model: String,
     #[serde(default)]
     thinking_enabled: bool,
+    #[serde(default = "default_reasoning_effort")]
+    reasoning_effort: String, // For Codex: "low", "medium", "high"
+    #[serde(default)]
+    specialty: Option<String>,
     #[serde(default)]
     mcp_servers: Vec<String>,
+    #[serde(default)]
+    cli_type: Option<String>, // "claude" or "codex"
     #[serde(default)]
     session_id: Option<String>, // Session ID to resume conversation
 }
 
 fn default_model() -> String {
     "sonnet".to_string()
+}
+
+fn default_reasoning_effort() -> String {
+    "medium".to_string()
 }
 
 #[derive(Serialize)]
@@ -310,15 +439,35 @@ struct AgentInfo {
     model: String,
     thinking_enabled: bool,
     mcp_servers: Vec<String>,
+    cli_type: String,
+    specialty: String,
+    status: AgentStatus,
+    session_id: Option<String>,
 }
 
 async fn create_agent(
     State(state): State<SharedState>,
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<AgentInfo>, (StatusCode, String)> {
+    let cli_type = req.cli_type.as_ref().map(|s| CliType::from_str(s)).unwrap_or_default();
+    let cli_type_str = match cli_type {
+        CliType::Claude => "claude".to_string(),
+        CliType::Codex => "codex".to_string(),
+    };
+
+    let specialty = req
+        .specialty
+        .as_deref()
+        .map(AgentSpecialty::from_str)
+        .unwrap_or_default();
+    let specialty_str = match specialty {
+        AgentSpecialty::Normal => "normal",
+        AgentSpecialty::RobloxBuilder => "roblox_builder",
+    };
+
     tracing::info!(
-        "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}, mcp_servers: {:?}, session_id: {:?}",
-        req.id, req.name, req.working_dir, req.model, req.thinking_enabled, req.mcp_servers, req.session_id
+        "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}, reasoning_effort: {}, specialty: {}, mcp_servers: {:?}, cli_type: {}, session_id: {:?}",
+        req.id, req.name, req.working_dir, req.model, req.thinking_enabled, req.reasoning_effort, specialty_str, req.mcp_servers, cli_type_str, req.session_id
     );
 
     let mut manager = state.agent_manager.write().await;
@@ -329,11 +478,17 @@ async fn create_agent(
         &req.working_dir,
         &req.model,
         req.thinking_enabled,
+        &req.reasoning_effort,
+        specialty,
         req.mcp_servers.clone(),
+        cli_type,
         req.session_id.clone(),
     ) {
         Ok(id) => {
             tracing::info!("[create_agent] Successfully created agent with id: {}", id);
+            let (status, session_id) = manager
+                .get_agent_runtime(&id)
+                .unwrap_or((AgentStatus::Idle, req.session_id.clone()));
             Ok(Json(AgentInfo {
                 id,
                 name: req.name,
@@ -341,6 +496,10 @@ async fn create_agent(
                 model: req.model,
                 thinking_enabled: req.thinking_enabled,
                 mcp_servers: req.mcp_servers,
+                cli_type: cli_type_str,
+                specialty: specialty_str.to_string(),
+                status,
+                session_id,
             }))
         },
         Err(e) => {
@@ -352,15 +511,47 @@ async fn create_agent(
 
 async fn list_agents(State(state): State<SharedState>) -> Json<Vec<AgentInfo>> {
     let manager = state.agent_manager.read().await;
-    let agents = manager.list_agents();
-    Json(agents.into_iter().map(|(id, name, working_dir, model, thinking_enabled, mcp_servers)| AgentInfo {
-        id,
-        name,
-        working_dir,
-        model,
-        thinking_enabled,
-        mcp_servers,
-    }).collect())
+    let agents = manager.list_agents_snapshot();
+    Json(
+        agents
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    name,
+                    working_dir,
+                    model,
+                    thinking_enabled,
+                    mcp_servers,
+                    cli_type,
+                    specialty,
+                    status,
+                    session_id,
+                )| {
+                    let cli_type_str = match cli_type {
+                        CliType::Claude => "claude".to_string(),
+                        CliType::Codex => "codex".to_string(),
+                    };
+                    let specialty_str = match specialty {
+                        AgentSpecialty::Normal => "normal".to_string(),
+                        AgentSpecialty::RobloxBuilder => "roblox_builder".to_string(),
+                    };
+                    AgentInfo {
+                        id,
+                        name,
+                        working_dir,
+                        model,
+                        thinking_enabled,
+                        mcp_servers,
+                        cli_type: cli_type_str,
+                        specialty: specialty_str,
+                        status,
+                        session_id,
+                    }
+                },
+            )
+            .collect(),
+    )
 }
 
 async fn kill_agent(
@@ -379,6 +570,7 @@ async fn kill_agent(
 struct UpdateAgentRequest {
     model: Option<String>,
     thinking_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
     mcp_servers: Option<Vec<String>>,
 }
 
@@ -388,13 +580,13 @@ async fn update_agent_settings(
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     tracing::info!(
-        "[update_agent_settings] Updating agent {} - model: {:?}, thinking: {:?}, mcp_servers: {:?}",
-        id, req.model, req.thinking_enabled, req.mcp_servers
+        "[update_agent_settings] Updating agent {} - model: {:?}, thinking: {:?}, reasoning_effort: {:?}, mcp_servers: {:?}",
+        id, req.model, req.thinking_enabled, req.reasoning_effort, req.mcp_servers
     );
 
     let mut manager = state.agent_manager.write().await;
 
-    match manager.update_agent_settings(&id, req.model, req.thinking_enabled, req.mcp_servers) {
+    match manager.update_agent_settings(&id, req.model, req.thinking_enabled, req.reasoning_effort, req.mcp_servers) {
         Ok(_) => {
             tracing::info!("[update_agent_settings] Successfully updated agent: {}", id);
             Ok(StatusCode::OK)
@@ -428,7 +620,7 @@ async fn send_message(
 
     let manager = state.agent_manager.read().await;
     let existing_agents = manager.list_agents();
-    tracing::info!("[send_message] Existing agents: {:?}", existing_agents.iter().map(|(id, _, _, _, _, _)| id).collect::<Vec<_>>());
+    tracing::info!("[send_message] Existing agents: {:?}", existing_agents.iter().map(|(id, _, _, _, _, _, _, _)| id).collect::<Vec<_>>());
 
     // Convert base64 images to temp files
     let mut image_paths: Vec<String> = Vec::new();
@@ -474,9 +666,15 @@ fn save_base64_image(base64_data: &str, mime_type: &str, index: usize) -> Result
         _ => "png",
     };
 
-    // Create temp file
+    // Create temp file with unique name (timestamp + random to prevent collisions)
     let temp_dir = std::env::temp_dir();
-    let filename = format!("virtual-agency-image-{}-{}.{}", std::process::id(), index, extension);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let random_suffix: u32 = rand::random();
+    let filename = format!("virtual-agency-image-{}-{}-{}-{}.{}",
+        std::process::id(), timestamp, random_suffix, index, extension);
     let file_path = temp_dir.join(&filename);
 
     // Write to file
@@ -597,33 +795,18 @@ async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: SharedState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Subscribe to broadcast channels
-    let mut agent_rx = state.broadcast_tx.subscribe();
-    let mut terminal_rx = state.terminal_broadcast_tx.subscribe();
+    // Subscribe to server event stream
+    let mut rx = state.broadcast_tx.subscribe();
 
     // Clone state for the receive task
     let state_clone = state.clone();
 
     // Spawn task to forward broadcast messages to WebSocket
     let send_task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                // Agent messages
-                Ok(msg) = agent_rx.recv() => {
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        if sender.send(Message::Text(json)).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                // Terminal output messages
-                Ok(output) = terminal_rx.recv() => {
-                    let msg = BroadcastMessage::TerminalOutput(output);
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        if sender.send(Message::Text(json)).await.is_err() {
-                            break;
-                        }
-                    }
+        while let Ok(msg) = rx.recv().await {
+            if let Ok(json) = serde_json::to_string(&msg) {
+                if sender.send(Message::Text(json)).await.is_err() {
+                    break;
                 }
             }
         }

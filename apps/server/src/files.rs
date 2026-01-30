@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileNode {
@@ -143,4 +144,35 @@ pub async fn write_file(
         .map_err(|e| e.to_string())?;
 
     Ok(serde_json::json!({"success": true}))
+}
+
+pub async fn read_file_git(
+    workspace_dir: &PathBuf,
+    req: ReadFileRequest,
+) -> Result<FileContent, String> {
+    let path = req.path.trim().to_string();
+    if path.is_empty() {
+        return Err("Missing path".to_string());
+    }
+
+    // Only allow workspace-relative paths for git reads.
+    let p = Path::new(&path);
+    if p.is_absolute() || path.contains("..") {
+        return Err("Access denied: invalid path".to_string());
+    }
+
+    let output = Command::new("git")
+        .current_dir(workspace_dir)
+        .arg("show")
+        .arg(format!("HEAD:{}", path))
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(stderr.trim().to_string());
+    }
+
+    let content = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(FileContent { content })
 }

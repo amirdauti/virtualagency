@@ -238,7 +238,39 @@ fn find_cli_via_npm_prefix(bin: &str) -> Option<PathBuf> {
     None
 }
 
-fn find_claude_cli() -> Result<PathBuf, String> {
+#[cfg(windows)]
+fn windows_user_profile_from_working_dir(working_dir: Option<&str>) -> Option<PathBuf> {
+    let working_dir = working_dir?;
+    let normalized = working_dir.replace('/', "\\");
+    let parts: Vec<&str> = normalized.split('\\').filter(|p| !p.is_empty()).collect();
+    if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("users") {
+        // e.g. ["C:", "Users", "nimbu", ...]
+        return Some(PathBuf::from(format!("{}\\Users\\{}", parts[0], parts[2])));
+    }
+    if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("documents and settings") {
+        return Some(PathBuf::from(format!("{}\\Documents and Settings\\{}", parts[0], parts[2])));
+    }
+    None
+}
+
+#[cfg(windows)]
+fn push_windows_user_profile_candidates(candidates: &mut Vec<PathBuf>, user_profile: &PathBuf, bin: &str) {
+    let appdata = user_profile.join("AppData").join("Roaming");
+    let localappdata = user_profile.join("AppData").join("Local");
+
+    // npm (most common): %APPDATA%\npm\<bin>.cmd
+    candidates.push(appdata.join("npm").join(format!("{}.cmd", bin)));
+    candidates.push(appdata.join("npm").join(format!("{}.exe", bin)));
+
+    // pnpm/yarn (best-effort)
+    candidates.push(localappdata.join("pnpm").join(format!("{}.cmd", bin)));
+    candidates.push(localappdata.join("Yarn").join("bin").join(format!("{}.cmd", bin)));
+
+    // bun (best-effort)
+    candidates.push(user_profile.join(".bun").join("bin").join(format!("{}.exe", bin)));
+}
+
+fn find_claude_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
     // First, try PATH lookup
     if let Some(path) = find_on_path("claude") {
         return Ok(path);
@@ -249,6 +281,13 @@ fn find_claude_cli() -> Result<PathBuf, String> {
 
     #[cfg(windows)]
     {
+        // MSI custom actions can start the server with an environment that does not include the
+        // interactive user's APPDATA/USERPROFILE. Use the agent working dir as a hint to find
+        // per-user global npm installs (e.g. C:\Users\<user>\AppData\Roaming\npm\claude.cmd).
+        if let Some(user_profile) = windows_user_profile_from_working_dir(_working_dir_hint) {
+            push_windows_user_profile_candidates(&mut candidates, &user_profile, "claude");
+        }
+
         if let Ok(appdata) = env::var("APPDATA") {
             let npm_bin = PathBuf::from(appdata).join("npm");
             candidates.push(npm_bin.join("claude.cmd"));
@@ -291,7 +330,7 @@ fn find_claude_cli() -> Result<PathBuf, String> {
     Err("Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code".to_string())
 }
 
-fn find_codex_cli() -> Result<PathBuf, String> {
+fn find_codex_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
     // First, try PATH lookup
     if let Some(path) = find_on_path("codex") {
         return Ok(path);
@@ -302,6 +341,10 @@ fn find_codex_cli() -> Result<PathBuf, String> {
 
     #[cfg(windows)]
     {
+        if let Some(user_profile) = windows_user_profile_from_working_dir(_working_dir_hint) {
+            push_windows_user_profile_candidates(&mut candidates, &user_profile, "codex");
+        }
+
         if let Ok(appdata) = env::var("APPDATA") {
             let npm_bin = PathBuf::from(appdata).join("npm");
             candidates.push(npm_bin.join("codex.cmd"));
@@ -344,10 +387,10 @@ fn find_codex_cli() -> Result<PathBuf, String> {
     Err("Codex CLI not found. Install with: npm install -g @openai/codex".to_string())
 }
 
-fn find_cli(cli_type: &CliType) -> Result<PathBuf, String> {
+fn find_cli(cli_type: &CliType, working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
     match cli_type {
-        CliType::Claude => find_claude_cli(),
-        CliType::Codex => find_codex_cli(),
+        CliType::Claude => find_claude_cli(working_dir_hint),
+        CliType::Codex => find_codex_cli(working_dir_hint),
     }
 }
 
@@ -382,7 +425,7 @@ impl AgentProcess {
         event_tx: mpsc::UnboundedSender<BroadcastMessage>,
         initial_session_id: Option<String>,
     ) -> Result<Self, String> {
-        find_cli(&cli_type)?;
+        find_cli(&cli_type, Some(&working_dir))?;
 
         Ok(Self {
             id,
@@ -426,7 +469,7 @@ impl AgentProcess {
     }
 
     pub fn send_message(&self, message: &str, images: &[String]) -> Result<(), String> {
-        let cli_path = find_cli(&self.cli_type)?;
+        let cli_path = find_cli(&self.cli_type, Some(&self.working_dir))?;
 
         if !images.is_empty() {
             tracing::debug!("[AgentProcess] Received {} image(s): {:?}", images.len(), images);
