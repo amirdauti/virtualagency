@@ -1,6 +1,7 @@
 import React, { useRef, useMemo, useEffect, Suspense, useState } from "react";
 import * as THREE from "three";
 import { Mesh, Group, Box3, Vector3 } from "three";
+import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import { useFrame } from "@react-three/fiber";
 import { Text, useGLTF, useAnimations } from "@react-three/drei";
 import type { Agent, AvatarConfig } from "@virtual-agency/shared";
@@ -61,36 +62,40 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
 
   // Clone the scene and compute proper scale/offset
   const { clonedScene, computedScale, computedYOffset } = useMemo(() => {
-    const clone = scene.clone();
+    // IMPORTANT: use SkeletonUtils.clone for skinned/animated models.
+    // `scene.clone()` can break skeleton bindings, causing some parts to render
+    // at origin while others appear in the correct spot.
+    const clone = SkeletonUtils.clone(scene) as Group;
 
-    // Compute bounding box to determine model size
+    // Compute bounding box to determine model size.
+    // Ensure matrices are up-to-date; some GLBs rely on nested transforms.
+    clone.updateWorldMatrix(true, true);
     const box = new Box3().setFromObject(clone);
+
+    // Target height for avatars (roughly human height in our scene units)
+    const targetHeight = 1.8;
     const size = new Vector3();
     box.getSize(size);
+    const modelHeight = size.y;
+
+    // Auto-scale to target height, then apply per-model multiplier (config.scale).
+    // This normalizes wildly different asset units (e.g., astronaut being gigantic).
+    const autoScale = modelHeight > 0.0001 ? targetHeight / modelHeight : 1.0;
+    const scaleMultiplier = config.scale ?? 1.0;
+    const unclamped = autoScale * scaleMultiplier;
+    const scale = Math.min(5.0, Math.max(0.05, unclamped));
 
     // Recenter model on X/Z so different GLBs don't appear offset from the agent's world position.
-    // Many third-party models have their pivot far from the visible mesh, which makes the avatar
-    // look like it "spawns" in the wrong place even though the parent group is positioned correctly.
+    // Many third-party models have a pivot far from the visible mesh.
     const center = new Vector3();
     box.getCenter(center);
     clone.position.x -= center.x;
     clone.position.z -= center.z;
+    clone.updateWorldMatrix(true, true);
 
-    // Target height for avatars (similar to chibi)
-    const targetHeight = 1.8;
-    const modelHeight = size.y;
-
-    // Use config scale or auto-compute
-    let scale = config.scale ?? 1.0;
-    if (modelHeight > 0) {
-      const autoScale = targetHeight / modelHeight;
-      // Blend config scale with auto-computed scale
-      scale = config.scale !== undefined ? config.scale : autoScale;
-    }
-
-    // Compute Y offset to place feet on ground
-    const minY = box.min.y * scale;
-    const yOffset = config.yOffset ?? -minY;
+    // Compute Y offset to place feet on ground (apply scale because the primitive is scaled).
+    const minYScaled = box.min.y * scale;
+    const yOffset = config.yOffset ?? -minYScaled;
 
     return { clonedScene: clone, computedScale: scale, computedYOffset: yOffset };
   }, [scene, config.scale, config.yOffset]);
