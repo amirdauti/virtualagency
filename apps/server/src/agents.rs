@@ -6,9 +6,63 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 use crate::BroadcastMessage;
+
+fn get_mcp_server_package(id: &str) -> Option<&'static str> {
+    match id {
+        "playwright" => Some("@playwright/mcp"),
+        "context7" => Some("@upstash/context7-mcp"),
+        "memory" => Some("@modelcontextprotocol/server-memory"),
+        "filesystem" => Some("@modelcontextprotocol/server-filesystem"),
+        "git" => Some("@modelcontextprotocol/server-git"),
+        "fetch" => Some("@modelcontextprotocol/server-fetch"),
+        "sequential-thinking" => Some("@modelcontextprotocol/server-sequentialthinking"),
+        "brave-search" => Some("@modelcontextprotocol/server-brave-search"),
+        "sqlite" => Some("@modelcontextprotocol/server-sqlite"),
+        "postgres" => Some("@modelcontextprotocol/server-postgres"),
+        "tailwindcss" => Some("tailwindcss-mcp-server"),
+        "shadcn" => Some("@jpisnice/shadcn-ui-mcp-server"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CliType {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl CliType {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "codex" => CliType::Codex,
+            _ => CliType::Claude,
+        }
+    }
+}
+
+const ROBLOX_BUILDER_SYSTEM_PROMPT: &str = include_str!("../../../prompts/roblox_builder_system_prompt.txt");
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSpecialty {
+    #[default]
+    Normal,
+    RobloxBuilder,
+}
+
+impl AgentSpecialty {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "roblox_builder" | "roblox builder" | "roblox" => AgentSpecialty::RobloxBuilder,
+            _ => AgentSpecialty::Normal,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentOutput {
@@ -40,38 +94,261 @@ pub enum AgentStatus {
     Exited,
 }
 
-fn find_claude_cli() -> Result<PathBuf, String> {
-    let home = env::var("HOME").unwrap_or_default();
-
-    let candidates = vec![
-        "claude".to_string(),
-        "/opt/homebrew/bin/claude".to_string(),
-        "/usr/local/bin/claude".to_string(),
-        format!("{}/.npm-global/bin/claude", home),
-        format!("{}/node_modules/.bin/claude", home),
-        format!("{}/.nvm/versions/node/*/bin/claude", home),
-        "./node_modules/.bin/claude".to_string(),
-    ];
-
-    // First, try to find it via `which`
-    if let Ok(output) = Command::new("which").arg("claude").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
+fn find_on_path(cmd: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        fn ext_rank(p: &PathBuf) -> u8 {
+            match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
+                Some(ref e) if e == "exe" => 0,
+                Some(ref e) if e == "cmd" => 1,
+                Some(ref e) if e == "bat" => 2,
+                Some(ref e) if e == "ps1" => 3,
+                _ => 10,
             }
+        }
+
+        fn search_dirs(cmd: &str, path_value: &str) -> Option<PathBuf> {
+            const EXTS: [&str; 4] = ["exe", "cmd", "bat", "ps1"];
+
+            for raw_dir in path_value.split(';') {
+                let dir = raw_dir.trim().trim_matches('"');
+                if dir.is_empty() {
+                    continue;
+                }
+                let base = PathBuf::from(dir);
+                for ext in EXTS {
+                    let candidate = base.join(format!("{}.{}", cmd, ext));
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            None
+        }
+
+        fn registry_paths() -> Vec<String> {
+            use winreg::enums::*;
+            use winreg::RegKey;
+
+            fn read_path(root: RegKey, subkey: &str) -> Option<String> {
+                let key = root.open_subkey(subkey).ok()?;
+                key.get_value::<String, _>("Path").ok()
+            }
+
+            let mut values = Vec::new();
+
+            let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+            // Machine PATH
+            if let Some(v) = read_path(hklm, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") {
+                values.push(v);
+            }
+            // User PATH
+            if let Some(v) = read_path(hkcu, r"Environment") {
+                values.push(v);
+            }
+
+            values
+        }
+
+        // `where` is available on Windows. It returns one match per line.
+        if let Ok(output) = Command::new("where").arg(cmd).output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut candidates: Vec<PathBuf> = stdout
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty())
+                    .map(PathBuf::from)
+                    .collect();
+
+                // Prefer executable shims on Windows.
+                // npm typically installs CLIs as `*.cmd` and sometimes also `*.ps1`.
+                candidates.sort_by_key(ext_rank);
+
+                for candidate in candidates {
+                    // Skip extensionless entries; they are often Unix shims that Windows can't execute.
+                    if candidate.extension().is_none() {
+                        continue;
+                    }
+                    return Some(candidate);
+                }
+            }
+        }
+
+        // Fallback: the process environment may not include the user PATH (e.g. if launched from MSI context).
+        // Try searching the current PATH and then the registry PATH values.
+        if let Ok(path) = env::var("PATH") {
+            if let Some(found) = search_dirs(cmd, &path) {
+                return Some(found);
+            }
+        }
+        for path in registry_paths() {
+            if let Some(found) = search_dirs(cmd, &path) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
+    #[cfg(not(windows))]
+    {
+        // `which` is available on most Unix systems.
+        if let Ok(output) = Command::new("which").arg(cmd).output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Some(PathBuf::from(path));
+                }
+            }
+        }
+        None
+    }
+}
+
+#[cfg(windows)]
+fn find_cli_via_npm_prefix(bin: &str) -> Option<PathBuf> {
+    let output = Command::new("npm")
+        .args(["prefix", "-g"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if prefix.is_empty() {
+        return None;
+    }
+
+    let prefix_path = PathBuf::from(prefix);
+    let cmd = prefix_path.join(format!("{}.cmd", bin));
+    if cmd.exists() {
+        return Some(cmd);
+    }
+
+    let exe = prefix_path.join(format!("{}.exe", bin));
+    if exe.exists() {
+        return Some(exe);
+    }
+
+    None
+}
+
+fn find_claude_cli() -> Result<PathBuf, String> {
+    // First, try PATH lookup
+    if let Some(path) = find_on_path("claude") {
+        return Ok(path);
+    }
+
+    // Then try common install locations
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = env::var("APPDATA") {
+            let npm_bin = PathBuf::from(appdata).join("npm");
+            candidates.push(npm_bin.join("claude.cmd"));
+            candidates.push(npm_bin.join("claude.exe"));
+        }
+        if let Ok(local) = env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(&local).join("pnpm").join("claude.cmd"));
+            candidates.push(PathBuf::from(&local).join("Yarn").join("bin").join("claude.cmd"));
+        }
+        if let Ok(user) = env::var("USERPROFILE") {
+            candidates.push(PathBuf::from(user).join(".bun").join("bin").join("claude.exe"));
+        }
+        candidates.push(PathBuf::from("node_modules").join(".bin").join("claude.cmd"));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let home = env::var("HOME").unwrap_or_default();
+        candidates.extend([
+            PathBuf::from("/opt/homebrew/bin/claude"),
+            PathBuf::from("/usr/local/bin/claude"),
+            PathBuf::from(format!("{}/.npm-global/bin/claude", home)),
+            PathBuf::from(format!("{}/node_modules/.bin/claude", home)),
+            PathBuf::from(format!("{}/.nvm/versions/node/*/bin/claude", home)),
+            PathBuf::from("./node_modules/.bin/claude"),
+        ]);
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
         }
     }
 
-    // Try each candidate
-    for candidate in candidates {
-        let path = PathBuf::from(&candidate);
-        if path.exists() {
-            return Ok(path);
-        }
+    #[cfg(windows)]
+    if let Some(path) = find_cli_via_npm_prefix("claude") {
+        return Ok(path);
     }
 
     Err("Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code".to_string())
+}
+
+fn find_codex_cli() -> Result<PathBuf, String> {
+    // First, try PATH lookup
+    if let Some(path) = find_on_path("codex") {
+        return Ok(path);
+    }
+
+    // Then try common install locations
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = env::var("APPDATA") {
+            let npm_bin = PathBuf::from(appdata).join("npm");
+            candidates.push(npm_bin.join("codex.cmd"));
+            candidates.push(npm_bin.join("codex.exe"));
+        }
+        if let Ok(local) = env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(&local).join("pnpm").join("codex.cmd"));
+            candidates.push(PathBuf::from(&local).join("Yarn").join("bin").join("codex.cmd"));
+        }
+        if let Ok(user) = env::var("USERPROFILE") {
+            candidates.push(PathBuf::from(user).join(".bun").join("bin").join("codex.exe"));
+        }
+        candidates.push(PathBuf::from("node_modules").join(".bin").join("codex.cmd"));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let home = env::var("HOME").unwrap_or_default();
+        candidates.extend([
+            PathBuf::from("/opt/homebrew/bin/codex"),
+            PathBuf::from("/usr/local/bin/codex"),
+            PathBuf::from(format!("{}/.npm-global/bin/codex", home)),
+            PathBuf::from(format!("{}/node_modules/.bin/codex", home)),
+            PathBuf::from(format!("{}/.nvm/versions/node/*/bin/codex", home)),
+            PathBuf::from("./node_modules/.bin/codex"),
+        ]);
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(path) = find_cli_via_npm_prefix("codex") {
+        return Ok(path);
+    }
+
+    Err("Codex CLI not found. Install with: npm install -g @openai/codex".to_string())
+}
+
+fn find_cli(cli_type: &CliType) -> Result<PathBuf, String> {
+    match cli_type {
+        CliType::Claude => find_claude_cli(),
+        CliType::Codex => find_codex_cli(),
+    }
 }
 
 pub struct AgentProcess {
@@ -80,10 +357,15 @@ pub struct AgentProcess {
     pub working_dir: String,
     pub model: String,
     pub thinking_enabled: bool,
+    pub reasoning_effort: String, // For Codex: "low", "medium", "high"
+    pub specialty: AgentSpecialty,
     pub mcp_servers: Vec<String>,
+    pub cli_type: CliType,
+    status: Arc<Mutex<AgentStatus>>,
     session_id: Arc<Mutex<Option<String>>>,
     current_child: Arc<Mutex<Option<Child>>>,
-    broadcast_tx: broadcast::Sender<BroadcastMessage>,
+    images_sent_count: Arc<Mutex<u32>>,
+    event_tx: mpsc::UnboundedSender<BroadcastMessage>,
 }
 
 impl AgentProcess {
@@ -93,11 +375,14 @@ impl AgentProcess {
         working_dir: String,
         model: String,
         thinking_enabled: bool,
+        reasoning_effort: String,
+        specialty: AgentSpecialty,
         mcp_servers: Vec<String>,
-        broadcast_tx: broadcast::Sender<BroadcastMessage>,
+        cli_type: CliType,
+        event_tx: mpsc::UnboundedSender<BroadcastMessage>,
         initial_session_id: Option<String>,
     ) -> Result<Self, String> {
-        find_claude_cli()?;
+        find_cli(&cli_type)?;
 
         Ok(Self {
             id,
@@ -105,91 +390,370 @@ impl AgentProcess {
             working_dir,
             model,
             thinking_enabled,
+            reasoning_effort,
+            specialty,
             mcp_servers,
+            cli_type,
+            status: Arc::new(Mutex::new(AgentStatus::Idle)),
             session_id: Arc::new(Mutex::new(initial_session_id)),
             current_child: Arc::new(Mutex::new(None)),
-            broadcast_tx,
+            images_sent_count: Arc::new(Mutex::new(0)),
+            event_tx,
         })
     }
 
+    fn emit_status(&self, status: AgentStatus) {
+        if let Ok(mut guard) = self.status.lock() {
+            *guard = status.clone();
+        }
+        let _ = self
+            .event_tx
+            .send(BroadcastMessage::AgentStatus(AgentStatusChange {
+                agent_id: self.id.clone(),
+                status,
+            }));
+    }
+
+    pub fn get_status(&self) -> AgentStatus {
+        self.status
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(AgentStatus::Error)
+    }
+
+    pub fn get_session_id(&self) -> Option<String> {
+        self.session_id.lock().ok().and_then(|s| s.clone())
+    }
+
     pub fn send_message(&self, message: &str, images: &[String]) -> Result<(), String> {
-        let claude_path = find_claude_cli()?;
+        let cli_path = find_cli(&self.cli_type)?;
 
         if !images.is_empty() {
             tracing::debug!("[AgentProcess] Received {} image(s): {:?}", images.len(), images);
         }
 
         // Emit thinking status
-        let _ = self.broadcast_tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
-            agent_id: self.id.clone(),
-            status: AgentStatus::Thinking,
-        }));
+        self.emit_status(AgentStatus::Thinking);
 
-        // Build the prompt with embedded image paths
-        let prompt = if images.is_empty() {
-            message.to_string()
-        } else {
-            let image_paths = images.join(" ");
-            format!("Images attached: {}\n\n{}", image_paths, message)
+        // Build command args based on CLI type
+        let (args, cli_name, prompt_for_stdin) = match self.cli_type {
+            CliType::Claude => {
+                // Build the prompt with embedded image paths and metadata for Claude
+                let prompt = if images.is_empty() {
+                    message.to_string()
+                } else {
+                    // Get current image count and update it
+                    let (previous_count, new_total) = {
+                        let mut count_guard = self.images_sent_count.lock().map_err(|e| e.to_string())?;
+                        let prev = *count_guard;
+                        let new_count = images.len() as u32;
+                        *count_guard = prev + new_count;
+                        (prev, prev + new_count)
+                    };
+
+                    // Use @-prefixed paths on their own lines so the Claude CLI can reliably
+                    // detect and attach images (especially on Windows).
+                    let image_list: Vec<String> = images
+                        .iter()
+                        .map(|path| {
+                            let display_path = if cfg!(windows) {
+                                path.replace('\\', "/")
+                            } else {
+                                path.clone()
+                            };
+                            format!("@{}", display_path)
+                        })
+                        .collect();
+
+                    // Format with clear metadata to help Claude distinguish new vs old images
+                    if previous_count == 0 {
+                        format!(
+                            "=== NEW IMAGE(S) ATTACHED TO THIS MESSAGE ===\n\
+                            Images in this message: {}\n\
+                            {}\n\
+                            ==============================================\n\n\
+                            {}",
+                            images.len(),
+                            image_list.join("\n"),
+                            message
+                        )
+                    } else {
+                        format!(
+                            "=== NEW IMAGE(S) ATTACHED TO THIS MESSAGE ===\n\
+                            Images in this message: {} (new)\n\
+                            Total images in session: {} (images #1-{} were in previous messages)\n\
+                            New image(s):\n\
+                            {}\n\
+                            ==============================================\n\n\
+                            {}",
+                            images.len(),
+                            new_total,
+                            previous_count,
+                            image_list.join("\n"),
+                            message
+                        )
+                    }
+                };
+
+                // On Windows, passing large prompts (or system prompts) via argv can hit the
+                // cmd.exe command-line length limit when the CLI is installed as a `.cmd` shim.
+                // To avoid this, always send the prompt via stdin.
+                let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
+                let prompt = if self.specialty == AgentSpecialty::RobloxBuilder && session_id_opt.is_none() {
+                    format!("{}\n\n---\n\n{}", ROBLOX_BUILDER_SYSTEM_PROMPT, prompt)
+                } else {
+                    prompt
+                };
+                let prompt_for_stdin = Some(prompt);
+
+                // Build Claude CLI args
+                let mut args = vec![
+                    "-p".to_string(),
+                    "--output-format".to_string(),
+                    "stream-json".to_string(),
+                    "--input-format".to_string(),
+                    "text".to_string(),
+                    "--verbose".to_string(),
+                    "--dangerously-skip-permissions".to_string(),
+                ];
+
+                // Add model selection
+                args.push("--model".to_string());
+                args.push(self.model.clone());
+
+                // Enable/disable extended thinking via CLI settings
+                if self.thinking_enabled {
+                    args.push("--settings".to_string());
+                    args.push(r#"{"alwaysThinkingEnabled": true}"#.to_string());
+                }
+
+                if let Some(ref sid) = session_id_opt {
+                    args.push("--resume".to_string());
+                    args.push(sid.clone());
+                }
+
+                // Add MCP server configuration if any servers are enabled
+                if !self.mcp_servers.is_empty() {
+                    let mut mcp_servers_obj = serde_json::Map::new();
+
+                    for server_id in &self.mcp_servers {
+                        let Some(npm_package) = get_mcp_server_package(server_id) else {
+                            tracing::warn!("[AgentProcess] Unknown MCP server id ignored: {}", server_id);
+                            continue;
+                        };
+
+                        let mut server_cfg = serde_json::Map::new();
+                        server_cfg.insert(
+                            "command".to_string(),
+                            serde_json::Value::String("npx".to_string()),
+                        );
+                        server_cfg.insert(
+                            "args".to_string(),
+                            serde_json::json!(["-y", npm_package]),
+                        );
+
+                        // Optional env injection for known servers
+                        if server_id == "brave-search" {
+                            if let Ok(key) = env::var("BRAVE_API_KEY") {
+                                server_cfg.insert("env".to_string(), serde_json::json!({ "BRAVE_API_KEY": key }));
+                            }
+                        }
+
+                        mcp_servers_obj.insert(server_id.clone(), serde_json::Value::Object(server_cfg));
+                    }
+
+                    if !mcp_servers_obj.is_empty() {
+                        let mcp_config = serde_json::Value::Object({
+                            let mut root = serde_json::Map::new();
+                            root.insert("mcpServers".to_string(), serde_json::Value::Object(mcp_servers_obj));
+                            root
+                        });
+
+                        args.push("--mcp-config".to_string());
+                        args.push(mcp_config.to_string());
+                        args.push("--strict-mcp-config".to_string());
+
+                        tracing::info!("[AgentProcess] MCP servers enabled: {:?}", self.mcp_servers);
+                    }
+                }
+
+                (args, "claude", prompt_for_stdin)
+            }
+            CliType::Codex => {
+                // Build Codex CLI args
+                // Check if we have a session ID for continuation
+                let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
+                let prompt = if session_id_opt.is_none() && self.specialty == AgentSpecialty::RobloxBuilder {
+                    format!("{}\n\n---\n\n{}", ROBLOX_BUILDER_SYSTEM_PROMPT, message)
+                } else {
+                    message.to_string()
+                };
+                let prompt_for_stdin = Some(prompt);
+
+                // Codex CLI structure: codex exec [OPTIONS] <PROMPT>
+                // or: codex exec resume [OPTIONS] <SESSION_ID> <PROMPT>
+                // Options must come AFTER exec/exec resume, not before
+                let mut args = if let Some(ref sid) = session_id_opt {
+                    // Codex resume: codex exec resume [OPTIONS] <session_id> <prompt>
+                    vec![
+                        "exec".to_string(),
+                        "resume".to_string(),
+                        "--dangerously-bypass-approvals-and-sandbox".to_string(),
+                        "--skip-git-repo-check".to_string(),
+                        "--json".to_string(),
+                        "--model".to_string(),
+                        self.model.clone(),
+                        sid.clone(),
+                        "-".to_string(),
+                    ]
+                } else {
+                    // Codex new session: codex exec [OPTIONS] <prompt>
+                    vec![
+                        "exec".to_string(),
+                        "--dangerously-bypass-approvals-and-sandbox".to_string(),
+                        "--skip-git-repo-check".to_string(),
+                        "--json".to_string(),
+                        "--model".to_string(),
+                        self.model.clone(),
+                        "-".to_string(),
+                    ]
+                };
+
+                // For options that need to come before the prompt, we need to insert them
+                // before the last element (the prompt) and session_id if present
+
+                // Add reasoning effort via config flag for models that support it
+                // GPT-5.x models and o-series models all support reasoning effort
+                let supports_reasoning = self.model.starts_with("gpt-5")
+                    || self.model.starts_with("o3")
+                    || self.model.starts_with("o4");
+                if supports_reasoning && !self.reasoning_effort.is_empty() {
+                    // Insert before prompt (last element) or before session_id+prompt (last 2 elements for resume)
+                    let insert_pos = if session_id_opt.is_some() {
+                        args.len() - 2  // Before session_id and prompt
+                    } else {
+                        args.len() - 1  // Before prompt
+                    };
+                    args.insert(insert_pos, "-c".to_string());
+                    args.insert(insert_pos + 1, format!("model_reasoning_effort=\"{}\"", self.reasoning_effort));
+                }
+
+                // Add images via -i flag for Codex (before prompt)
+                for img_path in images {
+                    let insert_pos = if session_id_opt.is_some() {
+                        args.len() - 2
+                    } else {
+                        args.len() - 1
+                    };
+                    args.insert(insert_pos, "-i".to_string());
+                    args.insert(insert_pos + 1, img_path.clone());
+                }
+
+                (args, "codex", prompt_for_stdin)
+            }
         };
 
-        let mut args = vec![
-            "-p".to_string(),
-            prompt,
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--verbose".to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ];
+        tracing::debug!("[AgentProcess] Executing {} CLI: {} {:?}", cli_name, cli_path.display(), args);
 
-        // Add model selection
-        args.push("--model".to_string());
-        args.push(self.model.clone());
+        let mut cmd = {
+            #[cfg(windows)]
+            {
+                let mut resolved_cli = cli_path.clone();
+                if resolved_cli.extension().is_none() {
+                    let cmd = resolved_cli.with_extension("cmd");
+                    if cmd.exists() {
+                        resolved_cli = cmd;
+                    } else {
+                        let ps1 = resolved_cli.with_extension("ps1");
+                        if ps1.exists() {
+                            resolved_cli = ps1;
+                        } else {
+                            let bat = resolved_cli.with_extension("bat");
+                            if bat.exists() {
+                                resolved_cli = bat;
+                            }
+                        }
+                    }
+                }
 
-        // Check for session continuation
-        let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
-        if let Some(ref sid) = session_id_opt {
-            args.push("--resume".to_string());
-            args.push(sid.clone());
-        }
+                let ext = resolved_cli
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase());
 
-        tracing::debug!("[AgentProcess] Executing: {} {:?}", claude_path.display(), args);
+                if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+                    let comspec = env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+                    let mut cmd = Command::new(comspec);
+                    cmd.arg("/C").arg(&resolved_cli);
+                    cmd
+                } else if matches!(ext.as_deref(), Some("ps1")) {
+                    let mut cmd = Command::new("powershell.exe");
+                    cmd.args([
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                    ])
+                    .arg(&resolved_cli);
+                    cmd
+                } else {
+                    Command::new(&resolved_cli)
+                }
+            }
 
-        let mut cmd = Command::new(&claude_path);
+            #[cfg(not(windows))]
+            {
+                Command::new(&cli_path)
+            }
+        };
         cmd.current_dir(&self.working_dir)
             .args(&args)
-            .stdin(Stdio::null())
+            .stdin(if prompt_for_stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Enable extended thinking via environment variable
-        if self.thinking_enabled {
-            cmd.env("MAX_THINKING_TOKENS", "31999");
-        }
+        // On Unix, put the spawned CLI into its own process group so "stop" can
+        // terminate the full tree (e.g., `codex` Node wrapper + native binary).
+        #[cfg(unix)]
+        {
+            use std::io;
+            use std::os::unix::process::CommandExt;
 
-        // Configure MCP servers via environment variable
-        // Claude CLI reads CLAUDE_MCP_SERVERS as a JSON array
-        if !self.mcp_servers.is_empty() {
-            let mcp_config = serde_json::to_string(&self.mcp_servers)
-                .unwrap_or_else(|_| "[]".to_string());
-            cmd.env("CLAUDE_MCP_SERVERS", mcp_config);
-            tracing::info!("[AgentProcess] Configured MCP servers: {:?}", self.mcp_servers);
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setpgid(0, 0) == 0 {
+                        Ok(())
+                    } else {
+                        Err(io::Error::last_os_error())
+                    }
+                });
+            }
         }
 
         let mut child = match cmd.spawn()
         {
             Ok(child) => child,
             Err(e) => {
-                let _ = self.broadcast_tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
-                    agent_id: self.id.clone(),
-                    status: AgentStatus::Error,
-                }));
-                return Err(format!("Failed to spawn claude process: {}", e));
+                self.emit_status(AgentStatus::Error);
+                return Err(format!("Failed to spawn {} process: {}", cli_name, e));
             }
         };
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+
+        if let Some(prompt) = prompt_for_stdin {
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(prompt.as_bytes());
+                let _ = stdin.write_all(b"\n");
+            }
+        }
 
         if let Ok(mut guard) = self.current_child.lock() {
             *guard = Some(child);
@@ -198,17 +762,24 @@ impl AgentProcess {
         // Spawn stdout reader thread
         if let Some(stdout_handle) = stdout {
             let agent_id = self.id.clone();
-            let tx = self.broadcast_tx.clone();
+            let tx = self.event_tx.clone();
             let session_id_arc = Arc::clone(&self.session_id);
+            let status_arc = Arc::clone(&self.status);
 
             thread::spawn(move || {
                 let reader = BufReader::new(stdout_handle);
                 for line in reader.lines() {
                     match line {
                         Ok(data) => {
-                            // Parse JSON to extract session_id and status
+                            // Parse JSON to extract session/thread id and status
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                                if let Some(sid) = json.get("session_id").and_then(|v| v.as_str()) {
+                                // Claude: `session_id`
+                                // Codex: `thread_id` (used for `codex exec resume <id>`)
+                                if let Some(sid) = json
+                                    .get("session_id")
+                                    .or_else(|| json.get("thread_id"))
+                                    .and_then(|v| v.as_str())
+                                {
                                     if let Ok(mut guard) = session_id_arc.lock() {
                                         if guard.is_none() {
                                             *guard = Some(sid.to_string());
@@ -221,8 +792,16 @@ impl AgentProcess {
                                         "assistant" | "content_block_delta" | "content_block_start" => {
                                             Some(AgentStatus::Working)
                                         }
+                                        // Codex JSONL events
+                                        "turn.started" | "item.started" | "item.completed" => Some(AgentStatus::Working),
+                                        "turn.completed" => Some(AgentStatus::Idle),
+                                        "turn.failed" => Some(AgentStatus::Error),
                                         "result" => {
-                                            if let Some(sid) = json.get("session_id").and_then(|v| v.as_str()) {
+                                            if let Some(sid) = json
+                                                .get("session_id")
+                                                .or_else(|| json.get("thread_id"))
+                                                .and_then(|v| v.as_str())
+                                            {
                                                 if let Ok(mut guard) = session_id_arc.lock() {
                                                     *guard = Some(sid.to_string());
                                                 }
@@ -237,6 +816,9 @@ impl AgentProcess {
                                     };
 
                                     if let Some(s) = status {
+                                        if let Ok(mut guard) = status_arc.lock() {
+                                            *guard = s.clone();
+                                        }
                                         let _ = tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
                                             agent_id: agent_id.clone(),
                                             status: s,
@@ -255,6 +837,9 @@ impl AgentProcess {
                     }
                 }
 
+                if let Ok(mut guard) = status_arc.lock() {
+                    *guard = AgentStatus::Idle;
+                }
                 let _ = tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
                     agent_id: agent_id.clone(),
                     status: AgentStatus::Idle,
@@ -265,7 +850,7 @@ impl AgentProcess {
         // Spawn stderr reader thread
         if let Some(stderr_handle) = stderr {
             let agent_id = self.id.clone();
-            let tx = self.broadcast_tx.clone();
+            let tx = self.event_tx.clone();
 
             thread::spawn(move || {
                 let reader = BufReader::new(stderr_handle);
@@ -292,13 +877,42 @@ impl AgentProcess {
     pub fn stop(&self) -> Result<(), String> {
         if let Ok(mut guard) = self.current_child.lock() {
             if let Some(ref mut child) = *guard {
-                child.kill().map_err(|e| format!("Failed to stop process: {}", e))?;
+                let pid = child.id();
+
+                #[cfg(windows)]
+                {
+                    // If we spawned via `cmd.exe /C` (or any wrapper), killing only the parent process
+                    // may leave the real CLI (node/codex) running. Use taskkill to terminate the tree.
+                    let _ = Command::new("taskkill")
+                        .args(["/PID", &pid.to_string(), "/T", "/F"])
+                        .output();
+                }
+
+                #[cfg(unix)]
+                {
+                    let pid_i32 = pid as i32;
+                    // Best-effort: ask the whole process group to stop gracefully first.
+                    unsafe {
+                        let _ = libc::kill(-pid_i32, libc::SIGINT);
+                        let _ = libc::kill(pid_i32, libc::SIGINT);
+                    }
+
+                    // Escalate to SIGKILL shortly after in case the CLI ignores SIGINT.
+                    thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        unsafe {
+                            let _ = libc::kill(-pid_i32, libc::SIGKILL);
+                            let _ = libc::kill(pid_i32, libc::SIGKILL);
+                        }
+                    });
+                }
+
+                // Fallback: If signals didn't work (or on platforms where we don't have process groups),
+                // attempt to kill the immediate child.
+                let _ = child.kill();
                 *guard = None;
                 // Emit idle status after stopping
-                let _ = self.broadcast_tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
-                    agent_id: self.id.clone(),
-                    status: AgentStatus::Idle,
-                }));
+                self.emit_status(AgentStatus::Idle);
             }
         }
         Ok(())
@@ -307,19 +921,35 @@ impl AgentProcess {
     pub fn kill(&mut self) -> Result<(), String> {
         if let Ok(mut guard) = self.current_child.lock() {
             if let Some(ref mut child) = *guard {
-                child.kill().map_err(|e| format!("Failed to kill process: {}", e))?;
+                #[cfg(windows)]
+                {
+                    let pid = child.id();
+                    let _ = Command::new("taskkill")
+                        .args(["/PID", &pid.to_string(), "/T", "/F"])
+                        .output();
+                }
+                let _ = child.kill();
             }
             *guard = None;
         }
         Ok(())
     }
 
-    pub fn update_settings(&mut self, model: Option<String>, thinking_enabled: Option<bool>, mcp_servers: Option<Vec<String>>) {
+    pub fn update_settings(
+        &mut self,
+        model: Option<String>,
+        thinking_enabled: Option<bool>,
+        reasoning_effort: Option<String>,
+        mcp_servers: Option<Vec<String>>,
+    ) {
         if let Some(m) = model {
             self.model = m;
         }
         if let Some(t) = thinking_enabled {
             self.thinking_enabled = t;
+        }
+        if let Some(r) = reasoning_effort {
+            self.reasoning_effort = r;
         }
         if let Some(s) = mcp_servers {
             self.mcp_servers = s;
@@ -339,14 +969,14 @@ impl Drop for AgentProcess {
 
 pub struct AgentManager {
     agents: HashMap<String, AgentProcess>,
-    broadcast_tx: broadcast::Sender<BroadcastMessage>,
+    event_tx: mpsc::UnboundedSender<BroadcastMessage>,
 }
 
 impl AgentManager {
-    pub fn new(broadcast_tx: broadcast::Sender<BroadcastMessage>) -> Self {
+    pub fn new(event_tx: mpsc::UnboundedSender<BroadcastMessage>) -> Self {
         Self {
             agents: HashMap::new(),
-            broadcast_tx,
+            event_tx,
         }
     }
 
@@ -357,11 +987,21 @@ impl AgentManager {
         working_dir: &str,
         model: &str,
         thinking_enabled: bool,
+        reasoning_effort: &str,
+        specialty: AgentSpecialty,
         mcp_servers: Vec<String>,
+        cli_type: CliType,
         session_id: Option<String>,
     ) -> Result<String, String> {
         // Use provided ID or generate a new one
         let id = id.map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // Idempotency: if an agent with this ID already exists, do not replace it.
+        // This prevents killing long-running agents when the UI reloads and rehydrates state.
+        if self.agents.contains_key(&id) {
+            tracing::info!("[AgentManager] Agent {} already exists; skipping create", id);
+            return Ok(id);
+        }
 
         if session_id.is_some() {
             tracing::info!("[AgentManager] Creating agent {} with existing session ID for conversation resumption", id);
@@ -373,8 +1013,11 @@ impl AgentManager {
             working_dir.to_string(),
             model.to_string(),
             thinking_enabled,
+            reasoning_effort.to_string(),
+            specialty,
             mcp_servers,
-            self.broadcast_tx.clone(),
+            cli_type,
+            self.event_tx.clone(),
             session_id,
         )?;
         self.agents.insert(id.clone(), agent);
@@ -405,14 +1048,48 @@ impl AgentManager {
         }
     }
 
-    pub fn list_agents(&self) -> Vec<(String, String, String, String, bool, Vec<String>)> {
+    pub fn list_agents(&self) -> Vec<(String, String, String, String, bool, Vec<String>, CliType, AgentSpecialty)> {
         self.agents
             .iter()
             .map(|(id, agent)| {
                 let (model, thinking_enabled, mcp_servers) = agent.get_settings();
-                (id.clone(), agent.name.clone(), agent.working_dir.clone(), model, thinking_enabled, mcp_servers)
+                (
+                    id.clone(),
+                    agent.name.clone(),
+                    agent.working_dir.clone(),
+                    model,
+                    thinking_enabled,
+                    mcp_servers,
+                    agent.cli_type.clone(),
+                    agent.specialty.clone(),
+                )
             })
             .collect()
+    }
+
+    pub fn list_agents_snapshot(&self) -> Vec<(String, String, String, String, bool, Vec<String>, CliType, AgentSpecialty, AgentStatus, Option<String>)> {
+        self.agents
+            .iter()
+            .map(|(id, agent)| {
+                let (model, thinking_enabled, mcp_servers) = agent.get_settings();
+                (
+                    id.clone(),
+                    agent.name.clone(),
+                    agent.working_dir.clone(),
+                    model,
+                    thinking_enabled,
+                    mcp_servers,
+                    agent.cli_type.clone(),
+                    agent.specialty.clone(),
+                    agent.get_status(),
+                    agent.get_session_id(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn get_agent_runtime(&self, id: &str) -> Option<(AgentStatus, Option<String>)> {
+        self.agents.get(id).map(|agent| (agent.get_status(), agent.get_session_id()))
     }
 
     pub fn update_agent_settings(
@@ -420,10 +1097,11 @@ impl AgentManager {
         id: &str,
         model: Option<String>,
         thinking_enabled: Option<bool>,
+        reasoning_effort: Option<String>,
         mcp_servers: Option<Vec<String>>,
     ) -> Result<(), String> {
         if let Some(agent) = self.agents.get_mut(id) {
-            agent.update_settings(model, thinking_enabled, mcp_servers);
+            agent.update_settings(model, thinking_enabled, reasoning_effort, mcp_servers);
             Ok(())
         } else {
             Err(format!("Agent not found: {}", id))

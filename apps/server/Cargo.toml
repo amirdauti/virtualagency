@@ -18,3 +18,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6"
 base64 = "0.22"
 portable-pty = "0.8"
+rand = "0.8"
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
