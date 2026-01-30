@@ -89,6 +89,59 @@ export function AgentPanel({
   const [showEditAvatar, setShowEditAvatar] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showScrollIndicator, setShowScrollIndicator] = useState(false);
+
+  // Resizable chat composer height (per agent)
+  const COMPOSER_HEIGHT_KEY = `va-composer-height:${agent.id}`;
+  const DEFAULT_COMPOSER_HEIGHT = 170;
+  const MIN_COMPOSER_HEIGHT = 110;
+  const MAX_COMPOSER_HEIGHT = 520;
+  const [composerHeight, setComposerHeight] = useState<number>(() => {
+    const raw = localStorage.getItem(COMPOSER_HEIGHT_KEY);
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isFinite(parsed)
+      ? Math.max(MIN_COMPOSER_HEIGHT, Math.min(MAX_COMPOSER_HEIGHT, parsed))
+      : DEFAULT_COMPOSER_HEIGHT;
+  });
+  const isResizingComposer = useRef(false);
+  const resizeStartY = useRef(0);
+  const resizeStartHeight = useRef(0);
+
+  const handleComposerResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      isResizingComposer.current = true;
+      resizeStartY.current = e.clientY;
+      resizeStartHeight.current = composerHeight;
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+    },
+    [composerHeight],
+  );
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isResizingComposer.current) return;
+      const delta = resizeStartY.current - e.clientY; // drag up increases height
+      const next = Math.max(
+        MIN_COMPOSER_HEIGHT,
+        Math.min(MAX_COMPOSER_HEIGHT, resizeStartHeight.current + delta),
+      );
+      setComposerHeight(next);
+    };
+    const onUp = () => {
+      if (!isResizingComposer.current) return;
+      isResizingComposer.current = false;
+      localStorage.setItem(COMPOSER_HEIGHT_KEY, String(composerHeight));
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [COMPOSER_HEIGHT_KEY, composerHeight]);
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -530,9 +583,20 @@ export function AgentPanel({
                 )}
               </div>
 
-              {/* Chat input - always visible */}
-              <div className="flex-shrink-0 border-t border-[#3c3c3c]">
-                <ChatPanel agentId={agent.id} />
+              {/* Chat input - resizable by dragging */}
+              <div
+                className="flex-shrink-0 border-t border-[#3c3c3c]"
+                style={{ height: composerHeight, overflow: "hidden" }}
+              >
+                <div
+                  onMouseDown={handleComposerResizeStart}
+                  className="h-1 w-full cursor-row-resize bg-transparent hover:bg-[#007fd4]/30"
+                  title="Drag to resize"
+                  aria-label="Resize chat input"
+                />
+                <div style={{ height: composerHeight - 4, overflow: "auto" }}>
+                  <ChatPanel agentId={agent.id} />
+                </div>
               </div>
             </>
           ) : activeTab === "output" ? (

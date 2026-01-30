@@ -46,6 +46,42 @@ function findAnimation(names: string[], patterns: string[]): string | null {
   return null;
 }
 
+function includesAnyPattern(name: string, patterns: string[]): boolean {
+  const lower = name.toLowerCase();
+  return patterns.some((p) => lower.includes(p.toLowerCase()));
+}
+
+function chooseIdleAnimation(
+  names: string[],
+  idlePatterns: string[],
+  walkPatterns: string[],
+): string | null {
+  const byPattern = findAnimation(names, idlePatterns);
+  if (byPattern) return byPattern;
+
+  // Avoid picking a locomotion loop as "idle" when the model doesn't label animations well.
+  const nonWalk = names.find((n) => !includesAnyPattern(n, walkPatterns));
+  return nonWalk ?? null;
+}
+
+function chooseWalkAnimation(
+  names: string[],
+  walkPatterns: string[],
+  idleChosen: string | null,
+): string | null {
+  const byPattern = findAnimation(names, walkPatterns);
+  if (byPattern) return byPattern;
+
+  // Heuristic fallback: if we have multiple animations, pick one that's not the chosen idle.
+  if (names.length > 1) {
+    const alt = names.find((n) => n !== idleChosen);
+    return alt ?? null;
+  }
+
+  // If there is only one animation, use it only while walking.
+  return names.length === 1 ? names[0] : null;
+}
+
 // GLB Model Avatar Component
 interface GLBModelAvatarProps {
   config: AvatarConfig;
@@ -127,8 +163,17 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
   }, [names, agent.name]);
 
   // Animation switching logic
+  const stopAllAnimations = () => {
+    names.forEach((n) => actions[n]?.stop());
+    currentAnimRef.current = null;
+  };
+
   const playAnimation = (animName: string | null) => {
-    if (!animName || animName === currentAnimRef.current) return;
+    if (!animName) {
+      stopAllAnimations();
+      return;
+    }
+    if (animName === currentAnimRef.current) return;
 
     // Fade out current animation
     if (currentAnimRef.current && actions[currentAnimRef.current]) {
@@ -136,8 +181,9 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     }
 
     // Fade in new animation
-    if (actions[animName]) {
-      actions[animName]?.reset().fadeIn(0.2).play();
+    const action = actions[animName];
+    if (action) {
+      action.reset().fadeIn(0.2).play();
       currentAnimRef.current = animName;
     }
   };
@@ -147,22 +193,20 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
   const walkAnimPatterns = config.walkAnims ?? ["walk", "Walk", "run", "Run", "locomotion"];
 
   const idleAnim = useMemo(
-    () => findAnimation(names, idleAnimPatterns) || names[0] || null,
-    [names, idleAnimPatterns]
+    () => chooseIdleAnimation(names, idleAnimPatterns, walkAnimPatterns),
+    [names, idleAnimPatterns, walkAnimPatterns]
   );
   const walkAnim = useMemo(
-    () => findAnimation(names, walkAnimPatterns),
-    [names, walkAnimPatterns]
+    () => chooseWalkAnimation(names, walkAnimPatterns, idleAnim),
+    [names, walkAnimPatterns, idleAnim]
   );
 
   // Play initial animation
   useEffect(() => {
-    if (idleAnim) {
-      playAnimation(idleAnim);
-    }
+    playAnimation(idleAnim);
 
     return () => {
-      names.forEach(name => actions[name]?.stop());
+      stopAllAnimations();
     };
   }, [idleAnim, actions, names]);
 
@@ -224,9 +268,7 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
           groupRef.current.rotation.y = targetRotation;
 
           // Switch back to idle animation
-          if (idleAnim) {
-            playAnimation(idleAnim);
-          }
+          playAnimation(idleAnim);
         }
       } else {
         const moveAmount = Math.min(WALK_SPEED * delta, distance);

@@ -42,7 +42,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "landmine_girl",
     name: "Landmine Girl",
     path: "/models/avatars/-_landmine_girl.glb",
-    scale: 1.0,
+    scale: 1.25,
     idleAnims: ["idle", "Idle", "stand"],
     walkAnims: ["walk", "Walk", "run", "Run"]
   },
@@ -50,7 +50,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "supermodel",
     name: "Supermodel",
     path: "/models/avatars/animated_supermodel_catwalk_walking_loop.glb",
-    scale: 1.0,
+    scale: 0.85,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk", "catwalk", "Catwalk"]
   },
@@ -58,7 +58,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "astronaut",
     name: "Astronaut",
     path: "/models/avatars/astronaut_character_stylized_rigged_free_model.glb",
-    scale: 1.0,
+    scale: 0.35,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk"]
   },
@@ -66,7 +66,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "paladin",
     name: "Darien the Paladin",
     path: "/models/avatars/darien_the_paladin_moba_character.glb",
-    scale: 1.0,
+    scale: 1.4,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk", "run", "Run"]
   },
@@ -74,7 +74,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "humanoid",
     name: "Humanoid Avatar",
     path: "/models/avatars/humanoid_avatar_with_rig.glb",
-    scale: 1.0,
+    scale: 0.7,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk"]
   },
@@ -82,7 +82,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "punk_demon",
     name: "Punk Demon",
     path: "/models/avatars/neverblink__punk_demon.glb",
-    scale: 1.0,
+    scale: 0.6,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk"]
   },
@@ -106,7 +106,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "spiderman",
     name: "Spider-Man",
     path: "/models/avatars/spider_man__rigged___superhero___unityunreal.glb",
-    scale: 1.0,
+    scale: 0.55,
     idleAnims: ["idle", "Idle"],
     walkAnims: ["walk", "Walk", "run", "Run"]
   },
