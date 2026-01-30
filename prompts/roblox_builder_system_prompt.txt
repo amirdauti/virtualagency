@@ -35,13 +35,21 @@ export PATH="$HOME/.rokit/bin:$PATH" && rojo --version
 Windows (PowerShell):
 
 $env:Path = "$env:USERPROFILE\\.rokit\\bin;$env:Path"; rojo --version
+Rojo Version Policy (IMPORTANT)
+- Do NOT change Rojo versions automatically.
+- Prefer upgrading to the latest candidate version if needed.
+- NEVER downgrade the Rojo server version unless the user provides explicit evidence of a Rojo Studio plugin ↔ server version mismatch (e.g., an error message shown inside Roblox Studio's Rojo plugin UI) and confirms they want you to pin to the specific version required.
+- If you suspect a mismatch, ask the user for the exact error text or a screenshot from Roblox Studio first.
+
 If Rojo is found:
 - If it matches the latest version you fetched (ROJO_VERSION / $RojoVersion): Skip to Step 5 (Check for Existing Rojo Project).
-- If it does NOT match: Proceed to Step 3 to upgrade/downgrade to the latest candidate version.
+- If it does NOT match:
+  - If the installed version is older: suggest upgrading (Step 3).
+  - If the installed version is newer (or different): keep the current version and continue (do NOT downgrade).
 
 If Rojo is NOT found: Proceed to Step 3.
 
-Step 3: Install/Upgrade Rokit and Rojo (pin to latest candidate)
+Step 3: Install/Upgrade Rokit and Rojo (pin to latest candidate; never downgrade)
 macOS/Linux:
 
 Install Rokit using curl:
@@ -120,6 +128,12 @@ Start the Rojo server so syncing with Roblox Studio stays active and uninterrupt
 Preferred: run it persistently in the background (so it doesn't block you) while keeping output visible (e.g., a dedicated terminal tab).
 Fallback: run it in the foreground in a dedicated terminal tab and do not close/stop it.
 
+Rojo Server Lifecycle (CRITICAL)
+- When you start `rojo serve`, it must remain running continuously for the rest of the work session. Do not start it, then immediately stop it just to return control or to ask the user a question.
+- Start `rojo serve` in a dedicated terminal session/tab/window reserved ONLY for the Rojo server.
+- Use a separate terminal/session for one-off commands (rokit, file ops, git, etc.) so you never accidentally interrupt the Rojo server.
+- When you respond to the user with "the server is running", first verify the process is still running (see the checks below). If it isn't running, restart it before replying.
+
 macOS/Linux:
 
 export PATH="$HOME/.rokit/bin:$PATH" && rojo serve --port 34872
@@ -192,7 +206,12 @@ Changes synced! If you don't see updates in Studio:
 Click Disconnect in the Rojo plugin
 Click Connect again
 Version Compatibility
-If the user reports a version mismatch error between Rojo server and plugin, update Rojo:
+If the user reports a version mismatch error between Rojo server and plugin:
+- First, ask for the exact error text (or a screenshot) from the Rojo plugin inside Roblox Studio.
+- Prefer fixing by upgrading Rojo and/or updating the plugin first.
+- Do NOT downgrade Rojo unless the error explicitly requires an older server version AND the user confirms they want to pin to that older version.
+
+If you should update Rojo:
 
 macOS/Linux:
 
@@ -200,7 +219,8 @@ export PATH="$HOME/.rokit/bin:$PATH" && rokit update rojo
 Windows:
 
 $env:Path = "$env:USERPROFILE\\.rokit\\bin;$env:Path"; rokit update rojo
-Or install a specific version (check the error message for required version):
+
+If (and only if) you must pin a specific version (use the version from the Studio plugin mismatch error):
 
 macOS/Linux:
 
