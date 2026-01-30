@@ -9,6 +9,8 @@ import {
   MoreHorizontal,
   FolderOpen,
   Pencil,
+  Play,
+  Square,
 } from "lucide-react";
 import type { Agent } from "@virtual-agency/shared";
 import type { OutputLine } from "../../hooks/useAgentOutput";
@@ -105,9 +107,62 @@ export function AgentPanel({
     registerOutputCallback,
   } = useTerminals(agent.id);
 
+  const isRobloxBuilder = agent.specialty === "roblox_builder";
+  const [rojoTerminalId, setRojoTerminalId] = useState<string | null>(null);
+
+  // Keep Rojo terminal id in sync with terminal list (e.g. if user closes the tab)
+  useEffect(() => {
+    if (!isRobloxBuilder) {
+      setRojoTerminalId(null);
+      return;
+    }
+
+    const existing = terminals.find((t) => t.name === "Rojo Server");
+    setRojoTerminalId(existing?.id ?? null);
+  }, [isRobloxBuilder, terminals]);
+
   const handleCreateTerminal = useCallback(() => {
     createTerminal(agent.workingDirectory, `Terminal ${terminals.length + 1}`);
   }, [agent.workingDirectory, createTerminal, terminals.length]);
+
+  const handleToggleRojoServer = useCallback(async () => {
+    if (!isRobloxBuilder) return;
+
+    // If running, stop by killing the dedicated terminal session
+    if (rojoTerminalId) {
+      await killTerminal(rojoTerminalId);
+      return;
+    }
+
+    const session = await createTerminal(agent.workingDirectory, "Rojo Server");
+    if (!session) return;
+
+    // Switch to terminal tab and focus the Rojo terminal
+    setActiveTabStore(agent.id, "terminal");
+    useTerminalStore.getState().setActiveTerminal(agent.id, session.id);
+
+    // Start Rojo server inside the dedicated terminal.
+    // Note: Terminal default on Windows is cmd.exe (COMSPEC), so use cmd syntax.
+    const isWindows =
+      typeof navigator !== "undefined" &&
+      (navigator.platform?.toLowerCase().includes("win") ||
+        navigator.userAgent?.toLowerCase().includes("windows"));
+    const newline = isWindows ? "\r\n" : "\n";
+    const cmd = isWindows
+      ? `set \"PATH=%USERPROFILE%\\\\.rokit\\\\bin;%PATH%\" && rojo serve --port 34872${newline}`
+      : `export PATH=\"$HOME/.rokit/bin:$PATH\" && rojo serve --port 34872${newline}`;
+
+    sendInput(session.id, cmd);
+  }, [
+    agent.id,
+    agent.workingDirectory,
+    createTerminal,
+    isRobloxBuilder,
+    killTerminal,
+    rojoTerminalId,
+    sendInput,
+    setActiveTabStore,
+  ]);
 
   // Load file tree when Files tab is opened
   const setAgentId = useFileExplorerStore((state) => state.setAgentId);
@@ -380,25 +435,46 @@ export function AgentPanel({
 
         {/* Tab bar - VS Code style */}
         <div className="flex items-center px-3 py-1.5 gap-1 bg-[#1e1e1e] border-b border-[#3c3c3c] flex-shrink-0">
-          {TAB_CONFIG.map(({ id, label, icon: Icon }) => {
-            const isActive = activeTab === id;
-            return (
+          <div className="flex items-center gap-1">
+            {TAB_CONFIG.map(({ id, label, icon: Icon }) => {
+              const isActive = activeTab === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => setActiveTab(id)}
+                  className={`
+                    flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all duration-200 border-none cursor-pointer
+                    ${isActive
+                      ? "bg-[#37373d] text-white"
+                      : "bg-transparent text-[#969696] hover:text-[#cccccc] hover:bg-[#2a2a2a]"
+                    }
+                  `}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Roblox: Rojo server toggle (far right of tabs) */}
+          {isRobloxBuilder && (
+            <div className="ml-auto flex items-center">
               <button
-                key={id}
-                onClick={() => setActiveTab(id)}
-                className={`
-                  flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all duration-200 border-none cursor-pointer
-                  ${isActive
-                    ? "bg-[#37373d] text-white"
-                    : "bg-transparent text-[#969696] hover:text-[#cccccc] hover:bg-[#2a2a2a]"
-                  }
-                `}
+                onClick={handleToggleRojoServer}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all duration-200 border cursor-pointer ${
+                  rojoTerminalId
+                    ? "bg-[#11301b] text-[#4ade80] border-[#2f6f42] hover:bg-[#154022]"
+                    : "bg-transparent text-[#969696] border-[#3c3c3c] hover:text-[#cccccc] hover:bg-[#2a2a2a]"
+                }`}
+                title={rojoTerminalId ? "Stop Rojo server" : "Start Rojo server"}
+                aria-label={rojoTerminalId ? "Stop Rojo server" : "Start Rojo server"}
               >
-                <Icon className="w-4 h-4" />
-                <span>{label}</span>
+                {rojoTerminalId ? <Square className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                <span>Rojo</span>
               </button>
-            );
-          })}
+            </div>
+          )}
         </div>
 
         {/* Content area */}
