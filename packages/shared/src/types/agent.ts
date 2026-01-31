@@ -57,7 +57,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "astronaut",
     name: "Astronaut",
     path: "/models/avatars/astronaut_character_stylized_rigged_free_model.glb",
-    scale: 1.2,
+    scale: 1.8,
   },
   {
     id: "paladin",
