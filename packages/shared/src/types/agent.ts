@@ -48,7 +48,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "supermodel",
     name: "Supermodel",
     path: "/models/avatars/animated_supermodel_catwalk_walking_loop.glb",
-    scale: 1.0,
+    scale: 1.2,
     // Avoid idling in the catwalk loop; only animate while walking.
     idleAnims: ["idle", "stand", "Idle", "Stand"],
     walkAnims: ["catwalk", "walk", "run", "locomotion", "Catwalk", "Walk", "Run"],
@@ -57,7 +57,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "astronaut",
     name: "Astronaut",
     path: "/models/avatars/astronaut_character_stylized_rigged_free_model.glb",
-    scale: 1.0,
+    scale: 1.2,
   },
   {
     id: "paladin",
@@ -87,13 +87,13 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "rpm_male",
     name: "Ready Player Me Male",
     path: "/models/avatars/ready_player_me_male_avatar.glb",
-    scale: 1.0,
+    scale: 1.1,
   },
   {
     id: "spiderman",
     name: "Spider-Man",
     path: "/models/avatars/spider_man__rigged___superhero___unityunreal.glb",
-    scale: 1.0,
+    scale: 1.15,
     // Some Spider-Man rigs ship without a proper idle; avoid playing an action loop while standing.
     idleAnims: ["idle", "stand", "Idle", "Stand"],
   },
@@ -101,7 +101,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "stylized_male",
     name: "Stylized Male",
     path: "/models/avatars/stylized_male.glb",
-    scale: 1.0,
+    scale: 1.1,
   },
 ];
 
