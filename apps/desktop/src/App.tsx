@@ -90,6 +90,9 @@ function Scene({
         target={[0, 0, 0]}
         enablePan={true}
         panSpeed={0.5}
+        // Stop camera immediately on pointer-up (no inertia/damping) to avoid
+        // the DPR toggling while the camera continues to glide.
+        enableDamping={false}
         onStart={onControlsStart}
         onEnd={onControlsEnd}
         onChange={onControlsChange}
