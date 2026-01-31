@@ -21,6 +21,10 @@ export interface ChatMessage {
     filePath: string;
     oldContent?: string;
     newContent?: string;
+    // Optional 1-based start line numbers for the preview blocks, so diffs can show
+    // real file line numbers even when we only render a window around the change.
+    oldStartLine?: number;
+    newStartLine?: number;
     linesAdded?: number;
     linesRemoved?: number;
   };

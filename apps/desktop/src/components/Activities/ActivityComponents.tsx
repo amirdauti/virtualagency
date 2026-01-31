@@ -8,7 +8,14 @@ import { ChatMessage } from "../../stores/chatStore";
 export function DiffView({ message }: { message: ChatMessage }) {
   if (!message.diffData) return null;
 
-  const { filePath, oldContent, newContent, linesAdded, linesRemoved } = message.diffData;
+  const {
+    filePath,
+    oldContent,
+    newContent,
+    oldStartLine,
+    newStartLine,
+    linesAdded,
+  } = message.diffData;
 
   // For Write operations, only show the new content
   if (!oldContent && newContent) {
@@ -29,8 +36,8 @@ export function DiffView({ message }: { message: ChatMessage }) {
         filePath={filePath}
         oldContent={oldContent}
         newContent={newContent}
-        linesAdded={linesAdded}
-        linesRemoved={linesRemoved}
+        oldStartLine={oldStartLine}
+        newStartLine={newStartLine}
       />
     );
   }
@@ -82,15 +89,15 @@ function EditDiffView({
   filePath,
   oldContent,
   newContent,
-  linesAdded,
-  linesRemoved,
+  oldStartLine,
+  newStartLine,
 }: {
   messageId: string;
   filePath?: string;
   oldContent: string;
   newContent: string;
-  linesAdded?: number;
-  linesRemoved?: number;
+  oldStartLine?: number;
+  newStartLine?: number;
 }) {
   const rows: DiffRow[] = useMemo(() => {
     const oldLines = oldContent.split("\n");
@@ -122,8 +129,8 @@ function EditDiffView({
     const out: DiffRow[] = [];
     let i = 0;
     let j = 0;
-    let oldNo = 1;
-    let newNo = 1;
+    let oldNo = typeof oldStartLine === "number" && oldStartLine > 0 ? oldStartLine : 1;
+    let newNo = typeof newStartLine === "number" && newStartLine > 0 ? newStartLine : 1;
 
     while (i < n && j < m) {
       if (oldLines[i] === newLines[j]) {
@@ -154,6 +161,8 @@ function EditDiffView({
   // Do NOT vertically align/pad one side with blanks (that creates large vertical "gaps").
   const removedRows = useMemo(() => rows.filter((r) => r.kind === "remove"), [rows]);
   const addedRows = useMemo(() => rows.filter((r) => r.kind === "add"), [rows]);
+  const hasRemovals = removedRows.length > 0;
+  const hasAdds = addedRows.length > 0;
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const firstRowRef = useRef<HTMLDivElement>(null);
@@ -168,36 +177,50 @@ function EditDiffView({
       <div style={diffHeaderStyle}>
         <span style={diffFileNameStyle}>{getShortPath(filePath)}</span>
         <span style={diffStatsStyle}>
-          {linesRemoved && linesRemoved > 0 && <span style={removedCountStyle}>-{linesRemoved}</span>}
-          {linesAdded && linesAdded > 0 && <span style={addedCountStyle}>+{linesAdded}</span>}
+          {hasRemovals && <span style={removedCountStyle}>-{removedRows.length}</span>}
+          {hasAdds && <span style={addedCountStyle}>+{addedRows.length}</span>}
         </span>
       </div>
       <div ref={scrollContainerRef} style={diffCodeContainerStyle}>
-        <div style={diffPairedColumnsStyle}>
-          <div style={diffColumnPaneStyle}>
-            {removedRows.map((row, idx) => (
-              <div
-                key={`rm-${idx}`}
-                ref={idx === 0 ? firstRowRef : undefined}
-                style={diffLineStyle}
-              >
-                <span style={lineNumberStyle}>{row.oldLineNumber ?? ""}</span>
-                <span style={removedCellStyle}>{row.oldText ?? " "}</span>
-              </div>
-            ))}
-          </div>
-          <div style={diffColumnPaneStyleRight}>
-            {addedRows.map((row, idx) => (
-              <div
-                key={`add-${idx}`}
-                ref={removedRows.length === 0 && idx === 0 ? firstRowRef : undefined}
-                style={diffLineStyle}
-              >
-                <span style={lineNumberStyle}>{row.newLineNumber ?? ""}</span>
-                <span style={addedCellStyle}>{row.newText ?? " "}</span>
-              </div>
-            ))}
-          </div>
+        <div
+          style={{
+            ...diffPairedColumnsStyle,
+            gridTemplateColumns: hasRemovals && hasAdds ? "1fr 1fr" : "1fr",
+          }}
+        >
+          {hasRemovals && (
+            <div
+              style={{
+                ...diffColumnPaneStyle,
+                borderRight: hasAdds ? "1px solid rgba(255, 255, 255, 0.06)" : "none",
+              }}
+            >
+              {removedRows.map((row, idx) => (
+                <div
+                  key={`rm-${idx}`}
+                  ref={idx === 0 ? firstRowRef : undefined}
+                  style={diffLineStyle}
+                >
+                  <span style={lineNumberStyle}>{row.oldLineNumber ?? ""}</span>
+                  <span style={removedCellStyle}>{row.oldText ?? " "}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {hasAdds && (
+            <div style={diffColumnPaneStyleRight}>
+              {addedRows.map((row, idx) => (
+                <div
+                  key={`add-${idx}`}
+                  ref={!hasRemovals && idx === 0 ? firstRowRef : undefined}
+                  style={diffLineStyle}
+                >
+                  <span style={lineNumberStyle}>{row.newLineNumber ?? ""}</span>
+                  <span style={addedCellStyle}>{row.newText ?? " "}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

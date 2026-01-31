@@ -223,19 +223,27 @@ export function useChatMessages() {
                     }
 
                     const oldPreview = oldContent
-                      ? truncateForDiff(oldContent, MAX_DIFF_PREVIEW_LINES, MAX_DIFF_PREVIEW_CHARS)
+                      ? oldContent
                       : undefined;
-                    const newPreview =
-                      typeof newContent === "string"
-                        ? truncateForDiff(newContent, MAX_DIFF_PREVIEW_LINES, MAX_DIFF_PREVIEW_CHARS)
-                        : undefined;
+
+                    const windowed =
+                      !isDelete && typeof newContent === "string"
+                        ? buildWindowedDiffPreview(
+                            oldPreview,
+                            newContent,
+                            MAX_DIFF_PREVIEW_LINES,
+                            MAX_DIFF_PREVIEW_CHARS
+                          )
+                        : null;
 
                     const diffData =
                       !isDelete && typeof newContent === "string"
                         ? {
                             filePath: relativePath,
-                            oldContent: oldPreview,
-                            newContent: newPreview || newContent,
+                            oldContent: windowed?.oldPreview,
+                            newContent: windowed?.newPreview,
+                            oldStartLine: windowed?.oldStartLine,
+                            newStartLine: windowed?.newStartLine,
                             linesAdded: Math.max(
                               0,
                               newLineCount - oldLineCount
@@ -701,6 +709,90 @@ function truncateForDiff(text: string, maxLines: number, maxChars: number): stri
   }
 
   return truncated;
+}
+
+function buildWindowedDiffPreview(
+  oldContent: string | undefined,
+  newContent: string,
+  maxLines: number,
+  maxChars: number
+): {
+  oldPreview?: string;
+  newPreview: string;
+  oldStartLine?: number;
+  newStartLine: number;
+} {
+  const oldLines = (oldContent ?? "").split("\n");
+  const newLines = newContent.split("\n");
+
+  // Fast path: if either side is small, just truncate normally.
+  if (oldLines.length <= maxLines && newLines.length <= maxLines && newContent.length <= maxChars) {
+    return {
+      oldPreview: typeof oldContent === "string" ? truncateForDiff(oldContent, maxLines, maxChars) : undefined,
+      newPreview: truncateForDiff(newContent, maxLines, maxChars),
+      oldStartLine: typeof oldContent === "string" ? 1 : undefined,
+      newStartLine: 1,
+    };
+  }
+
+  // Find common prefix
+  let prefix = 0;
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix++;
+  }
+
+  // Find common suffix (bounded so it doesn't cross the prefix)
+  let oldEnd = oldLines.length - 1;
+  let newEnd = newLines.length - 1;
+  while (oldEnd >= prefix && newEnd >= prefix && oldLines[oldEnd] === newLines[newEnd]) {
+    oldEnd--;
+    newEnd--;
+  }
+
+  // If everything is equal (can happen if we only truncated upstream), fall back to head.
+  if (oldEnd < prefix && newEnd < prefix) {
+    return {
+      oldPreview: typeof oldContent === "string" ? truncateForDiff(oldContent, maxLines, maxChars) : undefined,
+      newPreview: truncateForDiff(newContent, maxLines, maxChars),
+      oldStartLine: typeof oldContent === "string" ? 1 : undefined,
+      newStartLine: 1,
+    };
+  }
+
+  const context = 30;
+  const oldWinStart = Math.max(0, prefix - context);
+  const newWinStart = Math.max(0, prefix - context);
+  const oldWinEnd = Math.min(oldLines.length, oldEnd + context + 1);
+  const newWinEnd = Math.min(newLines.length, newEnd + context + 1);
+
+  const clampWindow = (lines: string[], start: number, end: number, changeStart: number) => {
+    let winStart = start;
+    let winEnd = end;
+    const winLen = winEnd - winStart;
+    if (winLen <= maxLines) return { winStart, winEnd };
+
+    // Keep the window anchored around the first change (plus context), so we always show "what changed".
+    winStart = Math.max(0, Math.min(changeStart - context, lines.length - maxLines));
+    winEnd = Math.min(lines.length, winStart + maxLines);
+    return { winStart, winEnd };
+  };
+
+  const oldClamped = clampWindow(oldLines, oldWinStart, oldWinEnd, prefix);
+  const newClamped = clampWindow(newLines, newWinStart, newWinEnd, prefix);
+
+  const oldSlice = oldLines.slice(oldClamped.winStart, oldClamped.winEnd).join("\n");
+  const newSlice = newLines.slice(newClamped.winStart, newClamped.winEnd).join("\n");
+
+  return {
+    oldPreview: typeof oldContent === "string" ? truncateForDiff(oldSlice, maxLines, maxChars) : undefined,
+    newPreview: truncateForDiff(newSlice, maxLines, maxChars),
+    oldStartLine: typeof oldContent === "string" ? oldClamped.winStart + 1 : undefined,
+    newStartLine: newClamped.winStart + 1,
+  };
 }
 
 function toWorkspaceRelativePath(path: string, workingDir?: string): string {
