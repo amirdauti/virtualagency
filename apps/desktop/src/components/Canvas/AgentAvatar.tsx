@@ -112,57 +112,82 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
       config.pose === "armsDown" &&
       (!config.poseOnlyIfNoAnimations || (Array.isArray(animations) && animations.length === 0))
     ) {
-      const leftShoulderPatterns = ["leftshoulder", "lshoulder", "shoulder_l", "mixamorig:leftshoulder"];
-      const rightShoulderPatterns = ["rightshoulder", "rshoulder", "shoulder_r", "mixamorig:rightshoulder"];
-      const leftUpperArmPatterns = ["leftupperarm", "lupperarm", "upperarm_l", "mixamorig:leftarm", "mixamorig:leftupperarm", "leftarm"];
-      const rightUpperArmPatterns = ["rightupperarm", "rupperarm", "upperarm_r", "mixamorig:rightarm", "mixamorig:rightupperarm", "rightarm"];
-
-      const matchesAny = (name: string, patterns: string[]) => {
-        const lower = name.toLowerCase();
-        return patterns.some((p) => lower.includes(p));
+      const isExcludedArmPart = (n: string) => {
+        const l = n.toLowerCase();
+        return (
+          l.includes("forearm") ||
+          l.includes("lowerarm") ||
+          l.includes("hand") ||
+          l.includes("finger") ||
+          l.includes("thumb") ||
+          l.includes("ik") ||
+          l.includes("pole") ||
+          l.includes("target") ||
+          l.includes("effector") ||
+          l.includes("ctrl") ||
+          l.includes("control")
+        );
       };
 
-      const isLeftUpperArm = (name: string) =>
-        matchesAny(name, leftUpperArmPatterns) &&
-        !name.toLowerCase().includes("forearm") &&
-        !name.toLowerCase().includes("lowerarm") &&
-        !name.toLowerCase().includes("hand");
-      const isRightUpperArm = (name: string) =>
-        matchesAny(name, rightUpperArmPatterns) &&
-        !name.toLowerCase().includes("forearm") &&
-        !name.toLowerCase().includes("lowerarm") &&
-        !name.toLowerCase().includes("hand");
+      const isShoulderLike = (n: string) => {
+        const l = n.toLowerCase();
+        return l.includes("clavicle") || l.includes("shoulder");
+      };
 
-      const targets: THREE.Bone[] = [];
+      const isUpperArmLike = (n: string) => {
+        const l = n.toLowerCase();
+        return (
+          (l.includes("upperarm") || (l.includes("arm") && !l.includes("forearm") && !l.includes("lowerarm"))) &&
+          !l.includes("leg") &&
+          !l.includes("charm") &&
+          !l.includes("armor")
+        );
+      };
+
+      const inferSide = (bone: THREE.Bone): "left" | "right" | null => {
+        const n = (bone.name || "").toLowerCase();
+        if (n.includes("left") || n.startsWith("l_") || n.endsWith("_l") || n.includes(":left")) return "left";
+        if (n.includes("right") || n.startsWith("r_") || n.endsWith("_r") || n.includes(":right")) return "right";
+        const wp = new Vector3();
+        bone.getWorldPosition(wp);
+        if (Math.abs(wp.x) < 1e-3) return null;
+        return wp.x < 0 ? "left" : "right";
+      };
+
+      const bones: THREE.Bone[] = [];
       clone.traverse((obj) => {
         const anyObj = obj as any;
         if (!anyObj?.isSkinnedMesh) return;
         const skel = anyObj.skeleton;
         if (!skel?.bones?.length) return;
-        for (const b of skel.bones as THREE.Bone[]) targets.push(b);
+        for (const b of skel.bones as THREE.Bone[]) bones.push(b);
       });
+      const unique = Array.from(new Set(bones));
 
-      const unique = Array.from(new Set(targets));
+      let changed = 0;
       for (const b of unique) {
-        const n = b.name || "";
-        const lower = n.toLowerCase();
-        // Rotate shoulders slightly down/inward.
-        if (matchesAny(lower, leftShoulderPatterns)) {
-          b.rotation.z -= 0.35;
-        } else if (matchesAny(lower, rightShoulderPatterns)) {
-          b.rotation.z += 0.35;
-        }
+        const name = b.name || "";
+        if (!name) continue;
+        if (isExcludedArmPart(name)) continue;
+        if (!isShoulderLike(name) && !isUpperArmLike(name)) continue;
 
-        // Rotate upper arms down from T-pose toward A-pose.
-        if (isLeftUpperArm(n)) {
-          b.rotation.z -= 0.9;
-          b.rotation.x -= 0.1;
-        } else if (isRightUpperArm(n)) {
-          b.rotation.z += 0.9;
-          b.rotation.x -= 0.1;
+        const side = inferSide(b);
+        if (!side) continue;
+
+        // Pull shoulders slightly down/in, then bring upper arms down toward an A-pose.
+        if (isShoulderLike(name)) {
+          b.rotation.z += side === "left" ? -0.25 : 0.25;
+          changed++;
+        } else if (isUpperArmLike(name)) {
+          b.rotation.z += side === "left" ? -0.8 : 0.8;
+          b.rotation.x -= 0.08;
+          changed++;
         }
       }
-      clone.updateWorldMatrix(true, true);
+
+      if (changed > 0) {
+        clone.updateWorldMatrix(true, true);
+      }
     }
 
     // Compute a robust bounding box for scale/grounding.
@@ -182,6 +207,32 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
       const unique = Array.from(new Set(bones));
       if (unique.length === 0) return null;
 
+      // Some rigs include far-away helper/IK bones which distort bounds and centering.
+      // Build a robust bounds by dropping spatial outliers based on median distance.
+      const positions: Vector3[] = [];
+      const tmp = new Vector3();
+      for (const b of unique) {
+        b.getWorldPosition(tmp);
+        positions.push(tmp.clone());
+      }
+
+      if (positions.length === 0) return null;
+
+      // Centroid
+      const centroid = new Vector3();
+      for (const p of positions) centroid.add(p);
+      centroid.multiplyScalar(1 / positions.length);
+
+      const dists = positions
+        .map((p) => p.distanceTo(centroid))
+        .filter((d) => Number.isFinite(d))
+        .sort((a, b) => a - b);
+      const median = dists.length ? dists[Math.floor(dists.length / 2)] : 0;
+      const maxDist = median > 0.0001 ? median * 3.0 : 999999;
+
+      const filtered = positions.filter((p) => p.distanceTo(centroid) <= maxDist);
+      const use = filtered.length >= Math.max(8, Math.floor(positions.length * 0.3)) ? filtered : positions;
+
       const min = new Vector3(
         Number.POSITIVE_INFINITY,
         Number.POSITIVE_INFINITY,
@@ -192,11 +243,9 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         Number.NEGATIVE_INFINITY,
         Number.NEGATIVE_INFINITY
       );
-      const tmp = new Vector3();
-      for (const b of unique) {
-        b.getWorldPosition(tmp);
-        min.min(tmp);
-        max.max(tmp);
+      for (const p of use) {
+        min.min(p);
+        max.max(p);
       }
 
       const height = max.y - min.y;
