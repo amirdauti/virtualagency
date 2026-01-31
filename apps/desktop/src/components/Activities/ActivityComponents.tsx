@@ -12,157 +12,196 @@ export function DiffView({ message }: { message: ChatMessage }) {
 
   // For Write operations, only show the new content
   if (!oldContent && newContent) {
-    const lines = newContent.split('\n');
     return (
-      <div style={diffContainerStyle}>
-        <div style={diffHeaderStyle}>
-          <span style={diffFileNameStyle}>{getShortPath(filePath)}</span>
-          <span style={diffStatsStyle}>
-            {linesAdded} lines
-          </span>
-        </div>
-        <div style={diffCodeContainerStyle}>
-          <div style={codeBlockFullStyle}>
-            {lines.map((line, i) => (
-              <div key={i} style={codeLineStyle}>
-                <span style={lineNumberStyle}>{i + 1}</span>
-                <span style={codeContentStyle}>{line || ' '}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      <WriteDiffView
+        filePath={filePath}
+        newContent={newContent}
+        linesAdded={linesAdded}
+      />
     );
   }
 
   // For Edit operations, show side-by-side diff
   if (oldContent && newContent) {
-    const oldLines = oldContent.split('\n');
-    const newLines = newContent.split('\n');
-
-    type RowKind = 'equal' | 'add' | 'remove';
-    type DiffRow = {
-      kind: RowKind;
-      oldLineNumber?: number;
-      oldText?: string;
-      newLineNumber?: number;
-      newText?: string;
-    };
-
-    const rows: DiffRow[] = useMemo(() => {
-      const n = oldLines.length;
-      const m = newLines.length;
-
-      // If this is huge, avoid quadratic work and fall back to a simple view.
-      // (Most tool diffs are small snippets; this keeps the UI responsive for large blocks.)
-      const maxCells = 250_000; // ~500x500
-      if (n * m > maxCells) {
-        const out: DiffRow[] = [];
-        for (let i = 0; i < n; i++) out.push({ kind: 'remove', oldLineNumber: i + 1, oldText: oldLines[i] });
-        for (let j = 0; j < m; j++) out.push({ kind: 'add', newLineNumber: j + 1, newText: newLines[j] });
-        return out;
-      }
-
-      // LCS DP to align lines
-      const dp: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
-      for (let i = n - 1; i >= 0; i--) {
-        for (let j = m - 1; j >= 0; j--) {
-          if (oldLines[i] === newLines[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
-          else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
-        }
-      }
-
-      const out: DiffRow[] = [];
-      let i = 0;
-      let j = 0;
-      let oldNo = 1;
-      let newNo = 1;
-
-      while (i < n && j < m) {
-        if (oldLines[i] === newLines[j]) {
-          out.push({
-            kind: 'equal',
-            oldLineNumber: oldNo++,
-            oldText: oldLines[i],
-            newLineNumber: newNo++,
-            newText: newLines[j],
-          });
-          i++;
-          j++;
-        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-          out.push({ kind: 'remove', oldLineNumber: oldNo++, oldText: oldLines[i] });
-          i++;
-        } else {
-          out.push({ kind: 'add', newLineNumber: newNo++, newText: newLines[j] });
-          j++;
-        }
-      }
-      while (i < n) {
-        out.push({ kind: 'remove', oldLineNumber: oldNo++, oldText: oldLines[i++] });
-      }
-      while (j < m) {
-        out.push({ kind: 'add', newLineNumber: newNo++, newText: newLines[j++] });
-      }
-
-      return out;
-    }, [oldContent, newContent]);
-
-    const scrollContainerRef = useRef<HTMLDivElement>(null);
-    const firstChangeRef = useRef<HTMLDivElement>(null);
-    const firstChangeIndex = useMemo(
-      () => rows.findIndex((r) => r.kind !== 'equal'),
-      [rows],
-    );
-
-    useEffect(() => {
-      // Scroll to the first changed line when the diff mounts/updates.
-      // Use rAF so layout is ready.
-      requestAnimationFrame(() => {
-        firstChangeRef.current?.scrollIntoView({ block: 'center' });
-      });
-    }, [message.id]);
-
     return (
-      <div style={diffContainerStyle}>
-        <div style={diffHeaderStyle}>
-          <span style={diffFileNameStyle}>{getShortPath(filePath)}</span>
-          <span style={diffStatsStyle}>
-            {linesRemoved && linesRemoved > 0 && (
-              <span style={removedCountStyle}>-{linesRemoved}</span>
-            )}
-            {linesAdded && linesAdded > 0 && (
-              <span style={addedCountStyle}>+{linesAdded}</span>
-            )}
-          </span>
-        </div>
-        <div ref={scrollContainerRef} style={diffCodeContainerStyle}>
-          <div style={diffGridStyle}>
-            {rows.map((row, idx) => {
-              const setRef = firstChangeIndex >= 0 && idx === firstChangeIndex;
-              return (
-                <div
-                  key={idx}
-                  ref={setRef ? firstChangeRef : undefined}
-                  style={diffRowStyle}
-                >
-                  <span style={lineNumberStyle}>{row.oldLineNumber ?? ''}</span>
-                  <span style={row.kind === 'remove' ? removedCellStyle : codeContentStyle}>
-                    {row.oldText ?? ' '}
-                  </span>
-                  <span style={lineNumberStyle}>{row.newLineNumber ?? ''}</span>
-                  <span style={row.kind === 'add' ? addedCellStyle : codeContentStyle}>
-                    {row.newText ?? ' '}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+      <EditDiffView
+        messageId={message.id}
+        filePath={filePath}
+        oldContent={oldContent}
+        newContent={newContent}
+        linesAdded={linesAdded}
+        linesRemoved={linesRemoved}
+      />
     );
   }
 
   return null;
+}
+
+function WriteDiffView({
+  filePath,
+  newContent,
+  linesAdded,
+}: {
+  filePath?: string;
+  newContent: string;
+  linesAdded?: number;
+}) {
+  const lines = newContent.split("\n");
+  return (
+    <div style={diffContainerStyle}>
+      <div style={diffHeaderStyle}>
+        <span style={diffFileNameStyle}>{getShortPath(filePath)}</span>
+        <span style={diffStatsStyle}>{linesAdded ?? lines.length} lines</span>
+      </div>
+      <div style={diffCodeContainerStyle}>
+        <div style={codeBlockFullStyle}>
+          {lines.map((line, i) => (
+            <div key={i} style={codeLineStyle}>
+              <span style={lineNumberStyle}>{i + 1}</span>
+              <span style={codeContentStyle}>{line || " "}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type RowKind = "equal" | "add" | "remove";
+type DiffRow = {
+  kind: RowKind;
+  oldLineNumber?: number;
+  oldText?: string;
+  newLineNumber?: number;
+  newText?: string;
+};
+
+function EditDiffView({
+  messageId,
+  filePath,
+  oldContent,
+  newContent,
+  linesAdded,
+  linesRemoved,
+}: {
+  messageId: string;
+  filePath?: string;
+  oldContent: string;
+  newContent: string;
+  linesAdded?: number;
+  linesRemoved?: number;
+}) {
+  const rows: DiffRow[] = useMemo(() => {
+    const oldLines = oldContent.split("\n");
+    const newLines = newContent.split("\n");
+    const n = oldLines.length;
+    const m = newLines.length;
+
+    // If this is huge, avoid quadratic work and fall back to a simple view.
+    // (Most tool diffs are small snippets; this keeps the UI responsive for large blocks.)
+    const maxCells = 250_000; // ~500x500
+    if (n * m > maxCells) {
+      const out: DiffRow[] = [];
+      for (let i = 0; i < n; i++)
+        out.push({ kind: "remove", oldLineNumber: i + 1, oldText: oldLines[i] });
+      for (let j = 0; j < m; j++)
+        out.push({ kind: "add", newLineNumber: j + 1, newText: newLines[j] });
+      return out;
+    }
+
+    // LCS DP to align lines
+    const dp: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        if (oldLines[i] === newLines[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+        else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+
+    const out: DiffRow[] = [];
+    let i = 0;
+    let j = 0;
+    let oldNo = 1;
+    let newNo = 1;
+
+    while (i < n && j < m) {
+      if (oldLines[i] === newLines[j]) {
+        out.push({
+          kind: "equal",
+          oldLineNumber: oldNo++,
+          oldText: oldLines[i],
+          newLineNumber: newNo++,
+          newText: newLines[j],
+        });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        out.push({ kind: "remove", oldLineNumber: oldNo++, oldText: oldLines[i] });
+        i++;
+      } else {
+        out.push({ kind: "add", newLineNumber: newNo++, newText: newLines[j] });
+        j++;
+      }
+    }
+    while (i < n) out.push({ kind: "remove", oldLineNumber: oldNo++, oldText: oldLines[i++] });
+    while (j < m) out.push({ kind: "add", newLineNumber: newNo++, newText: newLines[j++] });
+
+    return out;
+  }, [oldContent, newContent]);
+
+  // Show only changed lines, with removals on the left and additions on the right.
+  // Do NOT vertically align/pad one side with blanks (that creates large vertical "gaps").
+  const removedRows = useMemo(() => rows.filter((r) => r.kind === "remove"), [rows]);
+  const addedRows = useMemo(() => rows.filter((r) => r.kind === "add"), [rows]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const firstRowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      firstRowRef.current?.scrollIntoView({ block: "start" });
+    });
+  }, [messageId]);
+
+  return (
+    <div style={diffContainerStyle}>
+      <div style={diffHeaderStyle}>
+        <span style={diffFileNameStyle}>{getShortPath(filePath)}</span>
+        <span style={diffStatsStyle}>
+          {linesRemoved && linesRemoved > 0 && <span style={removedCountStyle}>-{linesRemoved}</span>}
+          {linesAdded && linesAdded > 0 && <span style={addedCountStyle}>+{linesAdded}</span>}
+        </span>
+      </div>
+      <div ref={scrollContainerRef} style={diffCodeContainerStyle}>
+        <div style={diffPairedColumnsStyle}>
+          <div style={diffColumnPaneStyle}>
+            {removedRows.map((row, idx) => (
+              <div
+                key={`rm-${idx}`}
+                ref={idx === 0 ? firstRowRef : undefined}
+                style={diffLineStyle}
+              >
+                <span style={lineNumberStyle}>{row.oldLineNumber ?? ""}</span>
+                <span style={removedCellStyle}>{row.oldText ?? " "}</span>
+              </div>
+            ))}
+          </div>
+          <div style={diffColumnPaneStyleRight}>
+            {addedRows.map((row, idx) => (
+              <div
+                key={`add-${idx}`}
+                ref={removedRows.length === 0 && idx === 0 ? firstRowRef : undefined}
+                style={diffLineStyle}
+              >
+                <span style={lineNumberStyle}>{row.newLineNumber ?? ""}</span>
+                <span style={addedCellStyle}>{row.newText ?? " "}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -293,7 +332,8 @@ const addedCountStyle: React.CSSProperties = {
 const diffCodeContainerStyle: React.CSSProperties = {
   maxHeight: 420,
   overflowY: 'auto',
-  overflowX: 'auto',
+  overflowX: 'hidden',
+  maxWidth: '100%',
 };
 
 const codeBlockFullStyle: React.CSSProperties = {
@@ -303,19 +343,36 @@ const codeBlockFullStyle: React.CSSProperties = {
   lineHeight: 1.5,
 };
 
-const diffGridStyle: React.CSSProperties = {
-  fontFamily: 'monospace',
-  fontSize: 12,
-  lineHeight: 1.5,
-  minWidth: 720, // ensures both columns stay readable; container scrolls horizontally if needed
+const diffPairedColumnsStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '1fr 1fr',
+  gap: 0,
+  width: '100%',
+  minWidth: 0,
 };
 
-const diffRowStyle: React.CSSProperties = {
+// Each pane gets its own horizontal scrollbar (instead of a single horizontal scrollbar
+// that scrolls "between" removals and additions).
+const diffColumnPaneStyle: React.CSSProperties = {
+  minWidth: 0,
+  overflowX: 'auto',
+  borderRight: '1px solid rgba(255, 255, 255, 0.06)',
+};
+
+const diffColumnPaneStyleRight: React.CSSProperties = {
+  minWidth: 0,
+  overflowX: 'auto',
+};
+
+const diffLineStyle: React.CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '48px 1fr 48px 1fr',
+  gridTemplateColumns: '48px 1fr',
   alignItems: 'stretch',
   minHeight: 20,
   padding: '2px 0',
+  fontFamily: 'monospace',
+  fontSize: 12,
+  lineHeight: 1.5,
 };
 
 const codeLineStyle: React.CSSProperties = {
@@ -327,7 +384,7 @@ const codeLineStyle: React.CSSProperties = {
 const codeContentStyle: React.CSSProperties = {
   color: '#e2e8f0',
   whiteSpace: 'pre',
-  flex: 1,
+  display: 'inline-block',
   paddingRight: 12,
 };
 

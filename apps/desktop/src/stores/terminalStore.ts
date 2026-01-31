@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { TerminalSession } from "../hooks/useTerminals";
 import { disposeTerminalInstance } from "./terminalInstanceStore";
+import { clearTerminalOutputCallback, useTerminalOutputStore } from "./terminalOutputStore";
 
 // Stable empty array to prevent infinite re-renders
 const EMPTY_TERMINALS: TerminalSession[] = [];
@@ -74,6 +75,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       const terminals = newMap.get(agentId) || [];
       for (const terminal of terminals) {
         disposeTerminalInstance(terminal.id);
+        clearTerminalOutputCallback(terminal.id);
+        useTerminalOutputStore.getState().clear(terminal.id);
       }
       newMap.delete(agentId);
       // Also clear UI state for this agent
@@ -92,6 +95,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       for (const terminals of state.terminalsByAgent.values()) {
         for (const terminal of terminals) {
           disposeTerminalInstance(terminal.id);
+          clearTerminalOutputCallback(terminal.id);
+          useTerminalOutputStore.getState().clear(terminal.id);
         }
       }
       return { terminalsByAgent: new Map(), activeTerminalByAgent: {}, activeTabByAgent: {} };

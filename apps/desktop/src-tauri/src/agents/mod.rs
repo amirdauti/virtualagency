@@ -4,4 +4,4 @@ mod process;
 
 pub use manager::AgentManager;
 pub use output::{AgentOutput, AgentStatus, AgentStatusChange, OutputStream};
-pub use process::AgentProcess;
+pub use process::{AgentProcess, AgentSpecialty, CliType};

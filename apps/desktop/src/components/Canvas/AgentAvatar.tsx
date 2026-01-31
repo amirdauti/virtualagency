@@ -55,9 +55,12 @@ function chooseIdleAnimation(
   names: string[],
   idlePatterns: string[],
   walkPatterns: string[],
+  allowHeuristicFallback: boolean,
 ): string | null {
   const byPattern = findAnimation(names, idlePatterns);
   if (byPattern) return byPattern;
+
+  if (!allowHeuristicFallback) return null;
 
   // Avoid picking a locomotion loop as "idle" when the model doesn't label animations well.
   const nonWalk = names.find((n) => !includesAnyPattern(n, walkPatterns));
@@ -103,35 +106,243 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     // at origin while others appear in the correct spot.
     const clone = SkeletonUtils.clone(scene) as Group;
 
-    // Compute bounding box to determine model size.
-    // Ensure matrices are up-to-date; some GLBs rely on nested transforms.
+    // Compute a robust bounding box for scale/grounding.
+    // Many GLBs include helper meshes (planes, colliders, etc) that can distort sizing.
     clone.updateWorldMatrix(true, true);
-    const box = new Box3().setFromObject(clone);
 
-    // Target height for avatars (match default chibi ~1.5 units)
-    const targetHeight = 1.5;
+    // Prefer skeleton/bone extents for rigged models: it avoids skinned-mesh bounding-box pitfalls
+    // and ignores far-away non-character props that sometimes ship in GLBs.
+    const boneBox = (() => {
+      const bones: THREE.Bone[] = [];
+      clone.traverse((obj) => {
+        const anyObj = obj as any;
+        if (!anyObj?.isSkinnedMesh) return;
+        const skel = anyObj.skeleton;
+        if (skel?.bones?.length) bones.push(...skel.bones);
+      });
+      const unique = Array.from(new Set(bones));
+      if (unique.length === 0) return null;
+
+      const min = new Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+      const max = new Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+      const tmp = new Vector3();
+      for (const b of unique) {
+        b.getWorldPosition(tmp);
+        min.min(tmp);
+        max.max(tmp);
+      }
+
+      const height = max.y - min.y;
+      if (!Number.isFinite(height) || height < 0.0001) return null;
+      return new Box3(min.clone(), max.clone());
+    })();
+
+    const meshObjs: THREE.Object3D[] = [];
+    clone.traverse((obj) => {
+      const anyObj = obj as any;
+      const isMeshLike = anyObj?.isMesh || anyObj?.isSkinnedMesh;
+      if (!isMeshLike) return;
+      const name = (obj.name || "").toLowerCase();
+      if (
+        name.includes("collider") ||
+        name.includes("collision") ||
+        name.includes("helper") ||
+        name.includes("proxy")
+      ) {
+        return;
+      }
+      meshObjs.push(obj);
+    });
+
+    const tmpBox = new Box3();
+    const tmpSize = new Vector3();
+    const tmpCenter = new Vector3();
+
+    // If a GLB includes extra scenery (floors, skyboxes, props far away), using the full
+    // scene bounds makes the avatar too small. Conversely, using only a tiny subset of meshes
+    // can make the avatar gigantic. We pick an "anchor" mesh (largest volume) and union only
+    // meshes near that anchor, filtering out very flat planes.
+    type MeshMetric = {
+      obj: THREE.Object3D;
+      box: Box3;
+      size: Vector3;
+      center: Vector3;
+      volume: number;
+      maxDim: number;
+      flatness: number; // height / max(x,z)
+    };
+    const metrics: MeshMetric[] = [];
+    for (const obj of meshObjs) {
+      // IMPORTANT: Box3.setFromObject() can under-estimate SkinnedMesh bounds because skinning
+      // is applied in the vertex shader. Use SkinnedMesh.computeBoundingBox() (pose-aware) when possible.
+      const anyObj = obj as any;
+      if (anyObj?.isSkinnedMesh) {
+        try {
+          anyObj.updateWorldMatrix?.(true, false);
+          anyObj.skeleton?.update?.();
+          anyObj.computeBoundingBox?.();
+          if (anyObj.boundingBox) {
+            tmpBox.copy(anyObj.boundingBox).applyMatrix4(anyObj.matrixWorld);
+          } else {
+            tmpBox.setFromObject(obj);
+          }
+        } catch {
+          tmpBox.setFromObject(obj);
+        }
+      } else {
+        tmpBox.setFromObject(obj);
+      }
+      tmpBox.getSize(tmpSize);
+      const height = tmpSize.y;
+      if (height <= 0.0001) continue;
+      const maxXZ = Math.max(tmpSize.x, tmpSize.z);
+      const flatness = maxXZ > 0.0001 ? height / maxXZ : 1;
+      // Ignore very flat planes (common in GLB packs).
+      if (flatness < 0.08 && maxXZ > 0.5) continue;
+      tmpBox.getCenter(tmpCenter);
+      const volume = tmpSize.x * tmpSize.y * tmpSize.z;
+      const maxDim = Math.max(tmpSize.x, tmpSize.y, tmpSize.z);
+      metrics.push({
+        obj,
+        box: tmpBox.clone(),
+        size: tmpSize.clone(),
+        center: tmpCenter.clone(),
+        volume,
+        maxDim,
+        flatness,
+      });
+    }
+
+    const fullBox = new Box3().setFromObject(clone);
+    if (metrics.length === 0) {
+      // Worst case fallback.
+      const box = fullBox;
+      const size = new Vector3();
+      box.getSize(size);
+      // Target height for avatars (match default chibi ~1.5 units).
+      // Use height-first scaling, then clamp by horizontal footprint so wide rigs don't feel gigantic.
+      const targetHeight = 1.5;
+      const targetMaxXZ = 1.15;
+      const modelHeight = size.y;
+      const modelWidth = size.x;
+      const modelDepth = size.z;
+
+      const autoScaleByHeight = modelHeight > 0.0001 ? targetHeight / modelHeight : 1.0;
+      const scaleMultiplier = config.scale ?? 1.0;
+      let scale = autoScaleByHeight * scaleMultiplier;
+      const scaledW = modelWidth * scale;
+      const scaledD = modelDepth * scale;
+      const footprintScale =
+        Math.max(scaledW, scaledD) > 0.0001
+          ? Math.min(1.0, targetMaxXZ / Math.max(scaledW, scaledD))
+          : 1.0;
+      scale *= footprintScale;
+      scale = Math.min(100.0, Math.max(0.0005, scale));
+
+      const center = new Vector3();
+      box.getCenter(center);
+      clone.position.x -= center.x;
+      clone.position.z -= center.z;
+      clone.updateWorldMatrix(true, true);
+      const groundedBox = new Box3().setFromObject(clone);
+      const minYScaled = groundedBox.min.y * scale;
+      const yOffset = config.yOffset ?? -minYScaled;
+
+      return { clonedScene: clone, computedScale: scale, computedYOffset: yOffset };
+    }
+
+    // Anchor = largest-volume mesh (typically the body). This is more stable than "tallest",
+    // which can be dominated by weapons or long thin accessories.
+    let anchor = metrics[0];
+    for (const m of metrics) {
+      if (m.volume > anchor.volume) anchor = m;
+    }
+
+    const includeRadius = anchor.maxDim * 2.5;
+    const union = new Box3();
+    let hasUnion = false;
+    for (const m of metrics) {
+      const dist = m.center.distanceTo(anchor.center);
+      if (dist > includeRadius) continue;
+      if (!hasUnion) {
+        union.copy(m.box);
+        hasUnion = true;
+      } else {
+        union.union(m.box);
+      }
+    }
+
+    // If we accidentally filtered too aggressively, fall back to full bounds.
+    const meshBox = hasUnion ? union : fullBox;
+    const box = boneBox ?? meshBox;
     const size = new Vector3();
     box.getSize(size);
-    const modelHeight = size.y;
 
-    // Auto-scale to target height, then apply per-model multiplier (config.scale).
-    // This normalizes wildly different asset units (e.g., astronaut being gigantic).
-    const autoScale = modelHeight > 0.0001 ? targetHeight / modelHeight : 1.0;
+    // Target height for avatars (match default chibi ~1.5 units).
+    // Use height-first scaling, then clamp by horizontal footprint so wide rigs don't feel gigantic.
+    const targetHeight = 1.5;
+    const targetMaxXZ = 1.15;
+    const modelHeight = size.y;
+    const modelWidth = size.x;
+    const modelDepth = size.z;
+
+    const autoScaleByHeight = modelHeight > 0.0001 ? targetHeight / modelHeight : 1.0;
     const scaleMultiplier = config.scale ?? 1.0;
-    const unclamped = autoScale * scaleMultiplier;
-    const scale = Math.min(5.0, Math.max(0.05, unclamped));
+    let scale = autoScaleByHeight * scaleMultiplier;
+
+    // Clamp by footprint (after height scaling) to keep "mass" consistent with chibi avatars.
+    const scaledW = modelWidth * scale;
+    const scaledD = modelDepth * scale;
+    const footprintScale =
+      Math.max(scaledW, scaledD) > 0.0001
+        ? Math.min(1.0, targetMaxXZ / Math.max(scaledW, scaledD))
+        : 1.0;
+    scale *= footprintScale;
+
+    // IMPORTANT: some assets are authored in cm/mm, others in meters.
+    // Allow a wide clamp range so "huge" models can be scaled down far enough,
+    // and tiny models can be scaled up enough.
+    scale = Math.min(100.0, Math.max(0.0005, scale));
 
     // Recenter model on X/Z so different GLBs don't appear offset from the agent's world position.
-    // Many third-party models have a pivot far from the visible mesh.
     const center = new Vector3();
     box.getCenter(center);
     clone.position.x -= center.x;
     clone.position.z -= center.z;
     clone.updateWorldMatrix(true, true);
 
+    // Recompute bounds after recentering so grounding uses the final pivot.
+    const groundedBox = new Box3().setFromObject(clone);
+
     // Compute Y offset to place feet on ground (apply scale because the primitive is scaled).
-    const minYScaled = box.min.y * scale;
+    const minYScaled = groundedBox.min.y * scale;
     const yOffset = config.yOffset ?? -minYScaled;
+
+    // Optional debug: localStorage.setItem("va-debug-avatars","1")
+    try {
+      if (typeof window !== "undefined" && window.localStorage?.getItem("va-debug-avatars") === "1") {
+        // eslint-disable-next-line no-console
+        console.log("[avatar-bounds]", {
+          id: config.id,
+          path: config.path,
+          used: boneBox ? "bones" : "meshes",
+          box: { w: modelWidth, h: modelHeight, d: modelDepth },
+          scaleMultiplier,
+          autoScaleByHeight,
+          footprintScale,
+          finalScale: scale,
+          anchor: { volume: anchor.volume, maxDim: anchor.maxDim },
+          includeRadius,
+          fullBox: (() => {
+            const s = new Vector3();
+            fullBox.getSize(s);
+            return { w: s.x, h: s.y, d: s.z };
+          })(),
+        });
+      }
+    } catch {
+      // ignore
+    }
 
     return { clonedScene: clone, computedScale: scale, computedYOffset: yOffset };
   }, [scene, config.scale, config.yOffset]);
@@ -192,9 +403,10 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
   const idleAnimPatterns = config.idleAnims ?? ["idle", "Idle", "stand", "Stand"];
   const walkAnimPatterns = config.walkAnims ?? ["walk", "Walk", "run", "Run", "locomotion"];
 
+  const allowIdleFallback = config.idleAnims == null;
   const idleAnim = useMemo(
-    () => chooseIdleAnimation(names, idleAnimPatterns, walkAnimPatterns),
-    [names, idleAnimPatterns, walkAnimPatterns]
+    () => chooseIdleAnimation(names, idleAnimPatterns, walkAnimPatterns, allowIdleFallback),
+    [names, idleAnimPatterns, walkAnimPatterns, allowIdleFallback]
   );
   const walkAnim = useMemo(
     () => chooseWalkAnimation(names, walkAnimPatterns, idleAnim),

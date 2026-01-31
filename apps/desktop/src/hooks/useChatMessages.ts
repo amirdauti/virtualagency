@@ -3,8 +3,14 @@ import { useAgentOutputListener } from "./useTauriEvents";
 import { useChatStore, ChatMessage } from "../stores/chatStore";
 import { useAgentStore } from "../stores/agentStore";
 
+const API_BASE = import.meta.env.VITE_SERVER_URL || "http://127.0.0.1:3001";
+const MAX_DIFF_PREVIEW_CHARS = 20_000;
+const MAX_DIFF_PREVIEW_LINES = 400;
+const MAX_FILE_CACHE_CHARS = 200_000;
+
 /**
- * Hook that listens to Claude CLI output and parses it into chat messages.
+ * Hook that listens to agent CLI output and parses it into chat messages.
+ *
  * Claude CLI with -p --output-format stream-json --verbose outputs:
  * 1. system (init) - session start with session_id
  * 2. assistant - the response message with content (text + tool_use blocks)
@@ -14,6 +20,11 @@ import { useAgentStore } from "../stores/agentStore";
  * 6. tool_use - tool being invoked
  * 7. tool_result - result from tool
  * 8. result - final result with complete text
+ *
+ * Codex CLI with `--json` outputs JSONL events like:
+ * - thread.started (thread_id)
+ * - turn.started / turn.completed / turn.failed
+ * - item.started / item.updated / item.completed (e.g. agent_message, command_execution, file_change)
  */
 export function useChatMessages() {
   const addAssistantMessage = useChatStore((state) => state.addAssistantMessage);
@@ -27,6 +38,7 @@ export function useChatMessages() {
   const updateAgent = useAgentStore((state) => state.updateAgent);
   const addActivity = useChatStore((state) => state.addActivity);
   const addActivityMessage = useChatStore((state) => state.addActivityMessage);
+  const updateMessage = useChatStore((state) => state.updateMessage);
 
   // Track current message state per agent
   const messageState = useRef<
@@ -37,6 +49,8 @@ export function useChatMessages() {
         hasStartedMessage: boolean;
         accumulatedText: string;
         processedToolIds: Set<string>; // Track tool IDs to avoid duplicate activities
+        codexItemMessageIds: Map<string, string>; // Codex item_id -> chat message id (for updates)
+        fileContentCache: Map<string, string>; // workspace-relative path -> last known content
       }
     >
   >(new Map());
@@ -49,6 +63,8 @@ export function useChatMessages() {
         hasStartedMessage: false,
         accumulatedText: "",
         processedToolIds: new Set(),
+        codexItemMessageIds: new Map(),
+        fileContentCache: new Map(),
       });
     }
     return messageState.current.get(agentId)!;
@@ -63,6 +79,259 @@ export function useChatMessages() {
         const json = JSON.parse(output.data);
         const agentId = output.agent_id;
         const state = getState(agentId);
+
+        // Codex JSONL events (codex --json)
+        if (
+          typeof json.type === "string" &&
+          (json.type.startsWith("thread.") ||
+            json.type.startsWith("turn.") ||
+            json.type.startsWith("item."))
+        ) {
+          switch (json.type) {
+            case "thread.started": {
+              if (json.thread_id) {
+                updateAgent(agentId, { sessionId: json.thread_id });
+              }
+              break;
+            }
+            case "turn.started": {
+              // Reset per-turn state to avoid leaking tool IDs across turns
+              state.currentMessageUuid = null;
+              state.hasStartedMessage = false;
+              state.accumulatedText = "";
+              state.processedToolIds.clear();
+              state.codexItemMessageIds.clear();
+              break;
+            }
+            case "item.started": {
+              const item = json.item;
+              const itemType = item?.type as string | undefined;
+              if (itemType === "file_change") break;
+
+              const activityInfo = getCodexItemActivityInfo(item);
+              if (!activityInfo) break;
+
+              const itemId = getCodexItemId(item);
+              const startKey = itemId ? `codex-start:${itemId}` : null;
+              if (startKey && state.processedToolIds.has(startKey)) break;
+              if (startKey) state.processedToolIds.add(startKey);
+
+              addActivity(agentId, activityInfo.text);
+              const messageId = addActivityMessage(
+                agentId,
+                activityInfo.text,
+                activityInfo.type,
+                activityInfo.details,
+                activityInfo.diffData,
+                activityInfo.todoData,
+                activityInfo.thinkingContent,
+                activityInfo.thinkingTokens
+              );
+
+              if (itemType === "todo_list" && itemId) {
+                state.codexItemMessageIds.set(itemId, messageId);
+              }
+              break;
+            }
+            case "item.updated": {
+              const item = json.item;
+              const itemType = item?.type as string | undefined;
+              const itemId = getCodexItemId(item);
+
+              // Codex todo lists stream updates via item.updated; update the existing card.
+              if (itemType === "todo_list" && itemId) {
+                const activityInfo = getCodexItemActivityInfo(item);
+                if (!activityInfo?.todoData) break;
+
+                const messageId = state.codexItemMessageIds.get(itemId);
+                if (messageId) {
+                  updateMessage(messageId, {
+                    content: activityInfo.text,
+                    activityType: activityInfo.type,
+                    activityDetails: activityInfo.details,
+                    todoData: activityInfo.todoData,
+                  });
+                } else {
+                  const createdId = addActivityMessage(
+                    agentId,
+                    activityInfo.text,
+                    activityInfo.type,
+                    activityInfo.details,
+                    activityInfo.diffData,
+                    activityInfo.todoData,
+                    activityInfo.thinkingContent,
+                    activityInfo.thinkingTokens
+                  );
+                  state.codexItemMessageIds.set(itemId, createdId);
+                }
+              }
+              break;
+            }
+            case "item.completed": {
+              const item = json.item;
+              const itemType = item?.type as string | undefined;
+              const itemId = getCodexItemId(item);
+              const completeKey = itemId ? `codex-complete:${itemId}` : null;
+              if (completeKey && state.processedToolIds.has(completeKey)) break;
+              if (completeKey) state.processedToolIds.add(completeKey);
+
+              if (item?.type === "agent_message" && typeof item.text === "string") {
+                addAssistantMessage(agentId, item.text);
+                finishStreaming(agentId);
+                addActivity(agentId, "");
+                break;
+              }
+
+              if (itemType === "file_change") {
+                const changes = getCodexFileChanges(item);
+                if (changes.length === 0) break;
+
+                // Build a rich diff card by reading the file content after the change.
+                for (const change of changes) {
+                  void (async () => {
+                    const agent = useAgentStore
+                      .getState()
+                      .agents.find((a) => a.id === agentId);
+                    const workingDir = agent?.workingDirectory;
+                    const relativePath = toWorkspaceRelativePath(change.path, workingDir);
+
+                    const kind = (change.kind || "").toLowerCase();
+                    const isDelete = kind === "delete" || kind === "remove" || kind === "del";
+                    const isAdd = kind === "add" || kind === "create" || kind === "new";
+
+                    const newContent = isDelete
+                      ? null
+                      : await readWorkspaceFile(agentId, relativePath);
+
+                    let oldContent = state.fileContentCache.get(relativePath);
+                    if (!oldContent && !isAdd && !isDelete) {
+                      // First time we see this file change: fall back to git HEAD for baseline when possible.
+                      oldContent = (await readWorkspaceGitFile(agentId, relativePath)) || undefined;
+                    }
+
+                    const oldLineCount = oldContent ? oldContent.split("\n").length : 0;
+                    const newLineCount =
+                      typeof newContent === "string" ? newContent.split("\n").length : 0;
+
+                    if (!isDelete && typeof newContent === "string") {
+                      state.fileContentCache.set(
+                        relativePath,
+                        clampString(newContent, MAX_FILE_CACHE_CHARS)
+                      );
+                    } else if (isDelete) {
+                      state.fileContentCache.delete(relativePath);
+                    }
+
+                    const oldPreview = oldContent
+                      ? truncateForDiff(oldContent, MAX_DIFF_PREVIEW_LINES, MAX_DIFF_PREVIEW_CHARS)
+                      : undefined;
+                    const newPreview =
+                      typeof newContent === "string"
+                        ? truncateForDiff(newContent, MAX_DIFF_PREVIEW_LINES, MAX_DIFF_PREVIEW_CHARS)
+                        : undefined;
+
+                    const diffData =
+                      !isDelete && typeof newContent === "string"
+                        ? {
+                            filePath: relativePath,
+                            oldContent: oldPreview,
+                            newContent: newPreview || newContent,
+                            linesAdded: Math.max(
+                              0,
+                              newLineCount - oldLineCount
+                            ),
+                            linesRemoved: Math.max(0, oldLineCount - newLineCount),
+                          }
+                        : undefined;
+
+                    const shortPath = getShortPath(relativePath);
+                    if (isDelete) {
+                      addActivityMessage(agentId, `Delete ${shortPath}`, "edit", relativePath);
+                    } else if (isAdd) {
+                      addActivityMessage(agentId, `Write ${shortPath}`, "write", relativePath, diffData);
+                    } else {
+                      addActivityMessage(agentId, `Edit ${shortPath}`, "edit", relativePath, diffData);
+                    }
+
+                    addActivity(agentId, "");
+                  })();
+                }
+
+                break;
+              }
+
+              // Codex todo_list completion contains the final todo state; update existing card.
+              if (itemType === "todo_list" && itemId) {
+                const activityInfo = getCodexItemActivityInfo(item);
+                if (activityInfo?.todoData) {
+                  const messageId = state.codexItemMessageIds.get(itemId);
+                  if (messageId) {
+                    updateMessage(messageId, {
+                      content: activityInfo.text,
+                      activityType: activityInfo.type,
+                      activityDetails: activityInfo.details,
+                      todoData: activityInfo.todoData,
+                    });
+                  } else {
+                    const createdId = addActivityMessage(
+                      agentId,
+                      activityInfo.text,
+                      activityInfo.type,
+                      activityInfo.details,
+                      activityInfo.diffData,
+                      activityInfo.todoData,
+                      activityInfo.thinkingContent,
+                      activityInfo.thinkingTokens
+                    );
+                    state.codexItemMessageIds.set(itemId, createdId);
+                  }
+                }
+                addActivity(agentId, "");
+                break;
+              }
+
+              // For non-message items, add an activity entry (if we didn't already
+              // add one on item.started) and clear the transient activity indicator.
+              const activityInfo = getCodexItemActivityInfo(item);
+              if (activityInfo) {
+                const startKey = itemId ? `codex-start:${itemId}` : null;
+                const alreadyAddedAtStart = !!(startKey && state.processedToolIds.has(startKey));
+                if (!alreadyAddedAtStart) {
+                  addActivityMessage(
+                    agentId,
+                    activityInfo.text,
+                    activityInfo.type,
+                    activityInfo.details,
+                    activityInfo.diffData,
+                    activityInfo.todoData,
+                    activityInfo.thinkingContent,
+                    activityInfo.thinkingTokens
+                  );
+                }
+                addActivity(agentId, "");
+              }
+              break;
+            }
+            case "turn.completed": {
+              // Ensure we don't leave a message in streaming state if Codex didn't emit agent_message
+              finishStreaming(agentId);
+              addActivity(agentId, "");
+              break;
+            }
+            case "turn.failed": {
+              const errorMsg =
+                json.error?.message || json.error?.detail || json.message || "An error occurred";
+              addAssistantMessage(agentId, `**Error:** ${errorMsg}`);
+              finishStreaming(agentId);
+              addActivity(agentId, "");
+              updateAgent(agentId, { status: "error" });
+              break;
+            }
+            default:
+              break;
+          }
+          return;
+        }
 
         switch (json.type) {
           case "system":
@@ -108,7 +377,9 @@ export function useChatMessages() {
                   activityInfo.type,
                   activityInfo.details,
                   activityInfo.diffData,
-                  activityInfo.todoData
+                  activityInfo.todoData,
+                  activityInfo.thinkingContent,
+                  activityInfo.thinkingTokens
                 );
               }
 
@@ -195,7 +466,9 @@ export function useChatMessages() {
               activityInfo.type,
               activityInfo.details,
               activityInfo.diffData,
-              activityInfo.todoData
+              activityInfo.todoData,
+              activityInfo.thinkingContent,
+              activityInfo.thinkingTokens
             );
             break;
           }
@@ -267,6 +540,7 @@ export function useChatMessages() {
       updateAgent,
       addActivity,
       addActivityMessage,
+      updateMessage,
     ]
   );
 
@@ -285,6 +559,8 @@ function getActivityInfo(
   details?: string;
   diffData?: ChatMessage["diffData"];
   todoData?: ChatMessage["todoData"];
+  thinkingContent?: string;
+  thinkingTokens?: number;
 } {
   switch (toolName) {
     case "Read":
@@ -403,4 +679,301 @@ function getShortPath(path?: string): string {
   const parts = path.split("/");
   if (parts.length <= 2) return path;
   return ".../" + parts.slice(-2).join("/");
+}
+
+function clampString(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars);
+}
+
+function truncateForDiff(text: string, maxLines: number, maxChars: number): string {
+  let truncated = text;
+
+  if (maxLines > 0) {
+    const lines = truncated.split("\n");
+    if (lines.length > maxLines) {
+      truncated = lines.slice(0, maxLines).join("\n") + "\n… (truncated)";
+    }
+  }
+
+  if (maxChars > 0 && truncated.length > maxChars) {
+    truncated = truncated.slice(0, maxChars) + "\n… (truncated)";
+  }
+
+  return truncated;
+}
+
+function toWorkspaceRelativePath(path: string, workingDir?: string): string {
+  if (!workingDir) return path;
+
+  const normalizedWorkingDir = workingDir.replace(/\\/g, "/").replace(/\/$/, "");
+  const normalizedPath = path.replace(/\\/g, "/");
+
+  if (normalizedPath.startsWith(normalizedWorkingDir + "/")) {
+    return normalizedPath.slice(normalizedWorkingDir.length + 1);
+  }
+  return path;
+}
+
+async function readWorkspaceFile(agentId: string, path: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${API_BASE}/api/files/read/${agentId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+
+    if (!response.ok) return null;
+    const data = (await response.json()) as { content?: string };
+    return typeof data.content === "string" ? data.content : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readWorkspaceGitFile(agentId: string, path: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${API_BASE}/api/files/read_git/${agentId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+
+    if (!response.ok) return null;
+    const data = (await response.json()) as { content?: string };
+    return typeof data.content === "string" ? data.content : null;
+  } catch {
+    return null;
+  }
+}
+
+function getCodexFileChanges(item: unknown): Array<{ path: string; kind: string }> {
+  if (!item || typeof item !== "object") return [];
+  const anyItem = item as Record<string, unknown>;
+
+  const rawChanges = anyItem.changes;
+  if (Array.isArray(rawChanges)) {
+    return rawChanges
+      .map((c) => {
+        if (!c || typeof c !== "object") return null;
+        const change = c as Record<string, unknown>;
+        const path = change.path as string | undefined;
+        const kind = (change.kind as string | undefined) || "modify";
+        return path ? { path, kind } : null;
+      })
+      .filter((c): c is { path: string; kind: string } => Boolean(c));
+  }
+
+  // Fallback: legacy shapes that include path/kind directly on the item.
+  const path =
+    (anyItem.file_path as string | undefined) ||
+    (anyItem.filePath as string | undefined) ||
+    (anyItem.path as string | undefined) ||
+    (anyItem.absolute_file_path as string | undefined) ||
+    (anyItem.absoluteFilePath as string | undefined);
+  const kind =
+    (anyItem.change_kind as string | undefined) ||
+    (anyItem.changeKind as string | undefined) ||
+    (anyItem.kind as string | undefined) ||
+    "modify";
+
+  return path ? [{ path, kind }] : [];
+}
+
+function getCodexItemId(item: unknown): string | undefined {
+  if (!item || typeof item !== "object") return undefined;
+  const anyItem = item as Record<string, unknown>;
+  const candidates: Array<unknown> = [
+    anyItem.id,
+    anyItem.item_id,
+    anyItem.itemId,
+    anyItem.call_id,
+    anyItem.callId,
+    anyItem.tool_call_id,
+    anyItem.toolCallId,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate;
+    if (typeof candidate === "number") return String(candidate);
+  }
+  return undefined;
+}
+
+function getCodexItemActivityInfo(
+  item: unknown
+): {
+  text: string;
+  type: ChatMessage["activityType"];
+  details?: string;
+  diffData?: ChatMessage["diffData"];
+  todoData?: ChatMessage["todoData"];
+  thinkingContent?: string;
+  thinkingTokens?: number;
+} | null {
+  if (!item || typeof item !== "object") return null;
+  const anyItem = item as Record<string, unknown>;
+  const type = anyItem.type as string | undefined;
+
+  if (type === "agent_message") return null;
+
+  if (type === "reasoning") {
+    const summary =
+      (anyItem.text as string | undefined) ||
+      (anyItem.summary as string | undefined) ||
+      (anyItem.reasoning as string | undefined);
+    if (!summary) return null;
+    return {
+      text: "Reasoning",
+      type: "thinking",
+      details: summary,
+      thinkingContent: summary,
+    };
+  }
+
+  if (type === "command_execution") {
+    const command =
+      (anyItem.command as string | undefined) ||
+      (anyItem.cmd as string | undefined) ||
+      (anyItem.shell_command as string | undefined) ||
+      (anyItem.shellCommand as string | undefined);
+    if (!command) return { text: "Ran a command", type: "bash" };
+
+    const shortCmd =
+      command.length > 60 ? command.substring(0, 60) + "..." : command;
+    return {
+      text: `Ran: ${shortCmd}`,
+      type: "bash",
+      details: command,
+    };
+  }
+
+  if (type === "file_change") {
+    const filePath =
+      (anyItem.file_path as string | undefined) ||
+      (anyItem.filePath as string | undefined) ||
+      (anyItem.path as string | undefined) ||
+      (anyItem.absolute_file_path as string | undefined) ||
+      (anyItem.absoluteFilePath as string | undefined);
+
+    const changeKind =
+      (anyItem.change_kind as string | undefined) ||
+      (anyItem.changeKind as string | undefined) ||
+      (anyItem.kind as string | undefined);
+
+    // Handle moves when available
+    const fromPath =
+      (anyItem.from_path as string | undefined) ||
+      (anyItem.fromPath as string | undefined) ||
+      (anyItem.old_path as string | undefined) ||
+      (anyItem.oldPath as string | undefined);
+    const toPath =
+      (anyItem.to_path as string | undefined) ||
+      (anyItem.toPath as string | undefined) ||
+      (anyItem.new_path as string | undefined) ||
+      (anyItem.newPath as string | undefined);
+
+    if (changeKind === "move_path" && (fromPath || toPath)) {
+      const fromLabel = getShortPath(fromPath || "from");
+      const toLabel = getShortPath(toPath || "to");
+      return {
+        text: `Move ${fromLabel} → ${toLabel}`,
+        type: "edit",
+        details: `${fromPath || ""} -> ${toPath || ""}`.trim(),
+      };
+    }
+
+    const label = getShortPath(filePath || "file");
+    switch (changeKind) {
+      case "create":
+      case "add":
+        return { text: `Write ${label}`, type: "write", details: filePath };
+      case "delete":
+        return { text: `Delete ${label}`, type: "edit", details: filePath };
+      default:
+        return { text: `Edit ${label}`, type: "edit", details: filePath };
+    }
+  }
+
+  if (type === "mcp_tool_call") {
+    const toolName =
+      (anyItem.tool_name as string | undefined) ||
+      (anyItem.toolName as string | undefined) ||
+      (anyItem.name as string | undefined) ||
+      (anyItem.tool as string | undefined);
+    if (!toolName) return { text: "Using MCP tool...", type: "tool" };
+    return { text: `Using ${toolName}...`, type: "tool", details: toolName };
+  }
+
+  if (type === "todo_list") {
+    const todosRaw =
+      (anyItem.todos as unknown[]) ||
+      (anyItem.items as unknown[]) ||
+      (anyItem.todo_list as unknown[]) ||
+      (anyItem.todoList as unknown[]);
+
+    const todos =
+      Array.isArray(todosRaw)
+        ? todosRaw
+            .map((t) => {
+              if (!t || typeof t !== "object") return null;
+              const todo = t as Record<string, unknown>;
+              const content =
+                (todo.content as string | undefined) ||
+                (todo.text as string | undefined) ||
+                (todo.title as string | undefined);
+
+              const statusRaw = todo.status as string | undefined;
+              const completed =
+                (todo.completed as boolean | undefined) ||
+                (todo.done as boolean | undefined) ||
+                false;
+              const inProgress =
+                (todo.in_progress as boolean | undefined) ||
+                (todo.inProgress as boolean | undefined) ||
+                false;
+
+              const status =
+                statusRaw === "completed" || statusRaw === "in_progress" || statusRaw === "pending"
+                  ? statusRaw
+                  : statusRaw === "done"
+                    ? "completed"
+                    : completed
+                      ? "completed"
+                      : inProgress
+                        ? "in_progress"
+                        : "pending";
+
+              return content
+                ? {
+                    content,
+                    status: status as "pending" | "in_progress" | "completed",
+                    activeForm: (todo.activeForm as string | undefined) || content,
+                  }
+                : null;
+            })
+            .filter(
+              (
+                t
+              ): t is {
+                content: string;
+                status: "pending" | "in_progress" | "completed";
+                activeForm: string;
+              } => Boolean(t)
+            )
+        : [];
+
+    return {
+      text: "Update Todos",
+      type: "todo",
+      todoData: { todos },
+    };
+  }
+
+  // Fallback for other Codex item types
+  if (typeof type === "string" && type) {
+    return { text: type, type: "tool" };
+  }
+
+  return null;
 }

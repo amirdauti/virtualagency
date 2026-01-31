@@ -14,7 +14,13 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::VecDeque,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -196,6 +202,7 @@ async fn main() {
         .route("/api/files/read/:agent_id", post(read_file))
         .route("/api/files/read_git/:agent_id", post(read_file_git))
         .route("/api/files/write/:agent_id", post(write_file))
+        .route("/api/ports/find", get(find_available_port))
         .route("/api/health", get(health_check))
         .route("/api/browse", get(browse_directory))
         .route("/ws", get(ws_handler))
@@ -783,6 +790,61 @@ async fn kill_terminal(
         Ok(_) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err((StatusCode::NOT_FOUND, e)),
     }
+}
+
+#[derive(Deserialize)]
+struct FindPortQuery {
+    #[serde(default)]
+    start: Option<u16>,
+    #[serde(default)]
+    end: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct FindPortResponse {
+    port: u16,
+    start: u16,
+    end: u16,
+}
+
+async fn find_available_port(
+    Query(query): Query<FindPortQuery>,
+) -> Result<Json<FindPortResponse>, (StatusCode, String)> {
+    // Default Rojo port range.
+    let start = query.start.unwrap_or(34872);
+    let end = query.end.unwrap_or(34972);
+
+    if start == 0 || end == 0 {
+        return Err((StatusCode::BAD_REQUEST, "start/end must be > 0".into()));
+    }
+    if start > end {
+        return Err((StatusCode::BAD_REQUEST, "start must be <= end".into()));
+    }
+    // Guardrail: avoid scanning huge ranges accidentally.
+    if (end - start) > 2000 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "port range too large (max 2000)".into(),
+        ));
+    }
+
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    for port in start..=end {
+        let addr = SocketAddr::new(ip, port);
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                drop(listener);
+                return Ok(Json(FindPortResponse { port, start, end }));
+            }
+            Err(_) => continue,
+        }
+    }
+
+    Err((
+        StatusCode::CONFLICT,
+        format!("no available port in range {}-{}", start, end),
+    ))
 }
 
 async fn ws_handler(

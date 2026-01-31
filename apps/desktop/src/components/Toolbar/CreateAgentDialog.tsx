@@ -1,14 +1,49 @@
-import { useState, memo, useCallback } from "react";
+import { useState, memo, useCallback, useEffect, useRef } from "react";
 import { Modal } from "../common/Modal";
-import { createAgent, isTauri, browseDirectory, BrowseResponse, ClaudeModel } from "../../lib/api";
+import { createAgent, isTauri, browseDirectory, BrowseResponse, ClaudeModel, CodexModel, CliType, ReasoningEffort } from "../../lib/api";
 import { useAgentStore } from "../../stores/agentStore";
-import { generateId, AVATAR_OPTIONS, AvatarId, MCP_SERVERS, MCPServerId } from "@virtual-agency/shared";
+import { generateId, AVATAR_OPTIONS, AvatarId, MCP_SERVERS, MCPServerId, AgentSpecialty } from "@virtual-agency/shared";
 
-// Model configurations with icons and descriptions
-const MODELS: { value: ClaudeModel; name: string; description: string; badge?: string }[] = [
+// CLI type configurations
+const CLI_TYPES: { value: CliType; name: string; description: string; badge?: string }[] = [
+  { value: "claude", name: "Claude Code", description: "Anthropic's Claude AI assistant", badge: "Default" },
+  { value: "codex", name: "Codex", description: "OpenAI's Codex assistant" },
+];
+
+// Agent specialty configurations
+const AGENT_SPECIALTIES: { value: AgentSpecialty; name: string; description: string; badge?: string }[] = [
+  { value: "normal", name: "Normal", description: "General purpose agent", badge: "Default" },
+  { value: "roblox_builder", name: "Roblox Builder", description: "Roblox development agent (Rojo + Luau)" },
+];
+
+// Claude model configurations
+const CLAUDE_MODELS: { value: ClaudeModel; name: string; description: string; badge?: string }[] = [
   { value: "sonnet", name: "Sonnet", description: "Best balance of speed & capability", badge: "Recommended" },
   { value: "opus", name: "Opus", description: "Maximum capability for complex tasks" },
   { value: "haiku", name: "Haiku", description: "Fastest responses, simple tasks" },
+];
+
+// Codex model configurations
+const CODEX_MODELS: { value: CodexModel; name: string; description: string; badge?: string }[] = [
+  { value: "gpt-5.2-codex", name: "GPT-5.2 Codex", description: "Latest frontier model", badge: "Recommended" },
+  { value: "gpt-5.2", name: "GPT-5.2", description: "Latest frontier model (general)" },
+  { value: "gpt-5.1-codex-max", name: "GPT-5.1 Codex Max", description: "Frontier agentic coding model" },
+  { value: "gpt-5.1-codex", name: "GPT-5.1 Codex", description: "Intelligent coding model" },
+  { value: "gpt-5.1", name: "GPT-5.1", description: "GPT-5.1 general model" },
+  { value: "gpt-5-codex", name: "GPT-5 Codex", description: "GPT-5 coding model" },
+  { value: "gpt-5", name: "GPT-5", description: "GPT-5 general model" },
+  { value: "gpt-5-mini", name: "GPT-5 Mini", description: "Compact GPT-5 model" },
+  { value: "o3", name: "o3", description: "Reasoning model (legacy)" },
+  { value: "o4-mini", name: "o4-mini", description: "Compact reasoning model (legacy)" },
+  { value: "gpt-4.1", name: "GPT-4.1", description: "High performance (legacy)" },
+];
+
+// Reasoning effort configurations for Codex
+const REASONING_EFFORTS: { value: ReasoningEffort; name: string; description: string }[] = [
+  { value: "low", name: "Low", description: "Faster, less thorough reasoning" },
+  { value: "medium", name: "Medium", description: "Balanced speed and depth" },
+  { value: "high", name: "High", description: "More thorough reasoning" },
+  { value: "xhigh", name: "Extra High", description: "Maximum reasoning depth" },
 ];
 
 // Memoized Directory Browser component
@@ -30,6 +65,15 @@ const DirectoryBrowser = memo(function DirectoryBrowser({
   onSelect,
 }: DirectoryBrowserProps) {
   if (!showBrowser) return null;
+
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Reset scroll position when navigating to a new directory
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = 0;
+    }
+  }, [browserData?.current_path]);
 
   return (
     <div style={browserOverlayStyle}>
@@ -69,7 +113,7 @@ const DirectoryBrowser = memo(function DirectoryBrowser({
           </div>
         )}
 
-        <div style={browserListStyle}>
+        <div ref={listRef} style={browserListStyle}>
           {browserLoading ? (
             <div style={{ padding: 32, textAlign: "center", color: "#6b7280" }}>
               <div style={{
@@ -122,8 +166,12 @@ interface CreateAgentDialogProps {
 export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const [name, setName] = useState("");
   const [workingDir, setWorkingDir] = useState("");
-  const [model, setModel] = useState<ClaudeModel>("sonnet");
+  const [specialty, setSpecialty] = useState<AgentSpecialty>("normal");
+  const [cliType, setCliType] = useState<CliType>("claude");
+  const [claudeModel, setClaudeModel] = useState<ClaudeModel>("sonnet");
+  const [codexModel, setCodexModel] = useState<CodexModel>("gpt-5.2-codex");
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [avatarId, setAvatarId] = useState<AvatarId>("default");
   const [mcpServers, setMcpServers] = useState<MCPServerId[]>([]);
   const [creating, setCreating] = useState(false);
@@ -191,6 +239,15 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
     );
   }, []);
 
+  const handleCliTypeChange = useCallback((newCliType: CliType) => {
+    setCliType(newCliType);
+    // Clear MCP servers when switching away from Claude
+    if (newCliType !== "claude") {
+      setMcpServers([]);
+      setThinkingEnabled(false);
+    }
+  }, []);
+
   const handleCreate = async () => {
     if (!workingDir.trim()) {
       setError("Working directory is required");
@@ -204,8 +261,18 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
     const agentName = name.trim() || `Agent ${agentCount + 1}`;
     const dir = workingDir.trim();
 
+    // Select the appropriate model based on CLI type
+    const model = cliType === "codex" ? codexModel : claudeModel;
+
     try {
-      await createAgent(id, dir, { model, thinkingEnabled, mcpServers });
+      await createAgent(id, dir, {
+        model,
+        thinkingEnabled: cliType === "claude" ? thinkingEnabled : false,
+        reasoningEffort: cliType === "codex" ? reasoningEffort : undefined,
+        mcpServers,
+        cliType,
+        specialty,
+      });
 
       const agent = {
         id,
@@ -219,9 +286,12 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
         workingDirectory: dir,
         createdAt: new Date().toISOString(),
         model,
-        thinkingEnabled,
+        thinkingEnabled: cliType === "claude" ? thinkingEnabled : undefined,
+        reasoningEffort: cliType === "codex" ? reasoningEffort : undefined,
+        specialty,
         avatarId,
         mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+        cliType,
       };
 
       addAgent(agent);
@@ -238,8 +308,12 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const handleClose = () => {
     setName("");
     setWorkingDir("");
-    setModel("sonnet");
+    setSpecialty("normal");
+    setCliType("claude");
+    setClaudeModel("sonnet");
+    setCodexModel("gpt-5.2-codex");
     setThinkingEnabled(false);
+    setReasoningEffort("medium");
     setAvatarId("default");
     setMcpServers([]);
     setError(null);
@@ -290,29 +364,107 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           </div>
         </section>
 
-        {/* Model Selection */}
+        {/* Specialty Selection */}
         <section>
-          <SectionHeader icon={<BrainIcon />} title="Model" />
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginTop: 12 }}>
-            {MODELS.map((m) => (
-              <ModelCard
-                key={m.value}
-                model={m}
-                selected={model === m.value}
-                onClick={() => setModel(m.value)}
+          <SectionHeader icon={<BadgeIcon />} title="Specialty" />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginTop: 12 }}>
+            {AGENT_SPECIALTIES.map((s) => (
+              <SpecialtyCard
+                key={s.value}
+                specialty={s}
+                selected={specialty === s.value}
+                onClick={() => setSpecialty(s.value)}
               />
             ))}
           </div>
+        </section>
 
-          {/* Thinking Mode Toggle */}
-          <div style={{ marginTop: 16 }}>
-            <ToggleSwitch
-              checked={thinkingEnabled}
-              onChange={setThinkingEnabled}
-              label="Extended Thinking"
-              description="Better reasoning for complex problems"
-            />
+        {/* CLI Type Selection */}
+        <section>
+          <SectionHeader icon={<TerminalIcon />} title="CLI Backend" />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginTop: 12 }}>
+            {CLI_TYPES.map((cli) => (
+              <CliTypeCard
+                key={cli.value}
+                cliType={cli}
+                selected={cliType === cli.value}
+                onClick={() => handleCliTypeChange(cli.value)}
+              />
+            ))}
           </div>
+        </section>
+
+        {/* Model Selection */}
+        <section>
+          <SectionHeader icon={<BrainIcon />} title="Model" />
+          {cliType === "claude" ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginTop: 12 }}>
+              {CLAUDE_MODELS.map((m) => (
+                <ModelCard
+                  key={m.value}
+                  model={m}
+                  selected={claudeModel === m.value}
+                  onClick={() => setClaudeModel(m.value)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginTop: 12 }}>
+              {CODEX_MODELS.map((m) => (
+                <ModelCard
+                  key={m.value}
+                  model={m}
+                  selected={codexModel === m.value}
+                  onClick={() => setCodexModel(m.value as CodexModel)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Thinking Mode Toggle - only show for Claude */}
+          {cliType === "claude" && (
+            <div style={{ marginTop: 16 }}>
+              <ToggleSwitch
+                checked={thinkingEnabled}
+                onChange={setThinkingEnabled}
+                label="Extended Thinking"
+                description="Better reasoning for complex problems"
+              />
+            </div>
+          )}
+
+          {/* Reasoning Effort Selection - only show for Codex */}
+          {cliType === "codex" && (
+            <div style={{ marginTop: 16 }}>
+              <label style={{ display: "block", marginBottom: 8, fontSize: 13, color: "#9ca3af" }}>
+                Reasoning Effort
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                {REASONING_EFFORTS.map((effort) => (
+                  <button
+                    key={effort.value}
+                    onClick={() => setReasoningEffort(effort.value)}
+                    style={{
+                      padding: "10px 12px",
+                      background: reasoningEffort === effort.value ? "rgba(59, 130, 246, 0.15)" : "#0d0d14",
+                      border: `2px solid ${reasoningEffort === effort.value ? "#3b82f6" : "#374151"}`,
+                      borderRadius: 10,
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 600, color: reasoningEffort === effort.value ? "#60a5fa" : "#e5e7eb" }}>
+                      {effort.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>
+                      {effort.description}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Avatar Selection */}
@@ -330,8 +482,8 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           </div>
         </section>
 
-        {/* MCP Servers */}
-        {MCP_SERVERS.length > 0 && (
+        {/* MCP Servers - only for Claude CLI */}
+        {cliType === "claude" && MCP_SERVERS.length > 0 && (
           <section>
             <SectionHeader icon={<PlugIcon />} title="Capabilities" optional />
             <p style={{ margin: "8px 0 12px", fontSize: 13, color: "#6b7280" }}>
@@ -471,8 +623,108 @@ function Input({ style, ...props }: React.InputHTMLAttributes<HTMLInputElement>)
   );
 }
 
+function CliTypeCard({ cliType, selected, onClick }: {
+  cliType: { value: CliType; name: string; description: string; badge?: string };
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        position: "relative",
+        padding: "14px 12px",
+        background: selected ? "rgba(59, 130, 246, 0.15)" : "#0d0d14",
+        border: `2px solid ${selected ? "#3b82f6" : "#374151"}`,
+        borderRadius: 12,
+        cursor: "pointer",
+        transition: "all 0.2s ease",
+        textAlign: "left",
+      }}
+      onMouseEnter={(e) => {
+        if (!selected) e.currentTarget.style.borderColor = "#4b5563";
+      }}
+      onMouseLeave={(e) => {
+        if (!selected) e.currentTarget.style.borderColor = "#374151";
+      }}
+    >
+      {cliType.badge && (
+        <span style={{
+          position: "absolute",
+          top: -8,
+          right: 8,
+          padding: "2px 8px",
+          background: "linear-gradient(135deg, #3b82f6, #8b5cf6)",
+          borderRadius: 20,
+          fontSize: 10,
+          fontWeight: 600,
+          color: "white",
+        }}>
+          {cliType.badge}
+        </span>
+      )}
+      <div style={{ fontSize: 14, fontWeight: 600, color: selected ? "#60a5fa" : "#e5e7eb", marginBottom: 4 }}>
+        {cliType.name}
+      </div>
+      <div style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.4 }}>
+        {cliType.description}
+      </div>
+    </button>
+  );
+}
+
+function SpecialtyCard({ specialty, selected, onClick }: {
+  specialty: { value: AgentSpecialty; name: string; description: string; badge?: string };
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        position: "relative",
+        padding: "14px 12px",
+        background: selected ? "rgba(59, 130, 246, 0.15)" : "#0d0d14",
+        border: `2px solid ${selected ? "#3b82f6" : "#374151"}`,
+        borderRadius: 12,
+        cursor: "pointer",
+        transition: "all 0.2s ease",
+        textAlign: "left",
+      }}
+      onMouseEnter={(e) => {
+        if (!selected) e.currentTarget.style.borderColor = "#4b5563";
+      }}
+      onMouseLeave={(e) => {
+        if (!selected) e.currentTarget.style.borderColor = "#374151";
+      }}
+    >
+      {specialty.badge && (
+        <span style={{
+          position: "absolute",
+          top: -8,
+          right: 8,
+          padding: "2px 8px",
+          background: "linear-gradient(135deg, #3b82f6, #8b5cf6)",
+          borderRadius: 20,
+          fontSize: 10,
+          fontWeight: 600,
+          color: "white",
+        }}>
+          {specialty.badge}
+        </span>
+      )}
+      <div style={{ fontSize: 14, fontWeight: 600, color: selected ? "#60a5fa" : "#e5e7eb", marginBottom: 4 }}>
+        {specialty.name}
+      </div>
+      <div style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.4 }}>
+        {specialty.description}
+      </div>
+    </button>
+  );
+}
+
 function ModelCard({ model, selected, onClick }: {
-  model: { value: ClaudeModel; name: string; description: string; badge?: string };
+  model: { value: string; name: string; description: string; badge?: string };
   selected: boolean;
   onClick: () => void;
 }) {
@@ -712,6 +964,14 @@ function SparkleIcon() {
   );
 }
 
+function BadgeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2l3 6 6 .9-4.5 4.3 1.1 6.7L12 17.8 6.4 19.9l1.1-6.7L3 8.9 9 8l3-6z" />
+    </svg>
+  );
+}
+
 function PlugIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -719,6 +979,15 @@ function PlugIcon() {
       <path d="M9 8V2" />
       <path d="M15 8V2" />
       <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+    </svg>
+  );
+}
+
+function TerminalIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
     </svg>
   );
 }

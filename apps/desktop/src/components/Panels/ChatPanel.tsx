@@ -1,26 +1,44 @@
 import { useState, useCallback, useRef, KeyboardEvent, ClipboardEvent, ChangeEvent, useEffect } from "react";
-import { sendMessage, stopAgent, isTauri, updateAgentSettings, ClaudeModel } from "../../lib/api";
+import { sendMessage, stopAgent, isTauri, updateAgentSettings, ClaudeModel, CodexModel, ReasoningEffort } from "../../lib/api";
 import { useChatStore } from "../../stores/chatStore";
 import { useAgentStore } from "../../stores/agentStore";
+import { useChatUIStore, DraftImageAttachment } from "../../stores/chatUIStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { writeFile, mkdir, BaseDirectory } from "@tauri-apps/plugin-fs";
-import { tempDir } from "@tauri-apps/api/path";
+import { join, tempDir } from "@tauri-apps/api/path";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 
 interface ChatPanelProps {
   agentId: string;
 }
 
-// Track both file paths (for Tauri) and File objects (for browser)
-interface AttachedImage {
-  path: string; // File path for Tauri, or object URL for browser
-  file?: File;  // Original File object for browser mode (for upload)
-}
+const EMPTY_DRAFT_IMAGES: DraftImageAttachment[] = [];
 
-const MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
+const CLAUDE_MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
   { value: "sonnet", label: "Sonnet" },
   { value: "opus", label: "Opus" },
   { value: "haiku", label: "Haiku" },
+];
+
+const CODEX_MODEL_OPTIONS: { value: CodexModel; label: string }[] = [
+  { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
+  { value: "gpt-5.2", label: "GPT-5.2" },
+  { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
+  { value: "gpt-5.1-codex", label: "GPT-5.1 Codex" },
+  { value: "gpt-5.1", label: "GPT-5.1" },
+  { value: "gpt-5-codex", label: "GPT-5 Codex" },
+  { value: "gpt-5", label: "GPT-5" },
+  { value: "gpt-5-mini", label: "GPT-5 Mini" },
+  { value: "o3", label: "o3" },
+  { value: "o4-mini", label: "o4-mini" },
+  { value: "gpt-4.1", label: "GPT-4.1" },
+];
+
+const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
 ];
 
 export function ChatPanel({ agentId }: ChatPanelProps) {
@@ -35,19 +53,28 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   // Initialize input from draft if available
   const [input, setInput] = useState(() => getDraft(agentId));
   const [sending, setSending] = useState(false);
-  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  const attachedImages = useChatUIStore((state) => state.draftImagesByAgent[agentId] ?? EMPTY_DRAFT_IMAGES);
+  const addDraftImages = useChatUIStore((state) => state.addDraftImages);
+  const removeDraftImage = useChatUIStore((state) => state.removeDraftImage);
+  const clearDraftImages = useChatUIStore((state) => state.clearDraftImages);
 
-  // Local state for model and thinking, initialized from agent
-  const [selectedModel, setSelectedModel] = useState<ClaudeModel>(agent?.model || "sonnet");
+  // Determine if this is a Codex agent
+  const isCodexAgent = agent?.cliType === "codex";
+
+  // Local state for model and thinking/reasoning, initialized from agent
+  const defaultModel = isCodexAgent ? "gpt-5.2-codex" : "sonnet";
+  const [selectedModel, setSelectedModel] = useState<string>(agent?.model || defaultModel);
   const [thinkingEnabled, setThinkingEnabled] = useState(agent?.thinkingEnabled || false);
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(agent?.reasoningEffort || "medium");
 
   // Sync with agent state when it changes
   useEffect(() => {
     if (agent) {
       if (agent.model) setSelectedModel(agent.model);
       if (agent.thinkingEnabled !== undefined) setThinkingEnabled(agent.thinkingEnabled);
+      if (agent.reasoningEffort) setReasoningEffort(agent.reasoningEffort);
     }
-  }, [agent?.model, agent?.thinkingEnabled]);
+  }, [agent?.model, agent?.thinkingEnabled, agent?.reasoningEffort]);
 
   // Load draft when agentId changes (switching between agents)
   useEffect(() => {
@@ -60,26 +87,36 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     setDraft(agentId, input);
   }, [input, agentId, setDraft]);
 
-  const handleModelChange = useCallback(async (newModel: ClaudeModel) => {
+  const handleModelChange = useCallback(async (newModel: string) => {
     setSelectedModel(newModel);
     updateAgent(agentId, { model: newModel });
     try {
-      await updateAgentSettings(agentId, newModel, undefined);
+      await updateAgentSettings(agentId, { model: newModel });
     } catch (err) {
       console.error("[ChatPanel] Failed to update model:", err);
     }
-  }, [agentId, updateAgent]);
+  }, [agentId, updateAgent, isCodexAgent]);
 
   const handleThinkingToggle = useCallback(async () => {
     const newValue = !thinkingEnabled;
     setThinkingEnabled(newValue);
     updateAgent(agentId, { thinkingEnabled: newValue });
     try {
-      await updateAgentSettings(agentId, undefined, newValue);
+      await updateAgentSettings(agentId, { thinkingEnabled: newValue });
     } catch (err) {
       console.error("[ChatPanel] Failed to update thinking mode:", err);
     }
   }, [agentId, thinkingEnabled, updateAgent]);
+
+  const handleReasoningEffortChange = useCallback(async (effort: ReasoningEffort) => {
+    setReasoningEffort(effort);
+    updateAgent(agentId, { reasoningEffort: effort });
+    try {
+      await updateAgentSettings(agentId, { reasoningEffort: effort });
+    } catch (err) {
+      console.error("[ChatPanel] Failed to update reasoning effort:", err);
+    }
+  }, [agentId, updateAgent]);
 
   const handlePaste = useCallback(async (e: ClipboardEvent<HTMLTextAreaElement>) => {
     console.log("[ChatPanel] Paste event triggered, isTauri:", isTauri());
@@ -110,7 +147,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       e.preventDefault();
 
       try {
-        const newImages: AttachedImage[] = [];
+        const newImages: DraftImageAttachment[] = [];
 
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
@@ -129,8 +166,6 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             // Tauri mode: save to temp directory
             try {
               const tempPath = await tempDir();
-              const normalizedTempPath = tempPath.endsWith('/') ? tempPath : `${tempPath}/`;
-              const pastedImagesDir = `${normalizedTempPath}virtual-agency-pasted-images`;
 
               try {
                 await mkdir("virtual-agency-pasted-images", { baseDir: BaseDirectory.Temp });
@@ -140,7 +175,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
               const extension = blob.type.split("/")[1] || "png";
               const fileName = `pasted-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
-              const filePath = `${pastedImagesDir}/${fileName}`;
+              const filePath = await join(tempPath, "virtual-agency-pasted-images", fileName);
 
               const arrayBuffer = await blob.arrayBuffer();
               const uint8Array = new Uint8Array(arrayBuffer);
@@ -168,7 +203,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
         if (newImages.length > 0) {
           console.log("[ChatPanel] Adding", newImages.length, "images to attachedImages");
-          setAttachedImages((prev) => [...prev, ...newImages]);
+          addDraftImages(agentId, newImages);
         } else {
           console.log("[ChatPanel] No images were processed");
         }
@@ -201,8 +236,6 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           e.preventDefault();
 
           const tempPath = await tempDir();
-          const normalizedTempPath = tempPath.endsWith('/') ? tempPath : `${tempPath}/`;
-          const pastedImagesDir = `${normalizedTempPath}virtual-agency-pasted-images`;
 
           try {
             await mkdir("virtual-agency-pasted-images", { baseDir: BaseDirectory.Temp });
@@ -230,7 +263,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
             if (blob) {
               const fileName = `pasted-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
-              const filePath = `${pastedImagesDir}/${fileName}`;
+              const filePath = await join(tempPath, "virtual-agency-pasted-images", fileName);
 
               const arrayBuffer = await blob.arrayBuffer();
               const uint8Array = new Uint8Array(arrayBuffer);
@@ -240,7 +273,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               });
               console.log("[ChatPanel] File written via native API:", filePath);
 
-              setAttachedImages((prev) => [...prev, { path: filePath }]);
+              addDraftImages(agentId, [{ path: filePath }]);
             }
           }
         } else {
@@ -253,7 +286,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       console.log("[ChatPanel] Native clipboard API failed or no image:", err);
       // Not an error - just means no image in clipboard, let text paste through
     }
-  }, []);
+  }, [addDraftImages, agentId]);
 
   const handleSend = useCallback(async () => {
     if ((!input.trim() && attachedImages.length === 0) || sending) return;
@@ -261,8 +294,36 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     const messageContent = input.trim() || "(image attached)";
     const imagesToSend = [...attachedImages];
 
-    // Extract paths for API call and preview URLs for chat history
-    const imagePaths = imagesToSend.map(img => img.path);
+    // Resolve paths for API call (in Tauri mode we need real filesystem paths)
+    const imagePaths: string[] = [];
+    if (isTauri()) {
+      for (const img of imagesToSend) {
+        if (img.path.startsWith("blob:") && img.file) {
+          try {
+            const tempPath = await tempDir();
+            await mkdir("virtual-agency-pasted-images", { baseDir: BaseDirectory.Temp }).catch(() => {});
+
+            const inferredExt = img.file.type?.split("/")[1] || "png";
+            const fileName = `pasted-${Date.now()}-${Math.random().toString(36).slice(2)}.${inferredExt}`;
+            const filePath = await join(tempPath, "virtual-agency-pasted-images", fileName);
+
+            const arrayBuffer = await img.file.arrayBuffer();
+            await writeFile(`virtual-agency-pasted-images/${fileName}`, new Uint8Array(arrayBuffer), {
+              baseDir: BaseDirectory.Temp,
+            });
+
+            imagePaths.push(filePath);
+          } catch (err) {
+            console.warn("[ChatPanel] Failed to materialize blob image to file path for Tauri:", err);
+          }
+        } else {
+          imagePaths.push(img.path);
+        }
+      }
+    } else {
+      // Browser mode: paths are blob: URLs for upload conversion
+      imagePaths.push(...imagesToSend.map((img) => img.path));
+    }
 
     setSending(true);
 
@@ -277,7 +338,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     // Note: We intentionally don't revoke blob URLs here because they're used
     // by the chat history for displaying image previews. They'll be cleaned up
     // when the page is closed/refreshed.
-    setAttachedImages([]);
+    clearDraftImages(agentId);
 
     try {
       console.log("[ChatPanel] Sending message:", { agentId, messageContent, imagePaths });
@@ -290,7 +351,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     } finally {
       setSending(false);
     }
-  }, [agentId, input, attachedImages, sending, addUserMessage, updateAgent, clearDraft]);
+  }, [agentId, input, attachedImages, sending, addUserMessage, updateAgent, clearDraft, clearDraftImages]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -333,7 +394,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         if (selected) {
           const paths = Array.isArray(selected) ? selected : [selected];
           console.log("[ChatPanel] Selected paths:", paths);
-          setAttachedImages((prev) => [...prev, ...paths.map(p => ({ path: p }))]);
+          addDraftImages(agentId, paths.map((p) => ({ path: p })));
         }
       } catch (err) {
         console.error("[ChatPanel] Failed to open file dialog:", err);
@@ -342,7 +403,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       // Browser mode: trigger hidden file input
       fileInputRef.current?.click();
     }
-  }, []);
+  }, [addDraftImages, agentId]);
 
   // Handle file selection from browser file input
   const handleFileInputChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
@@ -351,7 +412,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
     console.log("[ChatPanel] Browser file input selected:", files.length, "files");
 
-    const newImages: AttachedImage[] = [];
+    const newImages: DraftImageAttachment[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file.type.startsWith("image/")) continue;
@@ -362,66 +423,87 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     }
 
     if (newImages.length > 0) {
-      setAttachedImages((prev) => [...prev, ...newImages]);
+      addDraftImages(agentId, newImages);
     }
 
     // Reset the input so the same file can be selected again
     e.target.value = "";
-  }, []);
+  }, [addDraftImages, agentId]);
 
   const removeImage = useCallback((index: number) => {
-    setAttachedImages((prev) => {
-      const imageToRemove = prev[index];
-      // Clean up object URL for browser mode
-      if (imageToRemove?.file && imageToRemove.path.startsWith('blob:')) {
-        URL.revokeObjectURL(imageToRemove.path);
-      }
-      return prev.filter((_, i) => i !== index);
-    });
-  }, []);
+    const imageToRemove = attachedImages[index];
+    // Clean up object URL for browser mode
+    if (imageToRemove?.file && imageToRemove.path.startsWith("blob:")) {
+      URL.revokeObjectURL(imageToRemove.path);
+    }
+    removeDraftImage(agentId, index);
+  }, [agentId, attachedImages, removeDraftImage]);
 
   const canSend = input.trim() || attachedImages.length > 0;
 
   return (
-    <div style={{ display: "flex", background: "#1a1a1a", borderTop: "1px solid var(--border)" }}>
+    <div style={{ display: "flex", flex: 1, minHeight: 0, height: "100%", background: "#1a1a1a", borderTop: "1px solid var(--border)" }}>
       <div
         style={{
           display: "flex",
           flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          height: "100%",
           gap: 12,
           padding: "16px 16px 20px 16px",
           width: "100%",
         }}
       >
-      {/* Model and Thinking Mode Controls */}
+      {/* Model and Thinking/Reasoning Controls */}
       <div style={settingsBarStyle}>
         <div style={settingGroupStyle}>
           <label style={settingLabelStyle}>Model:</label>
           <select
             value={selectedModel}
-            onChange={(e) => handleModelChange(e.target.value as ClaudeModel)}
+            onChange={(e) => handleModelChange(e.target.value)}
             disabled={sending}
             style={selectStyle}
           >
-            {MODEL_OPTIONS.map((opt) => (
+            {(isCodexAgent ? CODEX_MODEL_OPTIONS : CLAUDE_MODEL_OPTIONS).map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
           </select>
         </div>
-        <div style={settingGroupStyle}>
-          <label style={checkboxLabelStyle}>
-            <input
-              type="checkbox"
-              checked={thinkingEnabled}
-              onChange={handleThinkingToggle}
+        {isCodexAgent ? (
+          // Codex: Show reasoning effort selector
+          <div style={settingGroupStyle}>
+            <label style={settingLabelStyle}>Reasoning:</label>
+            <select
+              value={reasoningEffort}
+              onChange={(e) => handleReasoningEffortChange(e.target.value as ReasoningEffort)}
               disabled={sending}
-              style={checkboxStyle}
-            />
-            Thinking
-          </label>
-        </div>
+              style={selectStyle}
+            >
+              {REASONING_EFFORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          // Claude: Show thinking toggle
+          <div style={settingGroupStyle}>
+            <label style={checkboxLabelStyle}>
+              <input
+                type="checkbox"
+                checked={thinkingEnabled}
+                onChange={handleThinkingToggle}
+                disabled={sending}
+                style={checkboxStyle}
+              />
+              Thinking
+            </label>
+          </div>
+        )}
       </div>
 
       {attachedImages.length > 0 && (
@@ -471,6 +553,8 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         width: "100%",
         display: "flex",
         alignItems: "flex-end",
+        flex: 1,
+        minHeight: 0,
         background: "#252526",
         border: "1px solid #3c3c3c",
         borderRadius: 8,
@@ -539,8 +623,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             fontFamily: "inherit",
             fontSize: 13,
             resize: "none",
-            minHeight: 44,
-            maxHeight: 200,
+            minHeight: 0,
+            height: "100%",
+            maxHeight: "none",
             outline: "none",
           }}
         />
@@ -620,12 +705,14 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
 const imagePreviewContainerStyle: React.CSSProperties = {
   display: "flex",
-  flexWrap: "wrap",
+  flexWrap: "nowrap",
   gap: 8,
   padding: 8,
   background: "var(--bg-primary)",
   borderRadius: 8,
   border: "1px solid var(--border)",
+  overflowX: "auto",
+  maxHeight: 96,
 };
 
 const imagePreviewStyle: React.CSSProperties = {
@@ -634,6 +721,7 @@ const imagePreviewStyle: React.CSSProperties = {
   flexDirection: "column",
   alignItems: "center",
   gap: 4,
+  flexShrink: 0,
 };
 
 const imagePreviewImgStyle: React.CSSProperties = {

@@ -23,7 +23,9 @@ import { EditAvatarDialog } from "./EditAvatarDialog";
 import { killAgent } from "../../lib/api";
 import { useAgentStore } from "../../stores/agentStore";
 import { useChatStore } from "../../stores/chatStore";
+import { useChatUIStore } from "../../stores/chatUIStore";
 import { useTerminals } from "../../hooks/useTerminals";
+import { findAvailablePort } from "../../lib/api";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { useTerminalStore, type TabType } from "../../stores/terminalStore";
 
@@ -95,13 +97,22 @@ export function AgentPanel({
   const DEFAULT_COMPOSER_HEIGHT = 170;
   const MIN_COMPOSER_HEIGHT = 110;
   const MAX_COMPOSER_HEIGHT = 520;
-  const [composerHeight, setComposerHeight] = useState<number>(() => {
+  const draftImageCount = useChatUIStore((state) => state.draftImagesByAgent[agent.id]?.length ?? 0);
+  const composerExtraHeight = draftImageCount > 0 ? 110 : 0;
+  const [baseComposerHeight, setBaseComposerHeight] = useState<number>(() => {
     const raw = localStorage.getItem(COMPOSER_HEIGHT_KEY);
     const parsed = raw ? Number(raw) : NaN;
     return Number.isFinite(parsed)
       ? Math.max(MIN_COMPOSER_HEIGHT, Math.min(MAX_COMPOSER_HEIGHT, parsed))
       : DEFAULT_COMPOSER_HEIGHT;
   });
+  const composerHeight = baseComposerHeight + composerExtraHeight;
+
+  useEffect(() => {
+    // Keep total height within bounds when attachments appear/disappear.
+    const maxBase = Math.max(MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT - composerExtraHeight);
+    if (baseComposerHeight > maxBase) setBaseComposerHeight(maxBase);
+  }, [baseComposerHeight, composerExtraHeight]);
   const isResizingComposer = useRef(false);
   const resizeStartY = useRef(0);
   const resizeStartHeight = useRef(0);
@@ -111,27 +122,25 @@ export function AgentPanel({
       e.preventDefault();
       isResizingComposer.current = true;
       resizeStartY.current = e.clientY;
-      resizeStartHeight.current = composerHeight;
+      resizeStartHeight.current = baseComposerHeight;
       document.body.style.cursor = "row-resize";
       document.body.style.userSelect = "none";
     },
-    [composerHeight],
+    [baseComposerHeight],
   );
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!isResizingComposer.current) return;
       const delta = resizeStartY.current - e.clientY; // drag up increases height
-      const next = Math.max(
-        MIN_COMPOSER_HEIGHT,
-        Math.min(MAX_COMPOSER_HEIGHT, resizeStartHeight.current + delta),
-      );
-      setComposerHeight(next);
+      const maxBase = Math.max(MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT - composerExtraHeight);
+      const next = Math.max(MIN_COMPOSER_HEIGHT, Math.min(maxBase, resizeStartHeight.current + delta));
+      setBaseComposerHeight(next);
     };
     const onUp = () => {
       if (!isResizingComposer.current) return;
       isResizingComposer.current = false;
-      localStorage.setItem(COMPOSER_HEIGHT_KEY, String(composerHeight));
+      localStorage.setItem(COMPOSER_HEIGHT_KEY, String(baseComposerHeight));
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     };
@@ -141,7 +150,7 @@ export function AgentPanel({
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     };
-  }, [COMPOSER_HEIGHT_KEY, composerHeight]);
+  }, [COMPOSER_HEIGHT_KEY, baseComposerHeight, composerExtraHeight]);
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -162,16 +171,21 @@ export function AgentPanel({
 
   const isRobloxBuilder = agent.specialty === "roblox_builder";
   const [rojoTerminalId, setRojoTerminalId] = useState<string | null>(null);
+  const [rojoPort, setRojoPort] = useState<number | null>(null);
 
   // Keep Rojo terminal id in sync with terminal list (e.g. if user closes the tab)
   useEffect(() => {
     if (!isRobloxBuilder) {
       setRojoTerminalId(null);
+      setRojoPort(null);
       return;
     }
 
     const existing = terminals.find((t) => t.name === "Rojo Server");
     setRojoTerminalId(existing?.id ?? null);
+    if (!existing) {
+      setRojoPort(null);
+    }
   }, [isRobloxBuilder, terminals]);
 
   const handleCreateTerminal = useCallback(() => {
@@ -184,6 +198,7 @@ export function AgentPanel({
     // If running, stop by killing the dedicated terminal session
     if (rojoTerminalId) {
       await killTerminal(rojoTerminalId);
+      setRojoPort(null);
       return;
     }
 
@@ -201,9 +216,23 @@ export function AgentPanel({
       (navigator.platform?.toLowerCase().includes("win") ||
         navigator.userAgent?.toLowerCase().includes("windows"));
     const newline = isWindows ? "\r\n" : "\n";
+
+    // Prefer the standard Rojo port, but if it's already in use (another agent or a previous run),
+    // pick the next available port so users don't get stuck.
+    let port = 34872;
+    try {
+      const resp = await findAvailablePort(34872, 34972);
+      if (typeof resp?.port === "number" && Number.isFinite(resp.port)) {
+        port = resp.port;
+      }
+    } catch (err) {
+      console.warn("[Rojo] Failed to find available port; falling back to 34872:", err);
+    }
+    setRojoPort(port);
+
     const cmd = isWindows
-      ? `set \"PATH=%USERPROFILE%\\\\.rokit\\\\bin;%PATH%\" && rojo serve --port 34872${newline}`
-      : `export PATH=\"$HOME/.rokit/bin:$PATH\" && rojo serve --port 34872${newline}`;
+      ? `echo Starting Rojo on port ${port}...${newline}set \"PATH=%USERPROFILE%\\\\.rokit\\\\bin;%PATH%\" && rojo serve --port ${port}${newline}`
+      : `echo \"Starting Rojo on port ${port}...\"${newline}export PATH=\"$HOME/.rokit/bin:$PATH\" && rojo serve --port ${port}${newline}`;
 
     sendInput(session.id, cmd);
   }, [
@@ -520,11 +549,22 @@ export function AgentPanel({
                     ? "bg-[#11301b] text-[#4ade80] border-[#2f6f42] hover:bg-[#154022]"
                     : "bg-transparent text-[#969696] border-[#3c3c3c] hover:text-[#cccccc] hover:bg-[#2a2a2a]"
                 }`}
-                title={rojoTerminalId ? "Stop Rojo server" : "Start Rojo server"}
-                aria-label={rojoTerminalId ? "Stop Rojo server" : "Start Rojo server"}
+                title={
+                  rojoTerminalId
+                    ? `Stop Rojo server${rojoPort ? ` (port ${rojoPort})` : ""}`
+                    : "Start Rojo server"
+                }
+                aria-label={
+                  rojoTerminalId
+                    ? `Stop Rojo server${rojoPort ? ` (port ${rojoPort})` : ""}`
+                    : "Start Rojo server"
+                }
               >
                 {rojoTerminalId ? <Square className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                 <span>Rojo</span>
+                {rojoTerminalId && rojoPort && (
+                  <span className="text-[11px] text-[#9ae6b4] font-mono">:{rojoPort}</span>
+                )}
               </button>
             </div>
           )}
@@ -594,7 +634,7 @@ export function AgentPanel({
                   title="Drag to resize"
                   aria-label="Resize chat input"
                 />
-                <div style={{ height: composerHeight - 4, overflow: "auto" }}>
+                <div style={{ height: composerHeight - 4, display: "flex", overflow: "hidden" }}>
                   <ChatPanel agentId={agent.id} />
                 </div>
               </div>

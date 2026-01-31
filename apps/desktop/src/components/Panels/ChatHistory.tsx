@@ -2,6 +2,8 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatMessage, useChatStore } from "../../stores/chatStore";
+import { useAgentStore } from "../../stores/agentStore";
+import { useChatUIStore } from "../../stores/chatUIStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { isTauri } from "../../lib/api";
 import { DiffView, ThinkingBlock, TodoCard } from "../Activities/ActivityComponents";
@@ -30,8 +32,12 @@ const ACTIVITY_COLORS = {
 export function ChatHistory({ messages, agentId, scrollContainerRef }: ChatHistoryProps) {
   const fallbackRef = useRef<HTMLDivElement>(null);
   const containerRef = scrollContainerRef || fallbackRef;
-  const isUserAtBottomRef = useRef(true); // Track if user is at/near bottom
+  const isUserAtBottom = useChatUIStore((state) => state.isUserAtBottomByAgent[agentId] ?? true);
+  const setIsUserAtBottom = useChatUIStore((state) => state.setIsUserAtBottom);
+  const setScrollTop = useChatUIStore((state) => state.setScrollTop);
   const activity = useChatStore((state) => state.activities[agentId]);
+  const agent = useAgentStore((state) => state.agents.find((a) => a.id === agentId));
+  const assistantLabel = agent?.cliType === "codex" ? "Codex" : "Claude";
 
   // Track message count and last message content for this specific agent
   const messageCount = messages.length;
@@ -47,23 +53,43 @@ export function ChatHistory({ messages, agentId, scrollContainerRef }: ChatHisto
 
   // Handle scroll events to track user's scroll position
   const handleScroll = useCallback(() => {
-    isUserAtBottomRef.current = checkIfAtBottom();
-  }, [checkIfAtBottom]);
+    const container = containerRef.current;
+    if (!container) return;
+    const atBottom = checkIfAtBottom();
+    setIsUserAtBottom(agentId, atBottom);
+    setScrollTop(agentId, container.scrollTop);
+  }, [agentId, checkIfAtBottom, setIsUserAtBottom, setScrollTop]);
+
+  // Restore scroll position per agent when switching conversations
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    requestAnimationFrame(() => {
+      const saved = useChatUIStore.getState().getScrollTop(agentId);
+      if (typeof saved === "number") {
+        const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        container.scrollTop = Math.min(saved, maxTop);
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
+      setIsUserAtBottom(agentId, checkIfAtBottom());
+    });
+  }, [agentId, checkIfAtBottom, setIsUserAtBottom]);
 
   // Auto-scroll to bottom only if user is already at/near bottom
   useEffect(() => {
-    if (containerRef.current && isUserAtBottomRef.current) {
+    if (containerRef.current && isUserAtBottom) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [messageCount, lastMessageContent, lastMessageStreaming, activity]);
+  }, [messageCount, lastMessageContent, lastMessageStreaming, activity, isUserAtBottom]);
 
   // When new conversation starts (messages go from 0 to 1+), always scroll to bottom
   useEffect(() => {
     if (messageCount === 1 && containerRef.current) {
-      isUserAtBottomRef.current = true;
+      setIsUserAtBottom(agentId, true);
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [messageCount]);
+  }, [agentId, messageCount, setIsUserAtBottom]);
 
   // Attach scroll handler to the parent container if provided
   useEffect(() => {
@@ -100,7 +126,7 @@ export function ChatHistory({ messages, agentId, scrollContainerRef }: ChatHisto
               {shouldShowDivider(message, prevMessage) && (
                 <MessageDivider timestamp={message.timestamp} />
               )}
-              <MessageBubble message={message} previousMessage={prevMessage} />
+              <MessageBubble message={message} previousMessage={prevMessage} assistantLabel={assistantLabel} />
             </div>
           );
         })}
@@ -254,9 +280,11 @@ function MessageDivider({ timestamp }: { timestamp: number }) {
 function MessageBubble({
   message,
   previousMessage,
+  assistantLabel,
 }: {
   message: ChatMessage;
   previousMessage?: ChatMessage;
+  assistantLabel: string;
 }) {
   const isUser = message.role === "user";
   const isActivity = message.role === "activity";
@@ -315,7 +343,7 @@ function MessageBubble({
       }}
     >
       <div style={labelStyle}>
-        {isUser ? "You" : "Claude"}
+        {isUser ? "You" : assistantLabel}
         {formatTime(message.timestamp, previousMessage?.timestamp) && (
           <span style={{ marginLeft: 8, opacity: 0.5 }}>
             {formatTime(message.timestamp, previousMessage?.timestamp)}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAgentStore } from "../../stores/agentStore";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { SettingsPanel } from "../Settings/SettingsPanel";
+import { AccountControls } from "../Auth/AccountControls";
 
 export function Toolbar() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -65,6 +66,8 @@ export function Toolbar() {
           </svg>
           <span>Add Agent</span>
         </button>
+
+        <AccountControls />
       </div>
 
       <CreateAgentDialog

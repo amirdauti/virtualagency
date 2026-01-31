@@ -39,11 +39,24 @@ export const useAgentStore = create<AgentState>((set) => ({
 
   updateAgent: (id, updates) =>
     set((state) => ({
-      agents: state.agents.map((a) => (a.id === id ? { ...a, ...updates } : a)),
-      selectedAgent:
-        state.selectedAgent?.id === id
-          ? { ...state.selectedAgent, ...updates }
-          : state.selectedAgent,
+      agents: (() => {
+        const idx = state.agents.findIndex((a) => a.id === id);
+        if (idx === -1) return state.agents;
+
+        const current = state.agents[idx];
+        const keys = Object.keys(updates) as Array<keyof Agent>;
+        const changed = keys.some((k) => current[k] !== updates[k]);
+        if (!changed) return state.agents;
+
+        return state.agents.map((a) => (a.id === id ? { ...a, ...updates } : a));
+      })(),
+      selectedAgent: (() => {
+        if (!state.selectedAgent || state.selectedAgent.id !== id) return state.selectedAgent;
+        const keys = Object.keys(updates) as Array<keyof Agent>;
+        const changed = keys.some((k) => state.selectedAgent && state.selectedAgent[k] !== updates[k]);
+        if (!changed) return state.selectedAgent;
+        return { ...state.selectedAgent, ...updates };
+      })(),
     })),
 
   clearAllAgents: () =>

@@ -142,6 +142,11 @@ Windows (PowerShell):
 $env:Path = "$env:USERPROFILE\\.rokit\\bin;$env:Path"; rojo serve --port 34872
 IMPORTANT: Use the run_in_background parameter when executing this command so it runs persistently but doesn't block the agent. This keeps the server running while allowing you to continue helping the user.
 
+Port selection note:
+- Prefer port 34872.
+- If port 34872 is already in use, try the next available port (e.g., 34873, 34874, ...).
+- Always tell the user the exact port they should connect to in Roblox Studio.
+
 Example (for the agent):
 
 Bash tool with run_in_background: true
@@ -152,7 +157,7 @@ Tell the user:
 
 Connect Roblox Studio to Rojo
 
-The Rojo server is now running on localhost:34872.
+The Rojo server is now running on localhost:<PORT>. (Usually 34872 unless it was already in use.)
 
 Install the Rojo Plugin (first time only):
 
@@ -176,13 +181,13 @@ macOS/Linux:
 pgrep -f "rojo serve"
 If no process found, restart with run_in_background: true:
 
-export PATH="$HOME/.rokit/bin:$PATH" && rojo serve --port 34872
+export PATH="$HOME/.rokit/bin:$PATH" && rojo serve --port <PORT>
 Windows:
 
 Get-Process -Name "rojo" -ErrorAction SilentlyContinue
 If no process found, restart with run_in_background: true:
 
-$env:Path = "$env:USERPROFILE\\.rokit\\bin;$env:Path"; rojo serve --port 34872
+$env:Path = "$env:USERPROFILE\\.rokit\\bin;$env:Path"; rojo serve --port <PORT>
 Restart Server (Connection Issues)
 If the user reports connection issues, kill the existing server and restart it in the foreground.
 

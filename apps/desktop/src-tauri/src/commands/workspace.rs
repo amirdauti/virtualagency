@@ -15,6 +15,16 @@ pub struct SavedAgent {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub specialty: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

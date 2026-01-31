@@ -52,8 +52,11 @@ interface ChatState {
     type: ChatMessage["activityType"],
     details?: string,
     diffData?: ChatMessage["diffData"],
-    todoData?: ChatMessage["todoData"]
-  ) => void;
+    todoData?: ChatMessage["todoData"],
+    thinkingContent?: string,
+    thinkingTokens?: number
+  ) => string;
+  updateMessage: (messageId: string, updates: Partial<ChatMessage>) => void;
   clearActivity: (agentId: string) => void;
   getActivity: (agentId: string) => string | undefined;
   setDraft: (agentId: string, draft: string) => void;
@@ -173,9 +176,19 @@ export const useChatStore = create<ChatState>()(
         }));
       },
 
-      addActivityMessage: (agentId, content, activityType, activityDetails, diffData, todoData) => {
+      addActivityMessage: (
+        agentId,
+        content,
+        activityType,
+        activityDetails,
+        diffData,
+        todoData,
+        thinkingContent,
+        thinkingTokens
+      ) => {
+        const id = `${agentId}-activity-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const message: ChatMessage = {
-          id: `${agentId}-activity-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          id,
           agentId,
           role: "activity",
           content,
@@ -184,9 +197,20 @@ export const useChatStore = create<ChatState>()(
           activityDetails,
           diffData,
           todoData,
+          thinkingContent,
+          thinkingTokens,
         };
         set((state) => ({
           messages: [...state.messages, message],
+        }));
+        return id;
+      },
+
+      updateMessage: (messageId, updates) => {
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg.id === messageId ? { ...msg, ...updates } : msg
+          ),
         }));
       },
 

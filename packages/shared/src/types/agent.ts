@@ -42,81 +42,66 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "landmine_girl",
     name: "Landmine Girl",
     path: "/models/avatars/-_landmine_girl.glb",
-    scale: 1.25,
-    idleAnims: ["idle", "Idle", "stand"],
-    walkAnims: ["walk", "Walk", "run", "Run"]
+    scale: 1.0,
   },
   {
     id: "supermodel",
     name: "Supermodel",
     path: "/models/avatars/animated_supermodel_catwalk_walking_loop.glb",
-    scale: 0.85,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk", "catwalk", "Catwalk"]
+    scale: 1.0,
+    // Avoid idling in the catwalk loop; only animate while walking.
+    idleAnims: ["idle", "stand", "Idle", "Stand"],
+    walkAnims: ["catwalk", "walk", "run", "locomotion", "Catwalk", "Walk", "Run"],
   },
   {
     id: "astronaut",
     name: "Astronaut",
     path: "/models/avatars/astronaut_character_stylized_rigged_free_model.glb",
-    scale: 0.35,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk"]
+    scale: 1.0,
   },
   {
     id: "paladin",
     name: "Darien the Paladin",
     path: "/models/avatars/darien_the_paladin_moba_character.glb",
-    scale: 1.4,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk", "run", "Run"]
+    scale: 1.0,
   },
   {
     id: "humanoid",
     name: "Humanoid Avatar",
     path: "/models/avatars/humanoid_avatar_with_rig.glb",
-    scale: 0.7,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk"]
+    scale: 1.0,
   },
   {
     id: "punk_demon",
     name: "Punk Demon",
     path: "/models/avatars/neverblink__punk_demon.glb",
-    scale: 0.6,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk"]
+    scale: 1.0,
   },
   {
     id: "one_armed_hero",
     name: "One-Armed Hero",
     path: "/models/avatars/one-armed_hero.glb",
     scale: 1.0,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk"]
   },
   {
     id: "rpm_male",
     name: "Ready Player Me Male",
     path: "/models/avatars/ready_player_me_male_avatar.glb",
     scale: 1.0,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk"]
   },
   {
     id: "spiderman",
     name: "Spider-Man",
     path: "/models/avatars/spider_man__rigged___superhero___unityunreal.glb",
-    scale: 0.55,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk", "run", "Run"]
+    scale: 1.0,
+    // Some Spider-Man rigs ship without a proper idle; avoid playing an action loop while standing.
+    idleAnims: ["idle", "stand", "Idle", "Stand"],
   },
   {
     id: "stylized_male",
     name: "Stylized Male",
     path: "/models/avatars/stylized_male.glb",
     scale: 1.0,
-    idleAnims: ["idle", "Idle"],
-    walkAnims: ["walk", "Walk"]
   },
 ];
 

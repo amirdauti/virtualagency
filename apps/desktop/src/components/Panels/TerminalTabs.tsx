@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { InteractiveTerminal } from "./InteractiveTerminal";
 import type { TerminalSession } from "../../hooks/useTerminals";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useTerminalOutputStore } from "../../stores/terminalOutputStore";
 
 interface TerminalTabsProps {
   agentId: string;
@@ -241,13 +242,14 @@ function TerminalWrapper({
   ) => () => void;
 }) {
   const writeFuncRef = useRef<((data: string) => void) | null>(null);
+  const pendingRef = useRef<string[]>([]);
 
   // Register for output when mounted
   useEffect(() => {
     const writeToTerminal = (data: string) => {
-      if (writeFuncRef.current) {
-        writeFuncRef.current(data);
-      }
+      const write = writeFuncRef.current;
+      if (write) write(data);
+      else pendingRef.current.push(data);
     };
 
     const unregister = registerOutputCallback(terminal.id, writeToTerminal);
@@ -270,7 +272,21 @@ function TerminalWrapper({
 
   const handleReady = useCallback((writeFunc: (data: string) => void) => {
     writeFuncRef.current = writeFunc;
-  }, []);
+
+    // Flush any output that arrived while the terminal UI was not mounted
+    const backlog = useTerminalOutputStore.getState().drain(terminal.id);
+    if (backlog) {
+      writeFunc(backlog);
+    }
+
+    // Flush any output that arrived after mounting but before xterm was ready
+    if (pendingRef.current.length > 0) {
+      for (const chunk of pendingRef.current) {
+        writeFunc(chunk);
+      }
+      pendingRef.current = [];
+    }
+  }, [terminal.id]);
 
   return (
     <div style={{ width: "100%", height: "100%", display: isActive ? "block" : "none" }}>

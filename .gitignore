@@ -6,6 +6,12 @@ node_modules/
 dist/
 target/
 .turbo/
+installer/windows/out/
+dist/windows/
+
+# Server download artifacts (built locally; deploy via scp)
+apps/server/VirtualAgencyServer.app/
+apps/server/VirtualAgencyServer.zip
 
 # IDE
 .idea/
@@ -30,4 +36,3 @@ npm-debug.log*
 apps/desktop/src-tauri/target/
 
 DeveloperIDG2CA.cer
-DEPLOY.md

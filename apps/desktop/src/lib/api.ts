@@ -3,6 +3,8 @@
  * Automatically detects the environment and uses the appropriate backend.
  */
 
+import type { AgentSpecialty } from "@virtual-agency/shared";
+
 // Server URL for browser mode
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://127.0.0.1:3001';
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:3001/ws';
@@ -17,6 +19,90 @@ let ws: WebSocket | null = null;
 let wsReconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 const wsListeners: Set<(event: MessageEvent) => void> = new Set();
 
+const EVENT_SEQ_STORAGE_KEY = "virtual-agency-last-event-seq";
+let lastEventSeq = 0;
+let isReplaying = false;
+let pendingDuringReplay: string[] = [];
+
+function loadLastEventSeq(): number {
+  try {
+    if (typeof localStorage === "undefined") return 0;
+    const value = localStorage.getItem(EVENT_SEQ_STORAGE_KEY);
+    const parsed = value ? Number(value) : 0;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function persistLastEventSeq(seq: number) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(EVENT_SEQ_STORAGE_KEY, String(seq));
+  } catch {
+    // ignore
+  }
+}
+
+function updateLastEventSeq(seq: unknown) {
+  if (typeof seq !== "number" || !Number.isFinite(seq) || seq <= 0) return;
+  if (seq > lastEventSeq) {
+    lastEventSeq = seq;
+    persistLastEventSeq(seq);
+  }
+}
+
+function handleIncomingWsData(data: unknown) {
+  const text = typeof data === "string" ? data : String(data);
+  try {
+    const msg = JSON.parse(text);
+    updateLastEventSeq(msg?.seq);
+  } catch {
+    // ignore
+  }
+
+  const fakeEvent = { data: text } as MessageEvent;
+  wsListeners.forEach((listener) => listener(fakeEvent));
+}
+
+async function replayMissedEvents() {
+  if (isTauri()) return;
+
+  const since = lastEventSeq || loadLastEventSeq();
+  lastEventSeq = since;
+
+  try {
+    const path = since > 0 ? `/api/events?since=${encodeURIComponent(String(since))}` : "/api/events";
+    const payload = await fetchApi<{ latest_seq: number; events: unknown[] }>(path);
+
+    // If the server restarted (seq reset), our stored `since` may be ahead of server state.
+    // In that case, re-fetch the current buffer from the server and reset our cursor.
+    if (since > 0 && typeof payload?.latest_seq === "number" && payload.latest_seq < since) {
+      lastEventSeq = 0;
+      persistLastEventSeq(0);
+      const fullPayload = await fetchApi<{ latest_seq: number; events: unknown[] }>("/api/events");
+      const fullEvents = Array.isArray(fullPayload?.events) ? fullPayload.events : [];
+      for (const ev of fullEvents) {
+        handleIncomingWsData(JSON.stringify(ev));
+      }
+      if (fullPayload && typeof fullPayload.latest_seq === "number") {
+        updateLastEventSeq(fullPayload.latest_seq);
+      }
+      return;
+    }
+
+    const events = Array.isArray(payload?.events) ? payload.events : [];
+    for (const ev of events) {
+      handleIncomingWsData(JSON.stringify(ev));
+    }
+    if (payload && typeof payload.latest_seq === "number") {
+      updateLastEventSeq(payload.latest_seq);
+    }
+  } catch (err) {
+    console.warn("[API] Failed to replay events:", err);
+  }
+}
+
 function connectWebSocket() {
   if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) {
     return;
@@ -30,10 +116,45 @@ function connectWebSocket() {
       clearTimeout(wsReconnectTimeout);
       wsReconnectTimeout = null;
     }
+
+    // Replay any missed events since the last seen seq, buffering live WS
+    // messages until replay completes to preserve ordering as much as possible.
+    isReplaying = true;
+    replayMissedEvents()
+      .catch(() => {})
+      .finally(() => {
+        isReplaying = false;
+        if (pendingDuringReplay.length > 0) {
+          const pending = pendingDuringReplay;
+          pendingDuringReplay = [];
+
+          // Best-effort ordering by seq (if present)
+          const sorted = pending
+            .map((raw) => {
+              try {
+                const msg = JSON.parse(raw);
+                const seq = typeof msg?.seq === "number" ? msg.seq : Number.POSITIVE_INFINITY;
+                return { raw, seq };
+              } catch {
+                return { raw, seq: Number.POSITIVE_INFINITY };
+              }
+            })
+            .sort((a, b) => a.seq - b.seq);
+
+          for (const item of sorted) {
+            handleIncomingWsData(item.raw);
+          }
+        }
+      });
   };
 
   ws.onmessage = (event) => {
-    wsListeners.forEach(listener => listener(event));
+    const data = typeof event.data === "string" ? event.data : String(event.data);
+    if (isReplaying) {
+      pendingDuringReplay.push(data);
+      return;
+    }
+    handleIncomingWsData(data);
   };
 
   ws.onclose = () => {
@@ -54,6 +175,20 @@ export function addWebSocketListener(listener: (event: MessageEvent) => void) {
     connectWebSocket();
   }
   return () => wsListeners.delete(listener);
+}
+
+export function sendWebSocketMessage(message: unknown): boolean {
+  if (isTauri()) return false;
+  connectWebSocket();
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+
+  try {
+    ws.send(JSON.stringify(message));
+    return true;
+  } catch (err) {
+    console.warn("[API] Failed to send WebSocket message:", err);
+    return false;
+  }
 }
 
 // Tauri invoke helper
@@ -83,26 +218,63 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   return JSON.parse(text);
 }
 
+export interface FindAvailablePortResponse {
+  port: number;
+  start: number;
+  end: number;
+}
+
+export async function findAvailablePort(
+  start: number = 34872,
+  end: number = 34972
+): Promise<FindAvailablePortResponse> {
+  const params = new URLSearchParams({
+    start: String(start),
+    end: String(end),
+  });
+  return fetchApi<FindAvailablePortResponse>(`/api/ports/find?${params.toString()}`);
+}
+
 // Claude model aliases - these always point to the latest version of each model
 // See: claude --help for more info
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
+export type CodexModel =
+  | "gpt-5.2-codex"
+  | "gpt-5.2"
+  | "gpt-5.1-codex-max"
+  | "gpt-5.1-codex"
+  | "gpt-5.1"
+  | "gpt-5-codex"
+  | "gpt-5"
+  | "gpt-5-mini"
+  | "o3"
+  | "o4-mini"
+  | "gpt-4.1";
+export type CliType = "claude" | "codex";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface AgentOptions {
-  model?: ClaudeModel;
-  thinkingEnabled?: boolean;
+  model?: ClaudeModel | CodexModel | string;
+  thinkingEnabled?: boolean; // For Claude extended thinking
+  reasoningEffort?: ReasoningEffort; // For Codex reasoning models
   mcpServers?: string[]; // Array of MCP server IDs
   sessionId?: string; // Session ID to resume conversation
+  cliType?: CliType; // CLI backend to use (claude or codex)
+  specialty?: AgentSpecialty; // Optional system prompt specialization
 }
 
 // Agent APIs
 export async function createAgent(id: string, workingDir: string, options?: AgentOptions): Promise<void> {
-  const model = options?.model || "sonnet";
+  const cliType = options?.cliType || "claude";
+  const model = options?.model || (cliType === "codex" ? "gpt-5.2-codex" : "sonnet");
   const thinkingEnabled = options?.thinkingEnabled || false;
+  const reasoningEffort = options?.reasoningEffort || "medium";
   const mcpServers = options?.mcpServers || [];
   const sessionId = options?.sessionId;
+  const specialty = options?.specialty || "normal";
 
   if (isTauri()) {
-    return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled, mcpServers, sessionId });
+    return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled, reasoningEffort, mcpServers, cliType, sessionId, specialty });
   } else {
     // Pass the client-generated ID so the server uses it
     await fetchApi('/api/agents', {
@@ -113,8 +285,11 @@ export async function createAgent(id: string, workingDir: string, options?: Agen
         working_dir: workingDir,
         model,
         thinking_enabled: thinkingEnabled,
+        reasoning_effort: reasoningEffort,
         mcp_servers: mcpServers,
+        cli_type: cliType,
         session_id: sessionId,
+        specialty,
       }),
     });
   }
@@ -272,17 +447,29 @@ export async function listAgents(): Promise<string[]> {
 
 export async function updateAgentSettings(
   id: string,
-  model?: ClaudeModel,
-  thinkingEnabled?: boolean
+  options: {
+    model?: string;
+    thinkingEnabled?: boolean;
+    reasoningEffort?: ReasoningEffort;
+    mcpServers?: string[];
+  }
 ): Promise<void> {
   if (isTauri()) {
-    return tauriInvoke("update_agent_settings", { id, model, thinkingEnabled });
+    return tauriInvoke("update_agent_settings", {
+      id,
+      model: options.model,
+      thinkingEnabled: options.thinkingEnabled,
+      reasoningEffort: options.reasoningEffort,
+      mcpServers: options.mcpServers,
+    });
   } else {
     await fetchApi(`/api/agents/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        model,
-        thinking_enabled: thinkingEnabled,
+        model: options.model,
+        thinking_enabled: options.thinkingEnabled,
+        reasoning_effort: options.reasoningEffort,
+        mcp_servers: options.mcpServers,
       }),
     });
   }
@@ -311,15 +498,40 @@ export interface SavedAgent {
   name: string;
   working_directory: string;
   position: { x: number; y: number; z: number };
+  status?: "idle" | "thinking" | "working" | "error";
   avatar_id?: string;
-  model?: ClaudeModel;
-  thinking_enabled?: boolean;
-  session_id?: string; // Claude CLI session ID for conversation continuity
+  model?: string; // ClaudeModel or CodexModel
+  thinking_enabled?: boolean; // For Claude
+  reasoning_effort?: ReasoningEffort; // For Codex
+  session_id?: string; // CLI session ID for conversation continuity
+  mcp_servers?: string[]; // List of MCP server IDs
+  cli_type?: CliType; // CLI backend (claude or codex)
+  specialty?: AgentSpecialty;
 }
 
 export interface WorkspaceData {
   agents: SavedAgent[];
   version: number;
+}
+
+export interface ServerAgentInfo {
+  id: string;
+  name: string;
+  working_dir: string;
+  model: string;
+  thinking_enabled: boolean;
+  mcp_servers: string[];
+  cli_type: string;
+  specialty: string;
+  status?: string;
+  session_id?: string | null;
+}
+
+export async function listAgentDetails(): Promise<ServerAgentInfo[]> {
+  if (isTauri()) {
+    return [];
+  }
+  return fetchApi<ServerAgentInfo[]>("/api/agents");
 }
 
 const WORKSPACE_STORAGE_KEY = 'virtual-agency-workspace';

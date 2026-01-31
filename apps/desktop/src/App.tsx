@@ -1,10 +1,11 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { useAgentStore } from "./stores/agentStore";
 import { useAgentOutput } from "./hooks/useAgentOutput";
 import { useChatMessages } from "./hooks/useChatMessages";
+import { useTerminalOutputEvents } from "./hooks/useTerminalOutputEvents";
 import { useWorkspaceInit } from "./hooks/useWorkspace";
 import { AgentPanel } from "./components/Panels/AgentPanel";
 import { WorkspacePanel } from "./components/Panels/WorkspacePanel";
@@ -14,14 +15,26 @@ import { OfficeEnvironment, getDeskPosition, getLoungePosition, OFFICE_SIZE } fr
 import { CliSetupModal } from "./components/Setup/CliSetupModal";
 import { EditorView } from "./components/FileExplorer/EditorView";
 import { useFileExplorerStore } from "./stores/fileExplorerStore";
+import { AuthBillingGate } from "./components/Auth/AuthBillingGate";
+import { isTauri } from "./lib/api";
 
-function Scene() {
+function Scene({
+  onControlsStart,
+  onControlsEnd,
+}: {
+  onControlsStart: () => void;
+  onControlsEnd: () => void;
+}) {
   const agents = useAgentStore((state) => state.agents);
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const selectAgent = useAgentStore((state) => state.selectAgent);
 
-  const handleBackgroundClick = () => {
-    selectAgent(null);
+  // Keep the AgentPanel open when users click around the office (for camera movement, etc).
+  // Provide an intentional "deselect" gesture instead (Shift+Click).
+  const handleBackgroundClick = (event: { nativeEvent?: MouseEvent }) => {
+    if (event.nativeEvent?.shiftKey) {
+      selectAgent(null);
+    }
   };
 
   // Calculate agent positions based on status
@@ -75,6 +88,8 @@ function Scene() {
         target={[0, 0, 0]}
         enablePan={true}
         panSpeed={0.5}
+        onStart={onControlsStart}
+        onEnd={onControlsEnd}
       />
     </>
   );
@@ -82,6 +97,7 @@ function Scene() {
 
 function App() {
   const [cliReady, setCliReady] = useState(false);
+  const [isCameraInteracting, setIsCameraInteracting] = useState(false);
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const { getOutputForAgent, clearOutput } = useAgentOutput();
   const openFiles = useFileExplorerStore((state) => state.openFiles);
@@ -92,6 +108,8 @@ function App() {
 
   // Parse Claude CLI output into chat messages
   useChatMessages();
+  // Buffer terminal output even when Terminal tab/panel is closed
+  useTerminalOutputEvents();
 
   const handleClearOutput = useCallback(() => {
     if (selectedAgent) {
@@ -100,6 +118,70 @@ function App() {
   }, [selectedAgent, clearOutput]);
 
   const outputLines = selectedAgent ? getOutputForAgent(selectedAgent.id) : [];
+  const dpr = useMemo(() => {
+    // Reduce pixel ratio while the user is actively moving the camera for higher FPS.
+    if (isCameraInteracting) return 1;
+    const device = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    return Math.min(2, Math.max(1, device));
+  }, [isCameraInteracting]);
+
+  const AppContent = (
+    <>
+      {!cliReady && <CliSetupModal onReady={() => setCliReady(true)} />}
+
+      <div style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        display: "flex",
+        overflow: "hidden",
+      }}>
+        <div style={{
+          flex: 1,
+          position: "relative",
+          minWidth: 0,
+          height: "100%",
+          overflow: "hidden",
+        }}>
+          {showEditor ? (
+            <EditorView />
+          ) : (
+            <>
+              <Canvas
+                camera={{
+                  position: [0, 30, 40],
+                  fov: 55,
+                  near: 0.1,
+                  far: 500,
+                }}
+                shadows
+                style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+                dpr={dpr}
+                gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+              >
+                <Scene
+                  onControlsStart={() => setIsCameraInteracting(true)}
+                  onControlsEnd={() => setIsCameraInteracting(false)}
+                />
+              </Canvas>
+              <Toolbar />
+              {!selectedAgent && <WorkspacePanel />}
+            </>
+          )}
+        </div>
+        {selectedAgent && (
+          <AgentPanel
+            key={selectedAgent.id}
+            agent={selectedAgent}
+            outputLines={outputLines}
+            onClearOutput={handleClearOutput}
+          />
+        )}
+      </div>
+    </>
+  );
 
   // Show loading state while workspace is initializing (after CLI is ready)
   if (cliReady && (!workspaceInitialized || workspaceLoading)) {
@@ -146,58 +228,14 @@ function App() {
     );
   }
 
-  return (
-    <>
-      {!cliReady && <CliSetupModal onReady={() => setCliReady(true)} />}
+  // Gate only in browser mode for now (Tauri stays unchanged).
+  const env = (import.meta as any).env || {};
+  const hasClerk = Boolean(env.VITE_CLERK_PUBLISHABLE_KEY || env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+  if (!isTauri() && hasClerk) {
+    return <AuthBillingGate>{AppContent}</AuthBillingGate>;
+  }
 
-      <div style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        display: "flex",
-        overflow: "hidden",
-      }}>
-        <div style={{
-          flex: 1,
-          position: "relative",
-          minWidth: 0,
-          height: "100%",
-          overflow: "hidden",
-        }}>
-          {showEditor ? (
-            <EditorView />
-          ) : (
-            <>
-              <Canvas
-                camera={{
-                  position: [0, 30, 40],
-                  fov: 55,
-                  near: 0.1,
-                  far: 500,
-                }}
-                shadows
-                style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
-                gl={{ antialias: true, alpha: false }}
-              >
-                <Scene />
-              </Canvas>
-              <Toolbar />
-              {!selectedAgent && <WorkspacePanel />}
-            </>
-          )}
-        </div>
-        {selectedAgent && (
-          <AgentPanel
-            agent={selectedAgent}
-            outputLines={outputLines}
-            onClearOutput={handleClearOutput}
-          />
-        )}
-      </div>
-    </>
-  );
+  return AppContent;
 }
 
 export default App;

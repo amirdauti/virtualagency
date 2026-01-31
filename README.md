@@ -110,6 +110,14 @@ pnpm tauri build
 | `pnpm tauri dev` | Launch Tauri development environment |
 | `pnpm tauri build` | Build production desktop binary |
 
+## Windows MSI (CI)
+
+See `docs/WINDOWS_INSTALLER.md`.
+
+## Auth + Billing
+
+See `docs/AUTH_BILLING.md`.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.

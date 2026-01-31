@@ -107,20 +107,35 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
                 Download for macOS
               </a>
               <a
-                href="/downloads/virtual-agency-server.exe"
+                href="/downloads/VirtualAgencyServer-windows.msi"
                 download
                 style={downloadButtonStyle}
               >
-                Download for Windows
+                Download for Windows (MSI)
               </a>
             </div>
 
             <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "0 0 16px 0" }}>
-              Extract the zip and double-click the app to start the server.
+              macOS: extract the zip and double-click the app. Windows: run the MSI installer.
             </p>
 
             <h3 style={{ margin: 0, marginBottom: 12, fontSize: 14 }}>
-              Step 2: Install Claude CLI (if not already installed)
+              Step 2: Install Node.js (Required)
+            </h3>
+            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "0 0 12px 0" }}>
+              The Claude CLI is installed via <code>npm</code>, which comes with Node.js.
+            </p>
+            <a
+              href="https://nodejs.org/en/download/"
+              target="_blank"
+              rel="noreferrer"
+              style={downloadButtonStyle}
+            >
+              Download Node.js
+            </a>
+
+            <h3 style={{ margin: 0, marginTop: 20, marginBottom: 12, fontSize: 14 }}>
+              Step 3: Install Claude CLI (if not already installed)
             </h3>
             <code style={codeBlockStyle}>npm install -g @anthropic-ai/claude-code</code>
           </div>
@@ -169,6 +184,17 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
           <h3 style={{ margin: 0, marginTop: 20, marginBottom: 12, fontSize: 14 }}>
             Or install via npm
           </h3>
+          <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "0 0 12px 0" }}>
+            Node.js is required for <code>npm</code>. Download:{" "}
+            <a
+              href="https://nodejs.org/en/download/"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "var(--accent)", textDecoration: "underline" }}
+            >
+              nodejs.org
+            </a>
+          </p>
           <code style={codeBlockStyle}>npm install -g @anthropic-ai/claude-code</code>
         </div>
 

@@ -1,4 +1,4 @@
-import { useRef, useMemo } from "react";
+import { useRef, useMemo, useEffect } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 
@@ -234,37 +234,50 @@ function BuildingBase() {
 function OfficeFloor() {
   const tiles = useMemo(() => {
     const tileCount = 40;
-    const result: { x: number; z: number; color: string }[] = [];
+    const result: { x: number; z: number; isEven: boolean }[] = [];
     for (let i = 0; i < tileCount; i++) {
       for (let j = 0; j < tileCount; j++) {
         result.push({
           x: (i - tileCount / 2 + 0.5) * 2,
           z: (j - tileCount / 2 + 0.5) * 2,
-          color: (i + j) % 2 === 0 ? "#2a2a3a" : "#323242",
+          isEven: (i + j) % 2 === 0,
         });
       }
     }
     return result;
   }, []);
 
+  const instancedRef = useRef<THREE.InstancedMesh>(null);
+  const matrix = useMemo(() => new THREE.Matrix4(), []);
+  const colorA = useMemo(() => new THREE.Color("#2a2a3a"), []);
+  const colorB = useMemo(() => new THREE.Color("#323242"), []);
+
+  useEffect(() => {
+    const mesh = instancedRef.current;
+    if (!mesh) return;
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      matrix.makeRotationX(-Math.PI / 2);
+      matrix.setPosition(t.x, 0, t.z);
+      mesh.setMatrixAt(i, matrix);
+      mesh.setColorAt(i, t.isEven ? colorA : colorB);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [tiles, matrix, colorA, colorB]);
+
   return (
     <group>
       {/* Floor tiles pattern */}
-      {tiles.map((tile, idx) => (
-        <mesh
-          key={idx}
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[tile.x, 0, tile.z]}
-          receiveShadow
-        >
-          <planeGeometry args={[1.98, 1.98]} />
-          <meshStandardMaterial
-            color={tile.color}
-            metalness={0.3}
-            roughness={0.7}
-          />
-        </mesh>
-      ))}
+      <instancedMesh
+        ref={instancedRef}
+        args={[undefined as any, undefined as any, tiles.length]}
+        receiveShadow
+        frustumCulled={false}
+      >
+        <planeGeometry args={[1.98, 1.98]} />
+        <meshStandardMaterial vertexColors metalness={0.3} roughness={0.7} />
+      </instancedMesh>
     </group>
   );
 }
