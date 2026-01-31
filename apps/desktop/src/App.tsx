@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
@@ -21,9 +21,11 @@ import { isTauri } from "./lib/api";
 function Scene({
   onControlsStart,
   onControlsEnd,
+  onControlsChange,
 }: {
   onControlsStart: () => void;
   onControlsEnd: () => void;
+  onControlsChange: () => void;
 }) {
   const agents = useAgentStore((state) => state.agents);
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
@@ -90,6 +92,7 @@ function Scene({
         panSpeed={0.5}
         onStart={onControlsStart}
         onEnd={onControlsEnd}
+        onChange={onControlsChange}
       />
     </>
   );
@@ -98,6 +101,7 @@ function Scene({
 function App() {
   const [cliReady, setCliReady] = useState(false);
   const [isCameraInteracting, setIsCameraInteracting] = useState(false);
+  const cameraIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const { getOutputForAgent, clearOutput } = useAgentOutput();
   const openFiles = useFileExplorerStore((state) => state.openFiles);
@@ -118,6 +122,40 @@ function App() {
   }, [selectedAgent, clearOutput]);
 
   const outputLines = selectedAgent ? getOutputForAgent(selectedAgent.id) : [];
+
+  // OrbitControls can keep moving after pointer-up when damping/inertia is enabled
+  // (common with trackpads/touch). Keep DPR reduced while the camera is still changing,
+  // and only restore DPR once changes have stopped for a short window.
+  const clearCameraIdleTimer = useCallback(() => {
+    if (cameraIdleTimerRef.current) {
+      clearTimeout(cameraIdleTimerRef.current);
+      cameraIdleTimerRef.current = null;
+    }
+  }, []);
+
+  const markCameraActive = useCallback(() => {
+    clearCameraIdleTimer();
+    setIsCameraInteracting(true);
+  }, [clearCameraIdleTimer]);
+
+  const scheduleCameraIdle = useCallback(() => {
+    clearCameraIdleTimer();
+    cameraIdleTimerRef.current = setTimeout(() => {
+      setIsCameraInteracting(false);
+    }, 180);
+  }, [clearCameraIdleTimer]);
+
+  const handleControlsChange = useCallback(() => {
+    // "change" fires while damping continues after input ends.
+    // Keep DPR low until motion settles.
+    markCameraActive();
+    scheduleCameraIdle();
+  }, [markCameraActive, scheduleCameraIdle]);
+
+  useEffect(() => {
+    return () => clearCameraIdleTimer();
+  }, [clearCameraIdleTimer]);
+
   const dpr = useMemo(() => {
     // Reduce pixel ratio while the user is actively moving the camera for higher FPS.
     if (isCameraInteracting) return 1;
@@ -162,8 +200,9 @@ function App() {
                 gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
               >
                 <Scene
-                  onControlsStart={() => setIsCameraInteracting(true)}
-                  onControlsEnd={() => setIsCameraInteracting(false)}
+                  onControlsStart={markCameraActive}
+                  onControlsEnd={scheduleCameraIdle}
+                  onControlsChange={handleControlsChange}
                 />
               </Canvas>
               <Toolbar />
