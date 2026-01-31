@@ -36,3 +36,7 @@ npm-debug.log*
 apps/desktop/src-tauri/target/
 
 DeveloperIDG2CA.cer
+DEPLOY.md
+
+# Never commit notarization/app-password scratch files
+fkdu-zphh-grxb-xhlt
