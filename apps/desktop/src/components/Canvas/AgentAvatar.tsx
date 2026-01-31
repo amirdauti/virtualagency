@@ -110,6 +110,41 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     // Many GLBs include helper meshes (planes, colliders, etc) that can distort sizing.
     clone.updateWorldMatrix(true, true);
 
+    // Prefer skeleton/bone extents for rigged models: it avoids skinned-mesh bounding-box pitfalls
+    // and ignores far-away non-character props that sometimes ship in GLBs.
+    const boneBox = (() => {
+      const bones: THREE.Bone[] = [];
+      clone.traverse((obj) => {
+        const anyObj = obj as any;
+        if (!anyObj?.isSkinnedMesh) return;
+        const skel = anyObj.skeleton;
+        if (skel?.bones?.length) bones.push(...skel.bones);
+      });
+      const unique = Array.from(new Set(bones));
+      if (unique.length === 0) return null;
+
+      const min = new Vector3(
+        Number.POSITIVE_INFINITY,
+        Number.POSITIVE_INFINITY,
+        Number.POSITIVE_INFINITY
+      );
+      const max = new Vector3(
+        Number.NEGATIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        Number.NEGATIVE_INFINITY
+      );
+      const tmp = new Vector3();
+      for (const b of unique) {
+        b.getWorldPosition(tmp);
+        min.min(tmp);
+        max.max(tmp);
+      }
+
+      const height = max.y - min.y;
+      if (!Number.isFinite(height) || height < 0.0001) return null;
+      return new Box3(min.clone(), max.clone());
+    })();
+
     const meshObjs: THREE.Object3D[] = [];
     clone.traverse((obj) => {
       const anyObj = obj as any;
@@ -247,9 +282,7 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
 
     // If we accidentally filtered too aggressively, fall back to full bounds.
     const meshBox = hasUnion ? union : fullBox;
-    // Always size based on mesh bounds. Bone-based extents frequently include outliers / helper bones
-    // that shrink avatars dramatically.
-    const box = meshBox;
+    const box = boneBox ?? meshBox;
     const size = new Vector3();
     box.getSize(size);
 
@@ -300,7 +333,7 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         console.log("[avatar-bounds]", {
           id: config.id,
           path: config.path,
-          used: "meshes",
+          used: boneBox ? "bones" : "meshes",
           box: { w: modelWidth, h: modelHeight, d: modelDepth },
           scaleMultiplier,
           autoScaleByHeight,
