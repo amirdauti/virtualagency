@@ -241,9 +241,11 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
       const scaledW = modelWidth * scale;
       const scaledD = modelDepth * scale;
       const footprintScale =
-        Math.max(scaledW, scaledD) > 0.0001
-          ? Math.min(1.0, targetMaxXZ / Math.max(scaledW, scaledD))
-          : 1.0;
+        config.disableFootprintClamp
+          ? 1.0
+          : Math.max(scaledW, scaledD) > 0.0001
+            ? Math.min(1.0, targetMaxXZ / Math.max(scaledW, scaledD))
+            : 1.0;
       scale *= footprintScale;
       scale = Math.min(100.0, Math.max(0.0005, scale));
 
@@ -302,9 +304,11 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     const scaledW = modelWidth * scale;
     const scaledD = modelDepth * scale;
     const footprintScale =
-      Math.max(scaledW, scaledD) > 0.0001
-        ? Math.min(1.0, targetMaxXZ / Math.max(scaledW, scaledD))
-        : 1.0;
+      config.disableFootprintClamp
+        ? 1.0
+        : Math.max(scaledW, scaledD) > 0.0001
+          ? Math.min(1.0, targetMaxXZ / Math.max(scaledW, scaledD))
+          : 1.0;
     scale *= footprintScale;
 
     // IMPORTANT: some assets are authored in cm/mm, others in meters.
