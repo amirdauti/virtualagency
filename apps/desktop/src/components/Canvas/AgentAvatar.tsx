@@ -106,13 +106,16 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     // at origin while others appear in the correct spot.
     const clone = SkeletonUtils.clone(scene) as Group;
 
-    // Some character GLBs ship in a T-pose without any animations. Apply a light-weight pose fix
-    // so avatars don't look awkward in the office.
+    // Some character GLBs ship in a T-pose. Apply an Astronaut-only pose fix so it doesn't
+    // affect other avatars' skeletons.
     if (
+      config.id === "astronaut" &&
       config.pose === "armsDown" &&
       (!config.poseOnlyIfNoAnimations || (Array.isArray(animations) && animations.length === 0))
     ) {
-      const isExcludedArmPart = (n: string) => {
+      clone.updateWorldMatrix(true, true);
+
+      const excludedByName = (n: string) => {
         const l = n.toLowerCase();
         return (
           l.includes("forearm") ||
@@ -129,31 +132,6 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         );
       };
 
-      const isShoulderLike = (n: string) => {
-        const l = n.toLowerCase();
-        return l.includes("clavicle") || l.includes("shoulder");
-      };
-
-      const isUpperArmLike = (n: string) => {
-        const l = n.toLowerCase();
-        return (
-          (l.includes("upperarm") || (l.includes("arm") && !l.includes("forearm") && !l.includes("lowerarm"))) &&
-          !l.includes("leg") &&
-          !l.includes("charm") &&
-          !l.includes("armor")
-        );
-      };
-
-      const inferSide = (bone: THREE.Bone): "left" | "right" | null => {
-        const n = (bone.name || "").toLowerCase();
-        if (n.includes("left") || n.startsWith("l_") || n.endsWith("_l") || n.includes(":left")) return "left";
-        if (n.includes("right") || n.startsWith("r_") || n.endsWith("_r") || n.includes(":right")) return "right";
-        const wp = new Vector3();
-        bone.getWorldPosition(wp);
-        if (Math.abs(wp.x) < 1e-3) return null;
-        return wp.x < 0 ? "left" : "right";
-      };
-
       const bones: THREE.Bone[] = [];
       clone.traverse((obj) => {
         const anyObj = obj as any;
@@ -163,29 +141,61 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         for (const b of skel.bones as THREE.Bone[]) bones.push(b);
       });
       const unique = Array.from(new Set(bones));
+      if (unique.length > 0) {
+        const positions = unique.map((b) => {
+          const p = new Vector3();
+          b.getWorldPosition(p);
+          return { b, p };
+        });
+        const minY = Math.min(...positions.map((x) => x.p.y));
+        const maxY = Math.max(...positions.map((x) => x.p.y));
+        const height = Math.max(0.0001, maxY - minY);
 
-      let changed = 0;
-      for (const b of unique) {
-        const name = b.name || "";
-        if (!name) continue;
-        if (isExcludedArmPart(name)) continue;
-        if (!isShoulderLike(name) && !isUpperArmLike(name)) continue;
+        const centroid = new Vector3();
+        for (const x of positions) centroid.add(x.p);
+        centroid.multiplyScalar(1 / positions.length);
 
-        const side = inferSide(b);
-        if (!side) continue;
+        // Shoulder band (upper torso)
+        const bandCenterY = minY + height * 0.78;
+        const bandMinY = bandCenterY - height * 0.12;
+        const bandMaxY = bandCenterY + height * 0.12;
 
-        // Pull shoulders slightly down/in, then bring upper arms down toward an A-pose.
-        if (isShoulderLike(name)) {
-          b.rotation.z += side === "left" ? -0.25 : 0.25;
-          changed++;
-        } else if (isUpperArmLike(name)) {
-          b.rotation.z += side === "left" ? -0.8 : 0.8;
-          b.rotation.x -= 0.08;
-          changed++;
-        }
-      }
+        const minArmX = height * 0.12;
+        const maxArmX = height * 0.42;
 
-      if (changed > 0) {
+        const pickUpperArm = (side: "left" | "right") => {
+          const candidates = positions
+            .filter(({ b, p }) => {
+              if (excludedByName(b.name || "")) return false;
+              if (p.y < bandMinY || p.y > bandMaxY) return false;
+              const dx = p.x - centroid.x;
+              if (side === "left" && dx > 0) return false;
+              if (side === "right" && dx < 0) return false;
+              const ax = Math.abs(dx);
+              return ax >= minArmX && ax <= maxArmX;
+            })
+            // Prefer the bone closest to the torso within the band (avoids picking hands).
+            .sort((a, b) => Math.abs(a.p.x - centroid.x) - Math.abs(b.p.x - centroid.x));
+          return candidates[0]?.b ?? null;
+        };
+
+        const left = pickUpperArm("left");
+        const right = pickUpperArm("right");
+
+        const rotateArm = (bone: THREE.Bone, side: "left" | "right") => {
+          // Rotate upper arm down (T-pose -> A-pose)
+          bone.rotation.z += side === "left" ? -0.95 : 0.95;
+          bone.rotation.x -= 0.12;
+          // Nudge the parent (often clavicle/shoulder) slightly too.
+          const parent = bone.parent as THREE.Object3D | null;
+          if (parent && (parent as any).isBone) {
+            (parent as THREE.Bone).rotation.z += side === "left" ? -0.25 : 0.25;
+          }
+        };
+
+        if (left) rotateArm(left, "left");
+        if (right) rotateArm(right, "right");
+
         clone.updateWorldMatrix(true, true);
       }
     }
@@ -207,32 +217,7 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
       const unique = Array.from(new Set(bones));
       if (unique.length === 0) return null;
 
-      // Some rigs include far-away helper/IK bones which distort bounds and centering.
-      // Build a robust bounds by dropping spatial outliers based on median distance.
-      const positions: Vector3[] = [];
       const tmp = new Vector3();
-      for (const b of unique) {
-        b.getWorldPosition(tmp);
-        positions.push(tmp.clone());
-      }
-
-      if (positions.length === 0) return null;
-
-      // Centroid
-      const centroid = new Vector3();
-      for (const p of positions) centroid.add(p);
-      centroid.multiplyScalar(1 / positions.length);
-
-      const dists = positions
-        .map((p) => p.distanceTo(centroid))
-        .filter((d) => Number.isFinite(d))
-        .sort((a, b) => a - b);
-      const median = dists.length ? dists[Math.floor(dists.length / 2)] : 0;
-      const maxDist = median > 0.0001 ? median * 3.0 : 999999;
-
-      const filtered = positions.filter((p) => p.distanceTo(centroid) <= maxDist);
-      const use = filtered.length >= Math.max(8, Math.floor(positions.length * 0.3)) ? filtered : positions;
-
       const min = new Vector3(
         Number.POSITIVE_INFINITY,
         Number.POSITIVE_INFINITY,
@@ -243,9 +228,10 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         Number.NEGATIVE_INFINITY,
         Number.NEGATIVE_INFINITY
       );
-      for (const p of use) {
-        min.min(p);
-        max.max(p);
+      for (const b of unique) {
+        b.getWorldPosition(tmp);
+        min.min(tmp);
+        max.max(tmp);
       }
 
       const height = max.y - min.y;
