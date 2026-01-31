@@ -106,6 +106,65 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     // at origin while others appear in the correct spot.
     const clone = SkeletonUtils.clone(scene) as Group;
 
+    // Some character GLBs ship in a T-pose without any animations. Apply a light-weight pose fix
+    // so avatars don't look awkward in the office.
+    if (
+      config.pose === "armsDown" &&
+      (!config.poseOnlyIfNoAnimations || (Array.isArray(animations) && animations.length === 0))
+    ) {
+      const leftShoulderPatterns = ["leftshoulder", "lshoulder", "shoulder_l", "mixamorig:leftshoulder"];
+      const rightShoulderPatterns = ["rightshoulder", "rshoulder", "shoulder_r", "mixamorig:rightshoulder"];
+      const leftUpperArmPatterns = ["leftupperarm", "lupperarm", "upperarm_l", "mixamorig:leftarm", "mixamorig:leftupperarm", "leftarm"];
+      const rightUpperArmPatterns = ["rightupperarm", "rupperarm", "upperarm_r", "mixamorig:rightarm", "mixamorig:rightupperarm", "rightarm"];
+
+      const matchesAny = (name: string, patterns: string[]) => {
+        const lower = name.toLowerCase();
+        return patterns.some((p) => lower.includes(p));
+      };
+
+      const isLeftUpperArm = (name: string) =>
+        matchesAny(name, leftUpperArmPatterns) &&
+        !name.toLowerCase().includes("forearm") &&
+        !name.toLowerCase().includes("lowerarm") &&
+        !name.toLowerCase().includes("hand");
+      const isRightUpperArm = (name: string) =>
+        matchesAny(name, rightUpperArmPatterns) &&
+        !name.toLowerCase().includes("forearm") &&
+        !name.toLowerCase().includes("lowerarm") &&
+        !name.toLowerCase().includes("hand");
+
+      const targets: THREE.Bone[] = [];
+      clone.traverse((obj) => {
+        const anyObj = obj as any;
+        if (!anyObj?.isSkinnedMesh) return;
+        const skel = anyObj.skeleton;
+        if (!skel?.bones?.length) return;
+        for (const b of skel.bones as THREE.Bone[]) targets.push(b);
+      });
+
+      const unique = Array.from(new Set(targets));
+      for (const b of unique) {
+        const n = b.name || "";
+        const lower = n.toLowerCase();
+        // Rotate shoulders slightly down/inward.
+        if (matchesAny(lower, leftShoulderPatterns)) {
+          b.rotation.z -= 0.35;
+        } else if (matchesAny(lower, rightShoulderPatterns)) {
+          b.rotation.z += 0.35;
+        }
+
+        // Rotate upper arms down from T-pose toward A-pose.
+        if (isLeftUpperArm(n)) {
+          b.rotation.z -= 0.9;
+          b.rotation.x -= 0.1;
+        } else if (isRightUpperArm(n)) {
+          b.rotation.z += 0.9;
+          b.rotation.x -= 0.1;
+        }
+      }
+      clone.updateWorldMatrix(true, true);
+    }
+
     // Compute a robust bounding box for scale/grounding.
     // Many GLBs include helper meshes (planes, colliders, etc) that can distort sizing.
     clone.updateWorldMatrix(true, true);

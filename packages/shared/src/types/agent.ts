@@ -32,6 +32,8 @@ export interface AvatarConfig {
   scale?: number;        // Scale factor (default 1.0)
   yOffset?: number;      // Y position offset to place feet on ground
   disableFootprintClamp?: boolean; // Disable width/depth clamp (use with care)
+  pose?: "armsDown";     // Optional pose fix for models that load in T-pose
+  poseOnlyIfNoAnimations?: boolean; // Apply pose fix only when no animations are present
   idleAnims?: string[];  // Animation name patterns for idle
   walkAnims?: string[];  // Animation name patterns for walking
 }
@@ -58,8 +60,10 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     id: "astronaut",
     name: "Astronaut",
     path: "/models/avatars/astronaut_character_stylized_rigged_free_model.glb",
-    scale: 1.8,
+    scale: 1.4,
     disableFootprintClamp: true,
+    pose: "armsDown",
+    poseOnlyIfNoAnimations: true,
   },
   {
     id: "paladin",
