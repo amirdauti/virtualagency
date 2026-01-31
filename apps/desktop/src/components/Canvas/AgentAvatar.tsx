@@ -110,33 +110,6 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     // Many GLBs include helper meshes (planes, colliders, etc) that can distort sizing.
     clone.updateWorldMatrix(true, true);
 
-    // Prefer skeleton/bone extents for rigged models: it avoids skinned-mesh bounding-box pitfalls
-    // and ignores far-away non-character props that sometimes ship in GLBs.
-    const boneBox = (() => {
-      const bones: THREE.Bone[] = [];
-      clone.traverse((obj) => {
-        const anyObj = obj as any;
-        if (!anyObj?.isSkinnedMesh) return;
-        const skel = anyObj.skeleton;
-        if (skel?.bones?.length) bones.push(...skel.bones);
-      });
-      const unique = Array.from(new Set(bones));
-      if (unique.length === 0) return null;
-
-      const min = new Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
-      const max = new Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
-      const tmp = new Vector3();
-      for (const b of unique) {
-        b.getWorldPosition(tmp);
-        min.min(tmp);
-        max.max(tmp);
-      }
-
-      const height = max.y - min.y;
-      if (!Number.isFinite(height) || height < 0.0001) return null;
-      return new Box3(min.clone(), max.clone());
-    })();
-
     const meshObjs: THREE.Object3D[] = [];
     clone.traverse((obj) => {
       const anyObj = obj as any;
@@ -274,44 +247,9 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
 
     // If we accidentally filtered too aggressively, fall back to full bounds.
     const meshBox = hasUnion ? union : fullBox;
-
-    // Choose bounds source.
-    // Bone extents are sometimes wildly larger than the visible character (common when assets are
-    // authored in cm/mm or include far-away helper bones), which makes avatars render too small.
-    // Prefer mesh-derived bounds, and only use bone bounds when they broadly agree with mesh bounds.
-    const chosenBox = (() => {
-      if (!boneBox) return { box: meshBox, used: "meshes" as const, reason: "no-bones" };
-
-      const meshSize = new Vector3();
-      const boneSize = new Vector3();
-      meshBox.getSize(meshSize);
-      boneBox.getSize(boneSize);
-
-      const meshH = meshSize.y;
-      const boneH = boneSize.y;
-      const meshXZ = Math.max(meshSize.x, meshSize.z);
-      const boneXZ = Math.max(boneSize.x, boneSize.z);
-
-      const ratioH = meshH > 0.0001 ? boneH / meshH : Number.POSITIVE_INFINITY;
-      const ratioXZ = meshXZ > 0.0001 ? boneXZ / meshXZ : Number.POSITIVE_INFINITY;
-
-      // If bone bounds are a big outlier vs mesh bounds, they're likely untrustworthy for sizing.
-      const within = ratioH >= 0.25 && ratioH <= 4 && ratioXZ >= 0.25 && ratioXZ <= 4;
-      if (!within) {
-        return { box: meshBox, used: "meshes" as const, reason: `bone-outlier h=${ratioH.toFixed(2)} xz=${ratioXZ.toFixed(2)}` };
-      }
-
-      // If mesh bounds are suspiciously huge (often due to extra scenery), prefer bones.
-      // Otherwise meshes are typically more representative of what users see.
-      const meshTooBig = meshH > 20 || meshXZ > 20;
-      if (meshTooBig && boneH < meshH * 0.8) {
-        return { box: boneBox, used: "bones" as const, reason: "mesh-too-big" };
-      }
-
-      return { box: meshBox, used: "meshes" as const, reason: "default" };
-    })();
-
-    const box = chosenBox.box;
+    // Always size based on mesh bounds. Bone-based extents frequently include outliers / helper bones
+    // that shrink avatars dramatically.
+    const box = meshBox;
     const size = new Vector3();
     box.getSize(size);
 
@@ -362,8 +300,7 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         console.log("[avatar-bounds]", {
           id: config.id,
           path: config.path,
-          used: chosenBox.used,
-          reason: chosenBox.reason,
+          used: "meshes",
           box: { w: modelWidth, h: modelHeight, d: modelDepth },
           scaleMultiplier,
           autoScaleByHeight,
