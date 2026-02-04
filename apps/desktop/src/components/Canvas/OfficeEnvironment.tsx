@@ -1,4 +1,4 @@
-import { useRef, useMemo, useEffect } from "react";
+import { useRef, useMemo } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 
@@ -26,19 +26,34 @@ export function getDeskPosition(index: number): { x: number; z: number } {
 
 // Lounge positions for idle agents
 export function getLoungePosition(index: number): { x: number; z: number } {
-  const loungePositions = [
-    { x: -8, z: 15 },
-    { x: -4, z: 18 },
-    { x: 0, z: 15 },
-    { x: 4, z: 18 },
-    { x: 8, z: 15 },
-    { x: -6, z: 22 },
-    { x: 0, z: 22 },
-    { x: 6, z: 22 },
-    { x: -10, z: 20 },
-    { x: 10, z: 20 },
-  ];
-  return loungePositions[index % loungePositions.length];
+  // Lobby/lounge spawn slots for idle agents.
+  // We have 24 desks/workstations, so provide 24 non-overlapping lobby slots.
+  //
+  // Layout: 4 rows x 6 columns in front of the lounge furniture, between the divider (z≈3)
+  // and the lounge group (centered around z≈18). This keeps idle agents visible and avoids
+  // pile-ups when many agents are in the lobby.
+  const cols = DESKS_PER_ROW; // 6
+  const rows = DESK_ROWS; // 4
+  const startX = -15;
+  const spacingX = 6;
+  const startZ = 7;
+  const spacingZ = 3;
+
+  const clampedIndex = Math.max(0, index);
+  const slot = clampedIndex % (cols * rows);
+  const overflow = Math.floor(clampedIndex / (cols * rows));
+
+  const row = Math.floor(slot / cols);
+  const col = slot % cols;
+
+  // If more than 24 agents are idle, spread additional agents behind the first grid.
+  const overflowZOffset = overflow * 2.5;
+  const overflowXJitter = overflow === 0 ? 0 : ((slot % 2 === 0 ? -1 : 1) * 0.6);
+
+  return {
+    x: startX + col * spacingX + overflowXJitter,
+    z: startZ + row * spacingZ + overflowZOffset,
+  };
 }
 
 export function OfficeEnvironment() {
@@ -109,12 +124,15 @@ function BuildingBase() {
                 ]}
               >
                 <planeGeometry args={[2.5, 2]} />
-                <meshStandardMaterial
+                {/* Opaque windows without reflective shimmer.
+                    Use polygonOffset + no depthWrite to avoid z-fighting with the building face
+                    (which shows up as a moving hatch pattern when the camera moves). */}
+                <meshBasicMaterial
                   color="#88ccff"
-                  metalness={0.8}
-                  roughness={0.2}
-                  transparent
-                  opacity={0.7}
+                  depthWrite={false}
+                  polygonOffset
+                  polygonOffsetFactor={-1}
+                  polygonOffsetUnits={-1}
                 />
               </mesh>
             ))}
@@ -131,12 +149,12 @@ function BuildingBase() {
                 rotation={[0, Math.PI, 0]}
               >
                 <planeGeometry args={[2.5, 2]} />
-                <meshStandardMaterial
+                <meshBasicMaterial
                   color="#88ccff"
-                  metalness={0.8}
-                  roughness={0.2}
-                  transparent
-                  opacity={0.7}
+                  depthWrite={false}
+                  polygonOffset
+                  polygonOffsetFactor={-1}
+                  polygonOffsetUnits={-1}
                 />
               </mesh>
             ))}
@@ -153,12 +171,12 @@ function BuildingBase() {
                 rotation={[0, -Math.PI / 2, 0]}
               >
                 <planeGeometry args={[2.5, 2]} />
-                <meshStandardMaterial
+                <meshBasicMaterial
                   color="#88ccff"
-                  metalness={0.8}
-                  roughness={0.2}
-                  transparent
-                  opacity={0.7}
+                  depthWrite={false}
+                  polygonOffset
+                  polygonOffsetFactor={-1}
+                  polygonOffsetUnits={-1}
                 />
               </mesh>
             ))}
@@ -175,12 +193,12 @@ function BuildingBase() {
                 rotation={[0, Math.PI / 2, 0]}
               >
                 <planeGeometry args={[2.5, 2]} />
-                <meshStandardMaterial
+                <meshBasicMaterial
                   color="#88ccff"
-                  metalness={0.8}
-                  roughness={0.2}
-                  transparent
-                  opacity={0.7}
+                  depthWrite={false}
+                  polygonOffset
+                  polygonOffsetFactor={-1}
+                  polygonOffsetUnits={-1}
                 />
               </mesh>
             ))}
@@ -225,7 +243,13 @@ function BuildingBase() {
       {/* Entrance glass doors */}
       <mesh position={[0, -BUILDING_HEIGHT / 2 + 2, -buildingDepth / 2 - 0.05]}>
         <planeGeometry args={[6, 3.5]} />
-        <meshStandardMaterial color="#aaddff" metalness={0.9} roughness={0.1} transparent opacity={0.5} />
+        <meshBasicMaterial
+          color="#88ccff"
+          depthWrite={false}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+        />
       </mesh>
     </group>
   );
@@ -234,50 +258,28 @@ function BuildingBase() {
 function OfficeFloor() {
   const tiles = useMemo(() => {
     const tileCount = 40;
-    const result: { x: number; z: number; isEven: boolean }[] = [];
+    const result: { x: number; z: number; color: string }[] = [];
     for (let i = 0; i < tileCount; i++) {
       for (let j = 0; j < tileCount; j++) {
         result.push({
           x: (i - tileCount / 2 + 0.5) * 2,
           z: (j - tileCount / 2 + 0.5) * 2,
-          isEven: (i + j) % 2 === 0,
+          color: (i + j) % 2 === 0 ? "#2a2a3a" : "#323242",
         });
       }
     }
     return result;
   }, []);
 
-  const instancedRef = useRef<THREE.InstancedMesh>(null);
-  const matrix = useMemo(() => new THREE.Matrix4(), []);
-  const colorA = useMemo(() => new THREE.Color("#2a2a3a"), []);
-  const colorB = useMemo(() => new THREE.Color("#323242"), []);
-
-  useEffect(() => {
-    const mesh = instancedRef.current;
-    if (!mesh) return;
-    for (let i = 0; i < tiles.length; i++) {
-      const t = tiles[i];
-      matrix.makeRotationX(-Math.PI / 2);
-      matrix.setPosition(t.x, 0, t.z);
-      mesh.setMatrixAt(i, matrix);
-      mesh.setColorAt(i, t.isEven ? colorA : colorB);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [tiles, matrix, colorA, colorB]);
-
   return (
     <group>
       {/* Floor tiles pattern */}
-      <instancedMesh
-        ref={instancedRef}
-        args={[undefined as any, undefined as any, tiles.length]}
-        receiveShadow
-        frustumCulled={false}
-      >
-        <planeGeometry args={[1.98, 1.98]} />
-        <meshStandardMaterial vertexColors metalness={0.3} roughness={0.7} />
-      </instancedMesh>
+      {tiles.map((tile, idx) => (
+        <mesh key={idx} rotation={[-Math.PI / 2, 0, 0]} position={[tile.x, 0, tile.z]} receiveShadow>
+          <planeGeometry args={[1.98, 1.98]} />
+          <meshStandardMaterial color={tile.color} metalness={0.3} roughness={0.7} />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -728,19 +730,43 @@ function CityBuilding({ x, z, height, width, depth }: { x: number; z: number; he
         <>
           <mesh position={[0, 0, depth / 2 + 0.02]}>
             <planeGeometry args={[width * 0.85, height * 0.85]} />
-            <meshStandardMaterial color="#aaddff" metalness={0.9} roughness={0.1} transparent opacity={0.6} />
+            <meshBasicMaterial
+              color="#88ccff"
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+            />
           </mesh>
           <mesh position={[0, 0, -depth / 2 - 0.02]} rotation={[0, Math.PI, 0]}>
             <planeGeometry args={[width * 0.85, height * 0.85]} />
-            <meshStandardMaterial color="#aaddff" metalness={0.9} roughness={0.1} transparent opacity={0.6} />
+            <meshBasicMaterial
+              color="#88ccff"
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+            />
           </mesh>
           <mesh position={[width / 2 + 0.02, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
             <planeGeometry args={[depth * 0.85, height * 0.85]} />
-            <meshStandardMaterial color="#aaddff" metalness={0.9} roughness={0.1} transparent opacity={0.6} />
+            <meshBasicMaterial
+              color="#88ccff"
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+            />
           </mesh>
           <mesh position={[-width / 2 - 0.02, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
             <planeGeometry args={[depth * 0.85, height * 0.85]} />
-            <meshStandardMaterial color="#aaddff" metalness={0.9} roughness={0.1} transparent opacity={0.6} />
+            <meshBasicMaterial
+              color="#88ccff"
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+            />
           </mesh>
         </>
       )}
