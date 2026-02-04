@@ -1,6 +1,10 @@
 import { create } from 'zustand';
+import { getServerHttpBaseUrl } from '../lib/api';
 
-const API_BASE = import.meta.env.VITE_SERVER_URL || 'http://127.0.0.1:3001';
+async function getApiBase(): Promise<string> {
+  const resolved = await getServerHttpBaseUrl();
+  return resolved || 'http://127.0.0.1:1337';
+}
 
 export interface FileNode {
   name: string;
@@ -76,7 +80,8 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
 
     set({ isLoading: true, error: null });
     try {
-      const response = await fetch(`${API_BASE}/api/files/tree/${agentId}`);
+      const base = await getApiBase();
+      const response = await fetch(`${base}/api/files/tree/${agentId}`);
       if (!response.ok) {
         throw new Error('Failed to load file tree');
       }
@@ -107,7 +112,8 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
 
     set({ error: null });
     try {
-      const response = await fetch(`${API_BASE}/api/files/read/${agentId}`, {
+      const base = await getApiBase();
+      const response = await fetch(`${base}/api/files/read/${agentId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path }),
@@ -188,7 +194,8 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
 
     set({ error: null });
     try {
-      const response = await fetch(`${API_BASE}/api/files/write/${agentId}`, {
+      const base = await getApiBase();
+      const response = await fetch(`${base}/api/files/write/${agentId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -211,8 +211,51 @@ async fn main() {
         .layer(axum::middleware::from_fn(private_network_access_middleware))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3001").await.unwrap();
-    tracing::info!("Virtual Agency server listening on http://127.0.0.1:3001");
+    let preferred_port = std::env::var("VIRTUAL_AGENCY_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .filter(|p| *p > 0);
+
+    // Prefer 1337, but fall back if in use. This avoids a "double click and nothing happens"
+    // experience on Windows when the fixed port is already occupied.
+    let mut candidates: Vec<u16> = Vec::new();
+    if let Some(p) = preferred_port {
+        candidates.push(p);
+    }
+    candidates.push(1337);
+    candidates.push(3001);
+    for p in 1338..=1350 {
+        candidates.push(p);
+    }
+    candidates.dedup();
+
+    let mut bound_port: Option<u16> = None;
+    let mut last_err: Option<std::io::Error> = None;
+    let mut listener_opt: Option<tokio::net::TcpListener> = None;
+
+    for port in candidates {
+        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => {
+                bound_port = Some(port);
+                listener_opt = Some(listener);
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+
+    let Some(listener) = listener_opt else {
+        let err = last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string());
+        eprintln!("Failed to bind Virtual Agency server to any port: {}", err);
+        return;
+    };
+
+    let port = bound_port.unwrap_or(1337);
+    tracing::info!("Virtual Agency server listening on http://127.0.0.1:{}", port);
 
     axum::serve(listener, app).await.unwrap();
 }

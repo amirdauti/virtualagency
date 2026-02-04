@@ -5,19 +5,111 @@
 
 import type { AgentSpecialty } from "@virtual-agency/shared";
 
-// Server URL for browser mode
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://127.0.0.1:3001';
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:3001/ws';
+// Server URL for browser mode (resolved dynamically when env vars are not provided).
+const ENV_SERVER_URL = import.meta.env.VITE_SERVER_URL as string | undefined;
+const ENV_WS_URL = import.meta.env.VITE_WS_URL as string | undefined;
+
+const SERVER_URL_STORAGE_KEY = "virtual-agency-server-url";
+let resolvedServerUrl: string | null = null;
+let resolvingServerUrl: Promise<string> | null = null;
 
 // Detect if running in Tauri (v2 uses __TAURI_INTERNALS__)
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 }
 
+function loadSavedServerUrl(): string | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const value = localStorage.getItem(SERVER_URL_STORAGE_KEY);
+    if (!value) return null;
+    return value.startsWith("http://") || value.startsWith("https://") ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistServerUrl(url: string) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(SERVER_URL_STORAGE_KEY, url);
+  } catch {
+    // ignore
+  }
+}
+
+function defaultServerCandidates(): string[] {
+  const candidates: string[] = [];
+  const saved = loadSavedServerUrl();
+  if (saved) candidates.push(saved);
+
+  // Prefer 1337, but allow fallbacks. The local server will attempt these as well.
+  const ports = [1337, 3001, ...Array.from({ length: 13 }, (_, i) => 1338 + i)];
+  for (const port of ports) {
+    candidates.push(`http://127.0.0.1:${port}`);
+  }
+
+  // Unique, preserve order.
+  return Array.from(new Set(candidates));
+}
+
+async function probeServer(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 700);
+    const res = await fetch(`${url}/api/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function getServerHttpBaseUrl(): Promise<string> {
+  if (isTauri()) {
+    // In Tauri mode we don't use HTTP; requests go through invoke().
+    return "";
+  }
+  if (ENV_SERVER_URL) return ENV_SERVER_URL;
+  if (resolvedServerUrl) return resolvedServerUrl;
+  if (resolvingServerUrl) return resolvingServerUrl;
+
+  resolvingServerUrl = (async () => {
+    for (const candidate of defaultServerCandidates()) {
+      // If the saved URL is dead, quickly move on.
+      // When the server is up, /api/health responds immediately.
+      // eslint-disable-next-line no-await-in-loop
+      const ok = await probeServer(candidate);
+      if (ok) {
+        resolvedServerUrl = candidate;
+        persistServerUrl(candidate);
+        return candidate;
+      }
+    }
+
+    // Default fallback (used by UI for "waiting for server" states).
+    return "http://127.0.0.1:1337";
+  })();
+
+  try {
+    return await resolvingServerUrl;
+  } finally {
+    resolvingServerUrl = null;
+  }
+}
+
+export async function getServerWsUrl(): Promise<string> {
+  if (isTauri()) return "";
+  if (ENV_WS_URL) return ENV_WS_URL;
+  const httpBase = await getServerHttpBaseUrl();
+  return `${httpBase.replace(/^http/, "ws")}/ws`;
+}
+
 // WebSocket connection for browser mode
 let ws: WebSocket | null = null;
 let wsReconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 const wsListeners: Set<(event: MessageEvent) => void> = new Set();
+const wsOutboundQueue: string[] = [];
 
 const EVENT_SEQ_STORAGE_KEY = "virtual-agency-last-event-seq";
 let lastEventSeq = 0;
@@ -103,18 +195,31 @@ async function replayMissedEvents() {
   }
 }
 
-function connectWebSocket() {
+async function connectWebSocket() {
   if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) {
     return;
   }
 
-  ws = new WebSocket(WS_URL);
+  const wsUrl = await getServerWsUrl();
+  ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
     console.log('[API] WebSocket connected');
     if (wsReconnectTimeout) {
       clearTimeout(wsReconnectTimeout);
       wsReconnectTimeout = null;
+    }
+
+    if (wsOutboundQueue.length > 0) {
+      const pending = wsOutboundQueue.splice(0, wsOutboundQueue.length);
+      for (const payload of pending) {
+        try {
+          ws?.send(payload);
+        } catch {
+          wsOutboundQueue.unshift(payload);
+          break;
+        }
+      }
     }
 
     // Replay any missed events since the last seen seq, buffering live WS
@@ -151,6 +256,19 @@ function connectWebSocket() {
   ws.onmessage = (event) => {
     const data = typeof event.data === "string" ? event.data : String(event.data);
     if (isReplaying) {
+      // During replay we buffer most live events to preserve ordering, but terminal IO must
+      // stay responsive (otherwise typing feels laggy as echo waits for replay to finish).
+      // Let terminal output through immediately.
+      try {
+        const msg = JSON.parse(data);
+        if (msg?.type === "terminal-output") {
+          handleIncomingWsData(data);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
       pendingDuringReplay.push(data);
       return;
     }
@@ -160,7 +278,7 @@ function connectWebSocket() {
   ws.onclose = () => {
     console.log('[API] WebSocket disconnected, reconnecting...');
     ws = null;
-    wsReconnectTimeout = setTimeout(connectWebSocket, 2000);
+    wsReconnectTimeout = setTimeout(() => void connectWebSocket(), 2000);
   };
 
   ws.onerror = (error) => {
@@ -172,18 +290,22 @@ export function addWebSocketListener(listener: (event: MessageEvent) => void) {
   wsListeners.add(listener);
   // Ensure WebSocket is connected in browser mode
   if (!isTauri()) {
-    connectWebSocket();
+    void connectWebSocket();
   }
   return () => wsListeners.delete(listener);
 }
 
 export function sendWebSocketMessage(message: unknown): boolean {
   if (isTauri()) return false;
-  connectWebSocket();
-  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  const payload = JSON.stringify(message);
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    wsOutboundQueue.push(payload);
+    void connectWebSocket();
+    return true;
+  }
 
   try {
-    ws.send(JSON.stringify(message));
+    ws.send(payload);
     return true;
   } catch (err) {
     console.warn("[API] Failed to send WebSocket message:", err);
@@ -199,7 +321,8 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
 
 // HTTP fetch helper for browser mode
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${SERVER_URL}${path}`, {
+  const base = await getServerHttpBaseUrl();
+  const response = await fetch(`${base}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -532,6 +655,22 @@ export async function listAgentDetails(): Promise<ServerAgentInfo[]> {
     return [];
   }
   return fetchApi<ServerAgentInfo[]>("/api/agents");
+}
+
+export interface ServerTerminalInfo {
+  id: string;
+  working_dir: string;
+}
+
+export async function listTerminals(): Promise<ServerTerminalInfo[]> {
+  // Browser-only for now; desktop can add a Tauri command later if needed.
+  if (isTauri()) return [];
+  try {
+    return fetchApi<ServerTerminalInfo[]>("/api/terminals");
+  } catch (err) {
+    console.warn("[api] Failed to list terminals:", err);
+    return [];
+  }
 }
 
 const WORKSPACE_STORAGE_KEY = 'virtual-agency-workspace';

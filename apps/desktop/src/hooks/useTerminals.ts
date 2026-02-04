@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { sendWebSocketMessage } from "../lib/api";
+import { getServerHttpBaseUrl, sendWebSocketMessage } from "../lib/api";
 import { useTerminalStore } from "../stores/terminalStore";
 import { disposeTerminalInstance } from "../stores/terminalInstanceStore";
 import {
@@ -8,7 +8,10 @@ import {
   useTerminalOutputStore,
 } from "../stores/terminalOutputStore";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://127.0.0.1:3001";
+async function getApiBase(): Promise<string> {
+  const resolved = await getServerHttpBaseUrl();
+  return resolved || "http://127.0.0.1:1337";
+}
 
 export interface TerminalSession {
   id: string;
@@ -31,7 +34,8 @@ export function useTerminals(agentId: string) {
   const createTerminal = useCallback(
     async (workingDir: string, name?: string): Promise<TerminalSession | null> => {
       try {
-        const response = await fetch(`${SERVER_URL}/api/terminals`, {
+        const base = await getApiBase();
+        const response = await fetch(`${base}/api/terminals`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -68,7 +72,8 @@ export function useTerminals(agentId: string) {
   // Kill a terminal
   const killTerminal = useCallback(async (terminalId: string) => {
     try {
-      await fetch(`${SERVER_URL}/api/terminals/${terminalId}`, {
+      const base = await getApiBase();
+      await fetch(`${base}/api/terminals/${terminalId}`, {
         method: "DELETE",
       });
 

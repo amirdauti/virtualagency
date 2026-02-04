@@ -2,8 +2,12 @@ import { useCallback, useRef } from "react";
 import { useAgentOutputListener } from "./useTauriEvents";
 import { useChatStore, ChatMessage } from "../stores/chatStore";
 import { useAgentStore } from "../stores/agentStore";
+import { getServerHttpBaseUrl } from "../lib/api";
 
-const API_BASE = import.meta.env.VITE_SERVER_URL || "http://127.0.0.1:3001";
+async function getApiBase(): Promise<string> {
+  const resolved = await getServerHttpBaseUrl();
+  return resolved || "http://127.0.0.1:1337";
+}
 const MAX_DIFF_PREVIEW_CHARS = 20_000;
 const MAX_DIFF_PREVIEW_LINES = 400;
 const MAX_FILE_CACHE_CHARS = 200_000;
@@ -809,7 +813,8 @@ function toWorkspaceRelativePath(path: string, workingDir?: string): string {
 
 async function readWorkspaceFile(agentId: string, path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${API_BASE}/api/files/read/${agentId}`, {
+    const base = await getApiBase();
+    const response = await fetch(`${base}/api/files/read/${agentId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),
@@ -825,7 +830,8 @@ async function readWorkspaceFile(agentId: string, path: string): Promise<string 
 
 async function readWorkspaceGitFile(agentId: string, path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${API_BASE}/api/files/read_git/${agentId}`, {
+    const base = await getApiBase();
+    const response = await fetch(`${base}/api/files/read_git/${agentId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),
