@@ -115,6 +115,7 @@ const EVENT_SEQ_STORAGE_KEY = "virtual-agency-last-event-seq";
 let lastEventSeq = 0;
 let isReplaying = false;
 let pendingDuringReplay: string[] = [];
+let seenSeqDuringReplay: Set<number> | null = null;
 
 function loadLastEventSeq(): number {
   try {
@@ -162,6 +163,7 @@ async function replayMissedEvents() {
 
   const since = lastEventSeq || loadLastEventSeq();
   lastEventSeq = since;
+  const seen = seenSeqDuringReplay;
 
   try {
     const path = since > 0 ? `/api/events?since=${encodeURIComponent(String(since))}` : "/api/events";
@@ -175,6 +177,8 @@ async function replayMissedEvents() {
       const fullPayload = await fetchApi<{ latest_seq: number; events: unknown[] }>("/api/events");
       const fullEvents = Array.isArray(fullPayload?.events) ? fullPayload.events : [];
       for (const ev of fullEvents) {
+        const seq = (ev as { seq?: unknown })?.seq;
+        if (seen && typeof seq === "number" && Number.isFinite(seq) && seen.has(seq)) continue;
         handleIncomingWsData(JSON.stringify(ev));
       }
       if (fullPayload && typeof fullPayload.latest_seq === "number") {
@@ -185,6 +189,8 @@ async function replayMissedEvents() {
 
     const events = Array.isArray(payload?.events) ? payload.events : [];
     for (const ev of events) {
+      const seq = (ev as { seq?: unknown })?.seq;
+      if (seen && typeof seq === "number" && Number.isFinite(seq) && seen.has(seq)) continue;
       handleIncomingWsData(JSON.stringify(ev));
     }
     if (payload && typeof payload.latest_seq === "number") {
@@ -225,10 +231,12 @@ async function connectWebSocket() {
     // Replay any missed events since the last seen seq, buffering live WS
     // messages until replay completes to preserve ordering as much as possible.
     isReplaying = true;
+    seenSeqDuringReplay = new Set<number>();
     replayMissedEvents()
       .catch(() => {})
       .finally(() => {
         isReplaying = false;
+        seenSeqDuringReplay = null;
         if (pendingDuringReplay.length > 0) {
           const pending = pendingDuringReplay;
           pendingDuringReplay = [];
@@ -261,6 +269,9 @@ async function connectWebSocket() {
       // Let terminal output through immediately.
       try {
         const msg = JSON.parse(data);
+        if (typeof msg?.seq === "number" && Number.isFinite(msg.seq)) {
+          seenSeqDuringReplay?.add(msg.seq);
+        }
         if (msg?.type === "terminal-output") {
           handleIncomingWsData(data);
           return;

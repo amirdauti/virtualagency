@@ -10,6 +10,52 @@ export const DESKS_PER_ROW = 6;
 // Height of our office floor above ground level (we're in a high-rise)
 const BUILDING_HEIGHT = 30;
 
+export type LoungeSlot = {
+  x: number;
+  z: number;
+};
+
+// Lounge "interaction" slots for idle agents (24+).
+// These are intentionally placed around the lounge furniture so idle agents look
+// like they're hanging out instead of lining up in a grid.
+export const LOUNGE_SLOTS: LoungeSlot[] = [
+  // Couch A (world ~[-8, 18], rotated ~+45deg)
+  { x: -10.5, z: 18.6 },
+  { x: -9.4, z: 17.2 },
+  { x: -8.0, z: 16.6 },
+  { x: -6.6, z: 17.2 },
+  { x: -5.5, z: 18.6 },
+
+  // Couch B (world ~[8, 18], rotated ~-45deg)
+  { x: 10.5, z: 18.6 },
+  { x: 9.4, z: 17.2 },
+  { x: 8.0, z: 16.6 },
+  { x: 6.6, z: 17.2 },
+  { x: 5.5, z: 18.6 },
+
+  // Couch C (world ~[0, 23], rotated ~180deg)
+  { x: -1.4, z: 21.9 },
+  { x: 0.0, z: 21.8 },
+  { x: 1.4, z: 21.9 },
+
+  // Beanbags (match placements)
+  { x: -4.0, z: 24.0 },
+  { x: 4.0, z: 24.0 },
+  { x: -10.0, z: 21.0 },
+  { x: 10.0, z: 21.0 },
+
+  // Coffee table (world ~[0, 20]) - stand around it
+  { x: -1.8, z: 20.0 },
+  { x: 1.8, z: 20.0 },
+  { x: 0.0, z: 18.8 },
+  { x: 0.0, z: 21.2 },
+
+  // Arcade / vending
+  { x: 13.5, z: 26.0 }, // Arcade machine "player" spot
+  { x: -16.0, z: 23.0 }, // Vending 1
+  { x: -16.0, z: 26.0 }, // Vending 2
+];
+
 // Desk positions for working agents (row, col) -> [x, z]
 export function getDeskPosition(index: number): { x: number; z: number } {
   const row = Math.floor(index / DESKS_PER_ROW);
@@ -26,34 +72,9 @@ export function getDeskPosition(index: number): { x: number; z: number } {
 
 // Lounge positions for idle agents
 export function getLoungePosition(index: number): { x: number; z: number } {
-  // Lobby/lounge spawn slots for idle agents.
-  // We have 24 desks/workstations, so provide 24 non-overlapping lobby slots.
-  //
-  // Layout: 4 rows x 6 columns in front of the lounge furniture, between the divider (z≈3)
-  // and the lounge group (centered around z≈18). This keeps idle agents visible and avoids
-  // pile-ups when many agents are in the lobby.
-  const cols = DESKS_PER_ROW; // 6
-  const rows = DESK_ROWS; // 4
-  const startX = -15;
-  const spacingX = 6;
-  const startZ = 7;
-  const spacingZ = 3;
-
   const clampedIndex = Math.max(0, index);
-  const slot = clampedIndex % (cols * rows);
-  const overflow = Math.floor(clampedIndex / (cols * rows));
-
-  const row = Math.floor(slot / cols);
-  const col = slot % cols;
-
-  // If more than 24 agents are idle, spread additional agents behind the first grid.
-  const overflowZOffset = overflow * 2.5;
-  const overflowXJitter = overflow === 0 ? 0 : ((slot % 2 === 0 ? -1 : 1) * 0.6);
-
-  return {
-    x: startX + col * spacingX + overflowXJitter,
-    z: startZ + row * spacingZ + overflowZOffset,
-  };
+  const slot = clampedIndex % LOUNGE_SLOTS.length;
+  return LOUNGE_SLOTS[slot];
 }
 
 export function OfficeEnvironment() {
