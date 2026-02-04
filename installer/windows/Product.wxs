@@ -24,7 +24,9 @@
         <Directory Id="INSTALLFOLDER" Name="Server">
           <Component Id="cmpServerExe" Guid="*">
             <File Id="filServerExe" Source="$(var.ExePath)" KeyPath="yes" />
-            <File Id="filLaunchCmd" Source="installer/windows/launch-server.cmd" />
+          </Component>
+          <Component Id="cmpLaunchCmd" Guid="*">
+            <File Id="filLaunchCmd" Source="installer/windows/launch-server.cmd" KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
@@ -59,6 +61,7 @@
 
     <Feature Id="MainFeature" Title="Virtual Agency Server" Level="1">
       <ComponentRef Id="cmpServerExe" />
+      <ComponentRef Id="cmpLaunchCmd" />
       <ComponentRef Id="cmpStartMenuShortcut" />
       <ComponentRef Id="cmpDesktopShortcut" />
     </Feature>
