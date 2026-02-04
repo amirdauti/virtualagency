@@ -44,7 +44,7 @@ function defaultServerCandidates(): string[] {
   if (saved) candidates.push(saved);
 
   // Prefer 1337, but allow fallbacks. The local server will attempt these as well.
-  const ports = [1337, 3001, ...Array.from({ length: 13 }, (_, i) => 1338 + i)];
+  const ports = [1337, ...Array.from({ length: 13 }, (_, i) => 1338 + i)];
   for (const port of ports) {
     candidates.push(`http://127.0.0.1:${port}`);
   }

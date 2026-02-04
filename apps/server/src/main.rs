@@ -211,10 +211,21 @@ async fn main() {
         .layer(axum::middleware::from_fn(private_network_access_middleware))
         .with_state(state);
 
-    let preferred_port = std::env::var("VIRTUAL_AGENCY_PORT")
-        .ok()
+    let preferred_port_raw = std::env::var("VIRTUAL_AGENCY_PORT").ok();
+    let preferred_port = preferred_port_raw
+        .as_deref()
         .and_then(|v| v.trim().parse::<u16>().ok())
-        .filter(|p| *p > 0);
+        .filter(|p| *p > 0 && *p != 3001);
+
+    if preferred_port_raw
+        .as_deref()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        == Some(3001)
+    {
+        tracing::warn!(
+            "Ignoring VIRTUAL_AGENCY_PORT=3001 (reserved). Use 1337 or another free port."
+        );
+    }
 
     // Prefer 1337, but fall back if in use. This avoids a "double click and nothing happens"
     // experience on Windows when the fixed port is already occupied.
@@ -223,7 +234,6 @@ async fn main() {
         candidates.push(p);
     }
     candidates.push(1337);
-    candidates.push(3001);
     for p in 1338..=1350 {
         candidates.push(p);
     }
