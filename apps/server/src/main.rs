@@ -1,6 +1,7 @@
 mod agents;
 mod files;
 mod pty;
+mod telegram;
 
 use axum::{
     extract::{
@@ -27,6 +28,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use agents::{AgentManager, AgentOutput, AgentSpecialty, AgentStatus, AgentStatusChange, CliType};
 use pty::{TerminalManager, TerminalOutput};
+use telegram::{
+    TelegramAction, TelegramBindingConfigInput, TelegramBindingStatus, TelegramDispatch,
+    TelegramInboundMedia, TelegramInboundMessage, TelegramManager,
+};
 
 type SharedState = Arc<AppState>;
 
@@ -55,6 +60,7 @@ async fn private_network_access_middleware(
 struct AppState {
     agent_manager: RwLock<AgentManager>,
     terminal_manager: RwLock<TerminalManager>,
+    telegram_manager: RwLock<TelegramManager>,
     broadcast_tx: broadcast::Sender<BroadcastEnvelope>,
     events: RwLock<EventStore>,
     workspace_dir: PathBuf,
@@ -156,16 +162,21 @@ async fn main() {
     // - mpsc collects events even when no WS clients are connected
     // - broadcast streams events to active WS clients
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<BroadcastMessage>();
+    let (telegram_inbound_tx, mut telegram_inbound_rx) = mpsc::unbounded_channel::<TelegramInboundMessage>();
     let (broadcast_tx, _) = broadcast::channel::<BroadcastEnvelope>(1000);
 
     // Get workspace directory from environment or use current directory
     let workspace_dir = std::env::var("WORKSPACE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let telegram_bindings_path = workspace_dir
+        .join(".virtual-agency")
+        .join("telegram-bindings.json");
 
     let state = Arc::new(AppState {
         agent_manager: RwLock::new(AgentManager::new(event_tx.clone())),
         terminal_manager: RwLock::new(TerminalManager::new(event_tx.clone())),
+        telegram_manager: RwLock::new(TelegramManager::new(telegram_inbound_tx, telegram_bindings_path)),
         broadcast_tx,
         events: RwLock::new(EventStore::new(5000)),
         workspace_dir,
@@ -177,9 +188,26 @@ async fn main() {
         while let Some(msg) = event_rx.recv().await {
             let envelope = {
                 let mut store = distributor_state.events.write().await;
-                store.push(msg)
+                store.push(msg.clone())
             };
             let _ = distributor_state.broadcast_tx.send(envelope);
+
+            let telegram_actions = {
+                let mut telegram = distributor_state.telegram_manager.write().await;
+                telegram.handle_broadcast(&msg)
+            };
+            execute_telegram_actions(distributor_state.clone(), telegram_actions).await;
+        }
+    });
+
+    let telegram_dispatch_state = state.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = telegram_inbound_rx.recv().await {
+            let actions = {
+                let mut telegram = telegram_dispatch_state.telegram_manager.write().await;
+                telegram.handle_inbound(msg)
+            };
+            execute_telegram_actions(telegram_dispatch_state.clone(), actions).await;
         }
     });
 
@@ -193,6 +221,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/agents", get(list_agents).post(create_agent))
         .route("/api/agents/:id", delete(kill_agent).patch(update_agent_settings))
+        .route("/api/agents/:id/telegram", get(get_agent_telegram).put(set_agent_telegram).delete(delete_agent_telegram))
         .route("/api/agents/:id/messages", post(send_message))
         .route("/api/agents/:id/stop", post(stop_agent))
         .route("/api/events", get(get_events))
@@ -549,6 +578,13 @@ async fn create_agent(
             let (status, session_id) = manager
                 .get_agent_runtime(&id)
                 .unwrap_or((AgentStatus::Idle, req.session_id.clone()));
+            drop(manager);
+
+            {
+                let mut telegram = state.telegram_manager.write().await;
+                telegram.ensure_binding_running(&id);
+            }
+
             Ok(Json(AgentInfo {
                 id,
                 name: req.name,
@@ -621,7 +657,12 @@ async fn kill_agent(
     let mut manager = state.agent_manager.write().await;
 
     match manager.kill_agent(&id) {
-        Ok(_) => Ok(StatusCode::NO_CONTENT),
+        Ok(_) => {
+            drop(manager);
+            let mut telegram = state.telegram_manager.write().await;
+            telegram.clear_for_agent(&id);
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(e) => Err((StatusCode::NOT_FOUND, e)),
     }
 }
@@ -656,6 +697,108 @@ async fn update_agent_settings(
             Err((StatusCode::NOT_FOUND, e))
         },
     }
+}
+
+#[derive(Deserialize)]
+struct SetAgentTelegramRequest {
+    enabled: bool,
+    #[serde(default)]
+    bot_token: Option<String>,
+    allowed_handle: String,
+    #[serde(default = "default_send_typing")]
+    send_typing: bool,
+}
+
+fn default_send_typing() -> bool {
+    true
+}
+
+#[derive(Serialize)]
+struct AgentTelegramResponse {
+    enabled: bool,
+    polling: bool,
+    connected: bool,
+    has_token: bool,
+    allowed_handle: String,
+    allowed_chat_ids: Vec<i64>,
+    send_typing: bool,
+    queue_depth: usize,
+    has_active_turn: bool,
+    last_error: Option<String>,
+    last_update_id: Option<i64>,
+}
+
+impl From<TelegramBindingStatus> for AgentTelegramResponse {
+    fn from(value: TelegramBindingStatus) -> Self {
+        Self {
+            enabled: value.enabled,
+            polling: value.polling,
+            connected: value.connected,
+            has_token: value.has_token,
+            allowed_handle: value.allowed_handle,
+            allowed_chat_ids: value.allowed_chat_ids,
+            send_typing: value.send_typing,
+            queue_depth: value.queue_depth,
+            has_active_turn: value.has_active_turn,
+            last_error: value.last_error,
+            last_update_id: value.last_update_id,
+        }
+    }
+}
+
+async fn get_agent_telegram(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<Json<AgentTelegramResponse>, (StatusCode, String)> {
+    let manager = state.agent_manager.read().await;
+    if !manager.has_agent(&id) {
+        return Err((StatusCode::NOT_FOUND, "Agent not found".to_string()));
+    }
+    drop(manager);
+
+    let telegram = state.telegram_manager.read().await;
+    Ok(Json(telegram.get_status(&id).into()))
+}
+
+async fn set_agent_telegram(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetAgentTelegramRequest>,
+) -> Result<Json<AgentTelegramResponse>, (StatusCode, String)> {
+    let manager = state.agent_manager.read().await;
+    if !manager.has_agent(&id) {
+        return Err((StatusCode::NOT_FOUND, "Agent not found".to_string()));
+    }
+    drop(manager);
+
+    let mut telegram = state.telegram_manager.write().await;
+    let status = telegram
+        .upsert_binding(
+            &id,
+            TelegramBindingConfigInput {
+                enabled: req.enabled,
+                bot_token: req.bot_token,
+                allowed_handle: req.allowed_handle,
+                send_typing: req.send_typing,
+            },
+        )
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(status.into()))
+}
+
+async fn delete_agent_telegram(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let manager = state.agent_manager.read().await;
+    if !manager.has_agent(&id) {
+        return Err((StatusCode::NOT_FOUND, "Agent not found".to_string()));
+    }
+    drop(manager);
+
+    let mut telegram = state.telegram_manager.write().await;
+    telegram.remove_binding(&id);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -744,6 +887,145 @@ fn save_base64_image(base64_data: &str, mime_type: &str, index: usize) -> Result
         .map_err(|e| format!("Failed to write image data: {}", e))?;
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+fn save_telegram_media(
+    media: &TelegramInboundMedia,
+    index: usize,
+) -> Result<String, String> {
+    use std::io::Write;
+
+    let extension = media
+        .file_name
+        .as_ref()
+        .and_then(|name| name.rsplit('.').next().map(|s| s.to_ascii_lowercase()))
+        .or_else(|| {
+            media.mime_type.as_ref().and_then(|mime| {
+                if mime.contains("png") {
+                    Some("png".to_string())
+                } else if mime.contains("jpeg") || mime.contains("jpg") {
+                    Some("jpg".to_string())
+                } else if mime.contains("webp") {
+                    Some("webp".to_string())
+                } else if mime.contains("gif") {
+                    Some("gif".to_string())
+                } else if mime.contains("mp4") {
+                    Some("mp4".to_string())
+                } else if mime.contains("mpeg") || mime.contains("mp3") {
+                    Some("mp3".to_string())
+                } else if mime.contains("ogg") {
+                    Some("ogg".to_string())
+                } else if mime.contains("pdf") {
+                    Some("pdf".to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "bin".to_string());
+
+    let temp_dir = std::env::temp_dir();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let random_suffix: u32 = rand::random();
+    let filename = format!(
+        "virtual-agency-telegram-{}-{}-{}-{}.{}",
+        std::process::id(),
+        timestamp,
+        random_suffix,
+        index,
+        extension
+    );
+    let file_path = temp_dir.join(&filename);
+
+    let mut file = std::fs::File::create(&file_path)
+        .map_err(|e| format!("Failed to create media file: {}", e))?;
+    file.write_all(&media.bytes)
+        .map_err(|e| format!("Failed to write media file: {}", e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+fn build_telegram_dispatch_payload(dispatch: &TelegramDispatch) -> Result<(String, Vec<String>), String> {
+    let mut image_paths = Vec::new();
+    let mut attachment_notes = Vec::new();
+
+    for (idx, media) in dispatch.media.iter().enumerate() {
+        let path = save_telegram_media(media, idx)?;
+        let mime = media.mime_type.as_deref().unwrap_or("");
+        let is_image = media.kind == "photo" || mime.starts_with("image/");
+
+        if is_image {
+            image_paths.push(path.clone());
+        }
+
+        let label = media
+            .file_name
+            .clone()
+            .unwrap_or_else(|| format!("{} #{}", media.kind, idx + 1));
+        attachment_notes.push(format!("- {} ({}) -> {}", label, media.kind, path));
+    }
+
+    let mut message = dispatch.text.trim().to_string();
+    if !attachment_notes.is_empty() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("[Telegram Media Attachments]\n");
+        message.push_str(&attachment_notes.join("\n"));
+    }
+    if message.is_empty() {
+        message = "(media attached)".to_string();
+    }
+
+    Ok((message, image_paths))
+}
+
+async fn dispatch_telegram_turn(
+    state: SharedState,
+    dispatch: TelegramDispatch,
+) -> Result<(), String> {
+    let (message, image_paths) = build_telegram_dispatch_payload(&dispatch)?;
+
+    let manager = state.agent_manager.read().await;
+    manager.send_message(&dispatch.agent_id, &message, &image_paths)
+}
+
+async fn execute_telegram_actions(state: SharedState, initial_actions: Vec<TelegramAction>) {
+    let mut queue: VecDeque<TelegramAction> = initial_actions.into_iter().collect();
+
+    while let Some(action) = queue.pop_front() {
+        match action {
+            TelegramAction::SendMessage {
+                bot_token,
+                chat_id,
+                text,
+            } => {
+                if let Err(err) = telegram::send_telegram_text(&bot_token, chat_id, &text).await {
+                    tracing::warn!("[telegram] Failed to send message: {}", err);
+                }
+            }
+            TelegramAction::SendTyping { bot_token, chat_id } => {
+                if let Err(err) = telegram::send_telegram_typing(&bot_token, chat_id).await {
+                    tracing::debug!("[telegram] Failed to send typing action: {}", err);
+                }
+            }
+            TelegramAction::DispatchToAgent(dispatch) => {
+                let agent_id = dispatch.agent_id.clone();
+                if let Err(err) = dispatch_telegram_turn(state.clone(), dispatch).await {
+                    let follow_up = {
+                        let mut telegram = state.telegram_manager.write().await;
+                        telegram.notify_dispatch_failure(&agent_id, &err)
+                    };
+                    for next in follow_up {
+                        queue.push_back(next);
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn stop_agent(

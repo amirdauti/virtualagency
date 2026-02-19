@@ -46,9 +46,11 @@ impl TerminalSession {
         writer
             .write_all(data)
             .map_err(|e| format!("Failed to write to PTY: {}", e))?;
-        writer
-            .flush()
-            .map_err(|e| format!("Failed to flush PTY: {}", e))?;
+        // Avoid flushing on every keystroke. This materially reduces perceived input lag in the
+        // web terminal (xterm), especially when users type quickly.
+        //
+        // The PTY writer isn't buffered in a way that requires explicit flushes for interactivity
+        // (and if it is, the OS/pty driver will still deliver bytes promptly).
         Ok(())
     }
 
