@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/amirdauti/virtualagency/compare/v1.1.1...v1.2.0) (2026-02-19)
+
+### Features
+
+* ship cloud agents control plane, hosted auth, and telegram streaming updates ([04c719b](https://github.com/amirdauti/virtualagency/commit/04c719b4fcd050cc3b015e16195d757ae316f588))
+
 ## [1.1.1](https://github.com/amirdauti/virtualagency/compare/v1.1.0...v1.1.1) (2026-02-19)
 
 ### Bug Fixes
