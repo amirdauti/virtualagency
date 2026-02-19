@@ -103,6 +103,7 @@ struct TelegramActiveTurn {
     pending_progress_text: String,
     last_typing_at: Option<Instant>,
     sent_update_ids: HashSet<String>,
+    file_snapshots: HashMap<String, String>,
 }
 
 struct TelegramAgentState {
@@ -578,6 +579,7 @@ fn maybe_start_next_turn(
         pending_progress_text: String::new(),
         last_typing_at: None,
         sent_update_ids: HashSet::new(),
+        file_snapshots: HashMap::new(),
     });
 
     actions.push(TelegramAction::DispatchToAgent(TelegramDispatch {
@@ -750,10 +752,8 @@ fn collect_incremental_updates(raw: &str, turn: &mut TelegramActiveTurn) -> Vec<
             }
         }
         "item.updated" => {
-            if let Some(item) = value.get("item") {
-                if let Some(update) = format_codex_item_updated_update(item, turn) {
-                    updates.push(update);
-                }
+            if let Some(update) = format_codex_item_updated_update(&value, turn) {
+                updates.push(update);
             }
         }
         "item.completed" => {
@@ -956,27 +956,82 @@ fn format_codex_item_started_update(
     }
 }
 
-fn format_codex_item_updated_update(
-    item: &serde_json::Value,
+fn format_progress_update(
+    raw: &str,
     turn: &mut TelegramActiveTurn,
+    prefix: &str,
+    key_prefix: &str,
 ) -> Option<String> {
-    let item_type = json_get_str(item, "type")?;
-    if item_type == "agent_message" {
+    let text = raw.trim();
+    if text.is_empty() {
         return None;
     }
 
+    turn.pending_progress_text.push_str(text);
+
+    let should_flush = turn.pending_progress_text.contains('\n')
+        || turn.pending_progress_text.chars().count() >= 180
+        || text.ends_with('.')
+        || text.ends_with('!')
+        || text.ends_with('?')
+        || text.ends_with(':');
+
+    if !should_flush {
+        return None;
+    }
+
+    let summary = truncate_text(turn.pending_progress_text.trim(), 320);
+    turn.pending_progress_text.clear();
+    if summary.is_empty() {
+        return None;
+    }
+
+    let key = format!("{}:{}", key_prefix, stable_hash(&summary));
+    if !turn.sent_update_ids.insert(key) {
+        return None;
+    }
+
+    Some(format!("{}{}", prefix, summary))
+}
+
+fn format_codex_item_updated_update(
+    event: &serde_json::Value,
+    turn: &mut TelegramActiveTurn,
+) -> Option<String> {
+    let item = event.get("item").unwrap_or(event);
+    let item_type = json_get_str(item, "type")?;
+
     match item_type {
+        "agent_message" => {
+            let direct_text = json_get_first_str(
+                item,
+                &["text", "message", "content", "summary", "reasoning", "delta"],
+            )
+            .or_else(|| {
+                event
+                    .get("delta")
+                    .and_then(|delta| json_get_first_str(delta, &["text", "content", "message"]))
+            })
+            .or_else(|| {
+                event
+                    .get("delta")
+                    .and_then(|delta| delta.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })?;
+
+            format_progress_update(direct_text, turn, "Update: ", "codex-agent-update")
+        }
         "reasoning" => {
             let summary = json_get_first_str(item, &["text", "summary", "reasoning", "message"])
-                .map(str::trim)
-                .filter(|s| !s.is_empty())?;
-            let update = format!("Update: {}", truncate_text(summary, 320));
+                .or_else(|| {
+                    event
+                        .get("delta")
+                        .and_then(|delta| json_get_first_str(delta, &["text", "content"]))
+                })?;
+
             let item_id = get_codex_item_id(item).unwrap_or_else(|| "reasoning".to_string());
-            let key = format!("codex-update:{}:{}", item_id, stable_hash(&update));
-            if !turn.sent_update_ids.insert(key) {
-                return None;
-            }
-            Some(update)
+            format_progress_update(summary, turn, "Update: ", &format!("codex-update:{}", item_id))
         }
         "todo_list" => {
             let item_id = get_codex_item_id(item).unwrap_or_else(|| "todo_list".to_string());
@@ -996,7 +1051,8 @@ fn format_codex_item_updated_update(
                 short_path(path)
             };
 
-            let snippet = extract_codex_file_change_snippet(item)?;
+            let snippet = extract_codex_file_change_snippet(item)
+                .or_else(|| extract_file_change_snippet_from_disk(item, turn))?;
             let language = language_from_path(path);
             let update =
                 format_code_update_message(&format!("Edit {}", label), &language, &snippet);
@@ -1051,6 +1107,15 @@ fn format_codex_item_completed_update(
     };
 
     if let Some(snippet) = extract_codex_file_change_snippet(item) {
+        let language = language_from_path(path);
+        return Some(format_code_update_message(
+            &format!("Edit {}", label),
+            &language,
+            &snippet,
+        ));
+    }
+
+    if let Some(snippet) = extract_file_change_snippet_from_disk(item, turn) {
         let language = language_from_path(path);
         return Some(format_code_update_message(
             &format!("Edit {}", label),
@@ -1150,6 +1215,123 @@ fn extract_codex_file_change_snippet(item: &serde_json::Value) -> Option<String>
 
     if let Some(patch) = json_get_first_str(item, &["diff", "patch"]) {
         return extract_added_lines_from_patch(patch);
+    }
+
+    if let Some(found) = extract_nested_snippet(item, 0) {
+        return Some(found);
+    }
+
+    None
+}
+
+fn extract_file_change_snippet_from_disk(
+    item: &serde_json::Value,
+    turn: &mut TelegramActiveTurn,
+) -> Option<String> {
+    let changes = get_codex_file_changes(item);
+    let (path, kind) = changes.first()?;
+    let kind_normalized = kind.to_ascii_lowercase();
+    if matches!(
+        kind_normalized.as_str(),
+        "delete" | "remove" | "del" | "move_path"
+    ) {
+        return None;
+    }
+
+    let resolved = resolve_change_path(path)?;
+    let content = std::fs::read_to_string(&resolved).ok()?;
+
+    let key = resolved.to_string_lossy().to_string();
+    let prior = turn.file_snapshots.get(&key).cloned();
+    turn.file_snapshots.insert(key, content.clone());
+
+    if matches!(kind_normalized.as_str(), "create" | "add" | "new") || prior.is_none() {
+        return Some(content);
+    }
+
+    let old = prior.unwrap_or_default();
+    let snippet = extract_added_lines(&old, &content);
+    if snippet.trim().is_empty() {
+        Some(content)
+    } else {
+        Some(snippet)
+    }
+}
+
+fn resolve_change_path(path: &str) -> Option<PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let as_path = PathBuf::from(trimmed);
+    if as_path.is_absolute() {
+        return as_path.exists().then_some(as_path);
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+    let joined = cwd.join(&as_path);
+    joined.exists().then_some(joined)
+}
+
+fn extract_nested_snippet(value: &serde_json::Value, depth: usize) -> Option<String> {
+    if depth > 6 {
+        return None;
+    }
+
+    if let Some(obj) = value.as_object() {
+        let top_level_new = json_get_first_str(
+            value,
+            &[
+                "new_string",
+                "newString",
+                "new_content",
+                "newContent",
+                "content",
+                "after",
+                "new_text",
+                "newText",
+            ],
+        );
+        let top_level_old = json_get_first_str(
+            value,
+            &[
+                "old_string",
+                "oldString",
+                "old_content",
+                "oldContent",
+                "before",
+                "old_text",
+                "oldText",
+            ],
+        );
+        if let Some(new_text) = top_level_new {
+            return Some(extract_preferred_snippet(
+                top_level_old.unwrap_or(""),
+                new_text,
+            ));
+        }
+
+        if let Some(patch) = json_get_first_str(value, &["diff", "patch"]) {
+            if let Some(from_patch) = extract_added_lines_from_patch(patch) {
+                return Some(from_patch);
+            }
+        }
+
+        for nested in obj.values() {
+            if let Some(found) = extract_nested_snippet(nested, depth + 1) {
+                return Some(found);
+            }
+        }
+        return None;
+    }
+
+    if let Some(arr) = value.as_array() {
+        for nested in arr {
+            if let Some(found) = extract_nested_snippet(nested, depth + 1) {
+                return Some(found);
+            }
+        }
     }
 
     None
