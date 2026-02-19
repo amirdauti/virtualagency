@@ -89,8 +89,11 @@ nginx_site = Path(os.environ["NGINX_SITE"])
 port = os.environ["PORT"]
 
 text = nginx_site.read_text()
+insertions = []
+
 if "location /api/billing/" not in text:
-    insert = f"""
+    insertions.append(
+        f"""
 
     location /api/billing/ {{
         proxy_pass http://127.0.0.1:{port}/api/billing/;
@@ -100,11 +103,27 @@ if "location /api/billing/" not in text:
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }}
 """
-    # Insert before last closing brace
+    )
+
+if "location /api/hosting/" not in text:
+    insertions.append(
+        f"""
+
+    location /api/hosting/ {{
+        proxy_pass http://127.0.0.1:{port}/api/hosting/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }}
+"""
+    )
+
+if insertions:
     idx = text.rfind("\n}")
     if idx == -1:
         raise SystemExit(f"Could not find closing brace in {nginx_site}")
-    text = text[:idx] + insert + text[idx:]
+    text = text[:idx] + "".join(insertions) + text[idx:]
     nginx_site.write_text(text)
 PY
 
