@@ -307,7 +307,7 @@ SSH_PUB=$(cat /home/va/.ssh/id_ed25519.pub | tr -d '\n')
 
 curl -sS -X POST '${callbackUrl}' \\
   -H 'Content-Type: application/json' \\
-  -d '{"token":"${bootstrapToken}","status":"ready","sshPublicKey":"'"${SSH_PUB}"'"}' || true
+  -d '{"token":"${bootstrapToken}","status":"ready","sshPublicKey":"'"\${SSH_PUB}"'"}' || true
 `;
 }
 
