@@ -1,0 +1,51 @@
+{
+  "name": "@virtualagency/server",
+  "version": "0.1.0",
+  "description": "Virtual Agency Rust server packaged as an npm global CLI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amirdauti/virtualagency.git"
+  },
+  "homepage": "https://github.com/amirdauti/virtualagency",
+  "bugs": {
+    "url": "https://github.com/amirdauti/virtualagency/issues"
+  },
+  "type": "commonjs",
+  "bin": {
+    "virtual-agency-server": "bin/virtual-agency-server.js"
+  },
+  "files": [
+    "bin/virtual-agency-server.js",
+    "dist/virtual-agency-server-macos-arm64",
+    "dist/virtual-agency-server-macos-x64",
+    "dist/virtual-agency-server-linux-x64",
+    "dist/virtual-agency-server-linux-arm64",
+    "dist/virtual-agency-server-windows-x64.exe",
+    "dist/virtual-agency-server-windows-arm64.exe",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "cargo build --release",
+    "build:linux": "bash ./scripts/build-linux.sh",
+    "prepack": "cargo build --release && node ./scripts/prepare-npm-dist.mjs",
+    "test:bin": "node ./bin/virtual-agency-server.js --help",
+    "release": "semantic-release"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.6",
+    "@semantic-release/release-notes-generator": "^14.1.0",
+    "conventional-changelog-conventionalcommits": "^9.1.0",
+    "semantic-release": "^24.2.9"
+  }
+}

@@ -92,6 +92,21 @@ Build the desktop application for production:
 pnpm tauri build
 ```
 
+## Server via npm
+
+You can install the Rust web server as a global npm command:
+
+```bash
+npm install -g @virtualagency/server
+virtual-agency-server --port 1337
+```
+
+Or run it without a global install:
+
+```bash
+npx @virtualagency/server --port 1337
+```
+
 ## Usage
 
 1. **Launch the application** - Start Virtual Agency and configure the Claude CLI path in settings if not auto-detected
