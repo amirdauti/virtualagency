@@ -9,7 +9,51 @@ on:
       - ".github/workflows/server-npm-release.yml"
 
 jobs:
+  build-binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: virtual-agency-server-linux-x64
+            binary_path: target/release/virtual-agency-server
+          - os: macos-13
+            artifact_name: virtual-agency-server-macos-x64
+            binary_path: target/release/virtual-agency-server
+          - os: macos-14
+            artifact_name: virtual-agency-server-macos-arm64
+            binary_path: target/release/virtual-agency-server
+          - os: windows-latest
+            artifact_name: virtual-agency-server-windows-x64.exe
+            binary_path: target/release/virtual-agency-server.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release -p virtual-agency-server
+
+      - name: Stage binary artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "${{ matrix.binary_path }}" "out/${{ matrix.artifact_name }}"
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            chmod +x "out/${{ matrix.artifact_name }}"
+          fi
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: out/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
   release:
+    needs: build-binaries
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
@@ -32,6 +76,16 @@ jobs:
           cache: npm
           cache-dependency-path: apps/server/package-lock.json
           package-manager-cache: false
+
+      - name: Download platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: virtual-agency-server-*
+          path: apps/server/dist
+          merge-multiple: true
+
+      - name: Verify downloaded binaries
+        run: ls -lah dist
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
