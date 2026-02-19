@@ -18,8 +18,6 @@ const GRID_ORIGIN_Z = -OFFICE_SIZE / 2;
 const DIVIDER_Z = 3;
 const DIVIDER_WIDTH_X = 30; // matches args={[30,1,0.8]}
 const DIVIDER_THICKNESS_Z = 1.0;
-const CORRIDOR_GAPS = [-9, -3, 3, 9]; // x centers
-const CORRIDOR_HALF_WIDTH = 1.4;
 
 const DESK_ROWS = 4;
 const DESKS_PER_ROW = 6;
@@ -27,6 +25,10 @@ const DESK_START_X = -15;
 const DESK_START_Z = -25;
 const DESK_SPACING_X = 6;
 const DESK_SPACING_Z = 5;
+
+// Approximate agent "radius" used to inflate obstacles so agents don't clip through objects.
+// This isn't physics; it's just path planning padding.
+const AGENT_RADIUS = 0.7;
 
 let blockedGrid: Uint8Array | null = null;
 
@@ -65,23 +67,37 @@ function buildObstacles(): { rects: Rect[]; circles: Circle[] } {
   const rects: Rect[] = [];
   const circles: Circle[] = [];
 
+  const addRect = (r: Rect, pad = AGENT_RADIUS) => {
+    rects.push({
+      minX: r.minX - pad,
+      maxX: r.maxX + pad,
+      minZ: r.minZ - pad,
+      maxZ: r.maxZ + pad,
+    });
+  };
+  const addCircle = (c: Circle, pad = AGENT_RADIUS) => {
+    circles.push({ x: c.x, z: c.z, r: c.r + pad });
+  };
+
   // Desks + chairs (footprint padding for character radius)
   // Desk top is 2x1, chair is ~0.5 depth; approximate a single axis-aligned rectangle.
   for (let row = 0; row < DESK_ROWS; row++) {
     for (let col = 0; col < DESKS_PER_ROW; col++) {
       const x = DESK_START_X + col * DESK_SPACING_X;
       const z = DESK_START_Z + row * DESK_SPACING_Z;
-      rects.push({
-        minX: x - 1.6,
-        maxX: x + 1.6,
-        minZ: z - 0.9,
-        maxZ: z + 1.6,
+      // Treat the desk surface as an obstacle but keep the chair area navigable
+      // so agents can "stand at the desk" without pathing into the desk itself.
+      addRect({
+        minX: x - 1.2,
+        maxX: x + 1.2,
+        minZ: z - 0.75,
+        maxZ: z + 0.75,
       });
     }
   }
 
   // Divider bar (block except corridor openings)
-  rects.push({
+  addRect({
     minX: -DIVIDER_WIDTH_X / 2 - 0.4,
     maxX: DIVIDER_WIDTH_X / 2 + 0.4,
     minZ: DIVIDER_Z - DIVIDER_THICKNESS_Z / 2,
@@ -90,28 +106,29 @@ function buildObstacles(): { rects: Rect[]; circles: Circle[] } {
 
   // Lounge furniture (LoungeArea group is at z=18)
   // Couches: use generous AABB since two are rotated.
-  rects.push({ minX: -12.0, maxX: -4.0, minZ: 16.0, maxZ: 21.0 }); // left couch cluster
-  rects.push({ minX: 4.0, maxX: 12.0, minZ: 16.0, maxZ: 21.0 }); // right couch cluster
-  rects.push({ minX: -2.2, maxX: 2.2, minZ: 22.4, maxZ: 24.2 }); // back couch
+  addRect({ minX: -12.0, maxX: -4.0, minZ: 16.0, maxZ: 21.0 }); // left couch cluster
+  addRect({ minX: 4.0, maxX: 12.0, minZ: 16.0, maxZ: 21.0 }); // right couch cluster
+  addRect({ minX: -2.2, maxX: 2.2, minZ: 22.4, maxZ: 24.2 }); // back couch
 
   // Coffee table at (0, 20)
-  rects.push({ minX: -1.3, maxX: 1.3, minZ: 19.2, maxZ: 20.8 });
+  addRect({ minX: -1.3, maxX: 1.3, minZ: 19.2, maxZ: 20.8 });
 
-  // Beanbags
-  circles.push({ x: -4, z: 24, r: 1.0 });
-  circles.push({ x: 4, z: 24, r: 1.0 });
-  circles.push({ x: -10, z: 21, r: 1.0 });
-  circles.push({ x: 10, z: 21, r: 1.0 });
+  // Beanbags (soft seats): keep as small obstacles so agents don't path straight through them.
+  // Use a smaller padding than other obstacles.
+  addCircle({ x: -4, z: 24, r: 0.5 }, 0.4);
+  addCircle({ x: 4, z: 24, r: 0.5 }, 0.4);
+  addCircle({ x: -10, z: 21, r: 0.5 }, 0.4);
+  addCircle({ x: 10, z: 21, r: 0.5 }, 0.4);
 
   // Arcade + vending machines
-  rects.push({ minX: 13.2, maxX: 16.8, minZ: 24.6, maxZ: 28.2 }); // arcade at (15,26)
-  rects.push({ minX: -19.6, maxX: -16.4, minZ: 21.2, maxZ: 24.2 }); // vending (approx)
-  rects.push({ minX: -19.6, maxX: -16.4, minZ: 24.2, maxZ: 27.2 });
+  addRect({ minX: 13.2, maxX: 16.8, minZ: 24.6, maxZ: 28.2 }); // arcade at (15,26)
+  addRect({ minX: -19.6, maxX: -16.4, minZ: 21.2, maxZ: 24.2 }); // vending (approx)
+  addRect({ minX: -19.6, maxX: -16.4, minZ: 24.2, maxZ: 27.2 });
 
   // Plants
-  circles.push({ x: -12, z: 16, r: 1.6 });
-  circles.push({ x: 12, z: 16, r: 1.6 });
-  circles.push({ x: 0, z: 28, r: 1.4 });
+  addCircle({ x: -12, z: 16, r: 1.6 });
+  addCircle({ x: 12, z: 16, r: 1.6 });
+  addCircle({ x: 0, z: 28, r: 1.4 });
 
   return { rects, circles };
 }
@@ -129,15 +146,6 @@ function isBlockedAt(x: number, z: number): boolean {
   }
 
   const { rects, circles } = buildObstaclesCached();
-
-  // Carve corridor openings through the divider bar.
-  if (Math.abs(z - DIVIDER_Z) <= DIVIDER_THICKNESS_Z / 2 + 0.05) {
-    for (const gapX of CORRIDOR_GAPS) {
-      if (Math.abs(x - gapX) <= CORRIDOR_HALF_WIDTH) {
-        return false;
-      }
-    }
-  }
 
   for (const r of rects) {
     if (rectContains(r, x, z)) return true;
@@ -276,9 +284,11 @@ export function generatePath(start: Point2D, end: Point2D): Point2D[] {
   const e0 = worldToCell(end);
   const s = nearestFreeCell(s0.i, s0.j);
   const e = nearestFreeCell(e0.i, e0.j);
+  const endIsBlocked = isBlockedAt(end.x, end.z);
+  const targetEnd = endIsBlocked ? cellToWorld(e.i, e.j) : end;
 
   // Fast path: direct line of sight.
-  if (lineOfSight(s, e)) return [end];
+  if (lineOfSight(s, e)) return [targetEnd];
 
   const startId = idx(s.i, s.j);
   const goalId = idx(e.i, e.j);
@@ -366,21 +376,20 @@ export function generatePath(start: Point2D, end: Point2D): Point2D[] {
   }
 
   if (!found) {
-    // Fallback: route via corridor gap approach as before.
+    // Fallback: route around one end of the divider bar (it has no openings).
     // This prevents agents from getting "stuck" if the grid is too constrained.
-    const bestGapX = CORRIDOR_GAPS
-      .map((x) => ({
-        x,
-        d:
-          Math.hypot(start.x - x, start.z - DIVIDER_Z) +
-          Math.hypot(end.x - x, end.z - DIVIDER_Z),
-      }))
-      .sort((a, b) => a.d - b.d)[0].x;
+    const endPad = AGENT_RADIUS + 1.2;
+    const leftX = -DIVIDER_WIDTH_X / 2 - endPad;
+    const rightX = DIVIDER_WIDTH_X / 2 + endPad;
+    const bestX =
+      Math.hypot(start.x - leftX, start.z - DIVIDER_Z) + Math.hypot(end.x - leftX, end.z - DIVIDER_Z) <
+      Math.hypot(start.x - rightX, start.z - DIVIDER_Z) + Math.hypot(end.x - rightX, end.z - DIVIDER_Z)
+        ? leftX
+        : rightX;
     const through: Point2D[] = [];
-    through.push({ x: bestGapX, z: start.z > DIVIDER_Z ? DIVIDER_Z + 2 : DIVIDER_Z - 2 });
-    through.push({ x: bestGapX, z: DIVIDER_Z });
-    through.push({ x: bestGapX, z: end.z > DIVIDER_Z ? DIVIDER_Z + 2 : DIVIDER_Z - 2 });
-    through.push(end);
+    through.push({ x: bestX, z: start.z });
+    through.push({ x: bestX, z: end.z });
+    through.push(targetEnd);
     return through;
   }
 
@@ -422,10 +431,13 @@ export function generatePath(start: Point2D, end: Point2D): Point2D[] {
   for (let i = 1; i < simplified.length; i++) {
     result.push(cellToWorld(simplified[i].i, simplified[i].j));
   }
-  if (result.length === 0 || Math.hypot(result[result.length - 1].x - end.x, result[result.length - 1].z - end.z) > 0.5) {
-    result.push(end);
+  if (
+    result.length === 0 ||
+    Math.hypot(result[result.length - 1].x - targetEnd.x, result[result.length - 1].z - targetEnd.z) > 0.5
+  ) {
+    result.push(targetEnd);
   } else {
-    result[result.length - 1] = end;
+    result[result.length - 1] = targetEnd;
   }
   return result;
 }

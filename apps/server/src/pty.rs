@@ -64,12 +64,7 @@ impl TerminalSession {
                 pixel_height: 0,
             })
             .map_err(|e| format!("Failed to resize PTY: {}", e))?;
-        tracing::debug!(
-            "Resized terminal {} to {}x{}",
-            self.id,
-            cols,
-            rows
-        );
+        tracing::debug!("Resized terminal {} to {}x{}", self.id, cols, rows);
         Ok(())
     }
 }
@@ -79,7 +74,11 @@ impl Drop for TerminalSession {
         // Ensure child process is killed when session is dropped
         if let Ok(mut child) = self.child.lock() {
             if let Err(e) = child.kill() {
-                tracing::debug!("Failed to kill child process on drop for terminal {}: {}", self.id, e);
+                tracing::debug!(
+                    "Failed to kill child process on drop for terminal {}: {}",
+                    self.id,
+                    e
+                );
             }
         }
     }
@@ -87,7 +86,7 @@ impl Drop for TerminalSession {
 
 /// Manages multiple terminal sessions
 pub struct TerminalManager {
-    terminals: HashMap<String, TerminalSession>,
+    terminals: HashMap<String, Arc<TerminalSession>>,
     event_tx: mpsc::UnboundedSender<BroadcastMessage>,
 }
 
@@ -222,7 +221,8 @@ impl TerminalManager {
             shutdown_tx,
         };
 
-        self.terminals.insert(terminal_id.clone(), session);
+        self.terminals
+            .insert(terminal_id.clone(), Arc::new(session));
         Ok(terminal_id)
     }
 
@@ -247,8 +247,8 @@ impl TerminalManager {
         }
     }
 
-    pub fn get_terminal(&self, id: &str) -> Option<&TerminalSession> {
-        self.terminals.get(id)
+    pub fn get_terminal(&self, id: &str) -> Option<Arc<TerminalSession>> {
+        self.terminals.get(id).cloned()
     }
 
     pub fn list_terminals(&self) -> Vec<(String, String)> {

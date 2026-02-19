@@ -243,18 +243,45 @@ function TerminalWrapper({
 }) {
   const writeFuncRef = useRef<((data: string) => void) | null>(null);
   const pendingRef = useRef<string[]>([]);
+  const queuedWritesRef = useRef<string[]>([]);
+  const rafRef = useRef<number | null>(null);
+
+  const flushQueuedWrites = useCallback(() => {
+    rafRef.current = null;
+    if (queuedWritesRef.current.length === 0) return;
+    const write = writeFuncRef.current;
+    if (!write) return;
+    const chunk = queuedWritesRef.current.join("");
+    queuedWritesRef.current = [];
+    write(chunk);
+  }, []);
+
+  const enqueueWrite = useCallback((data: string) => {
+    queuedWritesRef.current.push(data);
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(flushQueuedWrites);
+  }, [flushQueuedWrites]);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
 
   // Register for output when mounted
   useEffect(() => {
     const writeToTerminal = (data: string) => {
       const write = writeFuncRef.current;
-      if (write) write(data);
+      if (write) enqueueWrite(data);
       else pendingRef.current.push(data);
     };
 
     const unregister = registerOutputCallback(terminal.id, writeToTerminal);
     return unregister;
-  }, [terminal.id, registerOutputCallback]);
+  }, [terminal.id, registerOutputCallback, enqueueWrite]);
 
   const handleData = useCallback(
     (data: string) => {

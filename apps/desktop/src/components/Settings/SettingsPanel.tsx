@@ -1,6 +1,20 @@
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { getCliStatus, getSettingsPath, getWorkspacePath } from "../../lib/api";
+import {
+  getCliStatus,
+  getSettingsPath,
+  getWorkspacePath,
+  isTauri,
+  createHostedCheckoutSession,
+  getHostedServerState,
+  provisionHostedServer,
+  startHostedServer,
+  stopHostedServer,
+  rebuildHostedServer,
+  destroyHostedServer,
+  rotateHostedPairingCode,
+  type HostedServerStateResponse,
+} from "../../lib/api";
 
 interface SettingsPanelProps {
   onClose: () => void;
@@ -11,13 +25,61 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [cliPath, setCliPath] = useState<string | null>(null);
   const [settingsPath, setSettingsPath] = useState<string>("");
   const [workspacePath, setWorkspacePath] = useState<string>("");
+  const [hostedState, setHostedState] = useState<HostedServerStateResponse | null>(null);
+  const [hostedLoading, setHostedLoading] = useState(false);
+  const [hostedError, setHostedError] = useState<string | null>(null);
+  const [hostedAction, setHostedAction] = useState<string | null>(null);
 
   useEffect(() => {
     load();
     getCliStatus().then((status) => setCliPath(status.path));
     getSettingsPath().then(setSettingsPath);
     getWorkspacePath().then(setWorkspacePath);
+    if (!isTauri()) {
+      setHostedLoading(true);
+      getHostedServerState()
+        .then((state) => {
+          setHostedState(state);
+          setHostedError(null);
+        })
+        .catch((err) => {
+          setHostedError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          setHostedLoading(false);
+        });
+    }
   }, [load]);
+
+  const refreshHostedState = async () => {
+    if (isTauri()) return;
+    setHostedLoading(true);
+    try {
+      const state = await getHostedServerState();
+      setHostedState(state);
+      setHostedError(null);
+    } catch (err) {
+      setHostedError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHostedLoading(false);
+    }
+  };
+
+  const runHostedAction = async (
+    actionName: string,
+    action: () => Promise<unknown>,
+  ) => {
+    setHostedAction(actionName);
+    setHostedError(null);
+    try {
+      await action();
+      await refreshHostedState();
+    } catch (err) {
+      setHostedError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHostedAction(null);
+    }
+  };
 
   const handleBrowseCli = async () => {
     try {
@@ -149,6 +211,28 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               </span>
             </div>
 
+            {!isTauri() && (
+              <div style={fieldStyle}>
+                <label style={labelStyle}>Default Runtime</label>
+                <select
+                  value={settings.default_agent_runtime}
+                  onChange={(e) =>
+                    updateSettings({
+                      default_agent_runtime:
+                        e.target.value === "hosted" ? "hosted" : "local",
+                    })
+                  }
+                  style={selectStyle}
+                >
+                  <option value="local">Local</option>
+                  <option value="hosted">Cloud Agents</option>
+                </select>
+                <span style={hintStyle}>
+                  Used as the default when creating new agents
+                </span>
+              </div>
+            )}
+
             <div style={fieldStyle}>
               <label style={checkboxLabelStyle}>
                 <input
@@ -198,6 +282,195 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               </select>
             </div>
           </section>
+
+          {!isTauri() && (
+            <section style={sectionStyle}>
+              <h3 style={sectionTitleStyle}>Cloud Agents</h3>
+
+              <div style={fieldStyle}>
+                <label style={labelStyle}>Subscription</label>
+                <input
+                  type="text"
+                  value={
+                    hostedState?.hostedSubscriptionActive
+                      ? `Active (${hostedState.hostedSubscriptionStatus || "active"})`
+                      : "Not active"
+                  }
+                  disabled
+                  style={{ ...inputStyle, opacity: 0.7 }}
+                />
+              </div>
+
+              <div style={fieldStyle}>
+                <label style={labelStyle}>Server Status</label>
+                <input
+                  type="text"
+                  value={hostedState?.server?.status || "Not provisioned"}
+                  disabled
+                  style={{ ...inputStyle, opacity: 0.7 }}
+                />
+              </div>
+
+              <div style={fieldStyle}>
+                <label style={labelStyle}>Server IP</label>
+                <input
+                  type="text"
+                  value={hostedState?.server?.ipAddress || "—"}
+                  disabled
+                  style={{ ...inputStyle, opacity: 0.7 }}
+                />
+              </div>
+
+              <div style={fieldStyle}>
+                <label style={labelStyle}>Server SSH Public Key</label>
+                <textarea
+                  value={hostedState?.server?.sshPublicKey || "Waiting for bootstrap..."}
+                  readOnly
+                  rows={3}
+                  style={{ ...inputStyle, resize: "vertical" }}
+                />
+                <span style={hintStyle}>
+                  Add this key to GitHub deploy keys if your hosted agents need repo access
+                </span>
+              </div>
+
+              {hostedState?.server?.pairingCode && (
+                <div style={fieldStyle}>
+                  <label style={labelStyle}>Pairing Code</label>
+                  <input
+                    type="text"
+                    value={`${hostedState.server.pairingCode} (expires ${hostedState.server.pairingExpiresAt || "soon"})`}
+                    readOnly
+                    style={{ ...inputStyle, opacity: 0.85 }}
+                  />
+                </div>
+              )}
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() => {
+                    setHostedAction("checkout");
+                    createHostedCheckoutSession()
+                      .then((resp) => {
+                        if (resp?.url) window.location.href = resp.url;
+                      })
+                      .catch((err) =>
+                        setHostedError(err instanceof Error ? err.message : String(err)),
+                      )
+                      .finally(() => setHostedAction(null));
+                  }}
+                  disabled={hostedAction !== null}
+                >
+                  {hostedAction === "checkout" ? "Opening..." : "Purchase Cloud Agents ($25/mo)"}
+                </button>
+
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() =>
+                    runHostedAction("provision", async () => {
+                      await provisionHostedServer();
+                    })
+                  }
+                  disabled={hostedAction !== null || !hostedState?.hostedSubscriptionActive}
+                >
+                  {hostedAction === "provision" ? "Provisioning..." : "Provision VPS"}
+                </button>
+
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() =>
+                    runHostedAction("start", async () => {
+                      await startHostedServer();
+                    })
+                  }
+                  disabled={hostedAction !== null || !hostedState?.server}
+                >
+                  Start
+                </button>
+
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() =>
+                    runHostedAction("stop", async () => {
+                      await stopHostedServer();
+                    })
+                  }
+                  disabled={hostedAction !== null || !hostedState?.server}
+                >
+                  Stop
+                </button>
+
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() =>
+                    runHostedAction("rebuild", async () => {
+                      await rebuildHostedServer();
+                    })
+                  }
+                  disabled={hostedAction !== null || !hostedState?.server}
+                >
+                  Rebuild
+                </button>
+
+                <button
+                  type="button"
+                  style={dangerActionButtonStyle}
+                  onClick={() =>
+                    runHostedAction("destroy", async () => {
+                      await destroyHostedServer();
+                    })
+                  }
+                  disabled={hostedAction !== null || !hostedState?.server}
+                >
+                  Destroy
+                </button>
+
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() =>
+                    runHostedAction("pairing", async () => {
+                      await rotateHostedPairingCode();
+                    })
+                  }
+                  disabled={hostedAction !== null || !hostedState?.server}
+                >
+                  Rotate Pairing Code
+                </button>
+
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() => {
+                    void refreshHostedState();
+                  }}
+                  disabled={hostedLoading || hostedAction !== null}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {(hostedLoading || hostedError || hostedState?.server?.lastError) && (
+                <div style={{ marginTop: 10 }}>
+                  {hostedLoading && <span style={hintStyle}>Loading hosted state...</span>}
+                  {hostedError && (
+                    <div style={{ ...hintStyle, color: "#ef4444" }}>{hostedError}</div>
+                  )}
+                  {hostedState?.server?.lastError && (
+                    <div style={{ ...hintStyle, color: "#ef4444" }}>
+                      {hostedState.server.lastError}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
 
           {/* Data Locations */}
           <section style={sectionStyle}>
@@ -377,4 +650,21 @@ const browseButtonStyle: React.CSSProperties = {
   cursor: "pointer",
   fontSize: "14px",
   whiteSpace: "nowrap",
+};
+
+const secondaryActionButtonStyle: React.CSSProperties = {
+  padding: "8px 12px",
+  backgroundColor: "#1f2937",
+  border: "1px solid #374151",
+  borderRadius: "6px",
+  color: "#e5e7eb",
+  cursor: "pointer",
+  fontSize: "13px",
+};
+
+const dangerActionButtonStyle: React.CSSProperties = {
+  ...secondaryActionButtonStyle,
+  backgroundColor: "rgba(153, 27, 27, 0.35)",
+  border: "1px solid #7f1d1d",
+  color: "#fecaca",
 };

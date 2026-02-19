@@ -2,7 +2,6 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   MessageSquare,
   Terminal as TerminalIcon,
-  ScrollText,
   X,
   Trash2,
   Circle,
@@ -11,15 +10,18 @@ import {
   Pencil,
   Play,
   Square,
+  Pin,
+  KeyRound,
+  Send,
 } from "lucide-react";
 import type { Agent } from "@virtual-agency/shared";
-import type { OutputLine } from "../../hooks/useAgentOutput";
-import { TerminalPanel } from "./TerminalPanel";
 import { TerminalTabs } from "./TerminalTabs";
 import { ChatPanel } from "./ChatPanel";
 import { ChatHistory } from "./ChatHistory";
 import { FileTree } from "../FileExplorer/FileTree";
 import { EditAvatarDialog } from "./EditAvatarDialog";
+import { IntegrationsPanel } from "./IntegrationsPanel";
+import { TelegramPanel } from "./TelegramPanel";
 import { killAgent } from "../../lib/api";
 import { useAgentStore } from "../../stores/agentStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -31,8 +33,6 @@ import { useTerminalStore, type TabType } from "../../stores/terminalStore";
 
 interface AgentPanelProps {
   agent: Agent;
-  outputLines: OutputLine[];
-  onClearOutput: () => void;
 }
 
 const PANEL_WIDTH_KEY = "virtual-agency-panel-width";
@@ -42,9 +42,10 @@ const MAX_WIDTH = 900;
 
 const TAB_CONFIG: { id: TabType; label: string; icon: React.ElementType }[] = [
   { id: "chat", label: "Chat", icon: MessageSquare },
-  { id: "output", label: "Output", icon: ScrollText },
   { id: "terminal", label: "Terminal", icon: TerminalIcon },
   { id: "files", label: "Files", icon: FolderOpen },
+  { id: "telegram", label: "Telegram", icon: Send },
+  { id: "integrations", label: "Integrations", icon: KeyRound },
 ];
 
 const STATUS_CONFIG = {
@@ -76,8 +77,6 @@ const STATUS_CONFIG = {
 
 export function AgentPanel({
   agent,
-  outputLines,
-  onClearOutput,
 }: AgentPanelProps) {
   // Use global store for active tab (per-agent)
   const activeTab = useTerminalStore((state) => state.activeTabByAgent[agent.id] ?? "chat") as TabType;
@@ -157,6 +156,7 @@ export function AgentPanel({
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const removeAgent = useAgentStore((state) => state.removeAgent);
   const selectAgent = useAgentStore((state) => state.selectAgent);
+  const updateAgent = useAgentStore((state) => state.updateAgent);
   const clearTerminalsForAgent = useTerminalStore((state) => state.clearTerminalsForAgent);
 
   // Terminal management
@@ -362,10 +362,12 @@ export function AgentPanel({
   const handleClear = () => {
     if (activeTab === "chat") {
       clearMessages(agent.id);
-    } else if (activeTab === "output") {
-      onClearOutput();
     }
   };
+
+  const handleToggleStayAtDesk = useCallback(() => {
+    updateAgent(agent.id, { stayAtDesk: !agent.stayAtDesk });
+  }, [agent.id, agent.stayAtDesk, updateAgent]);
 
   const statusConfig = STATUS_CONFIG[agent.status] || STATUS_CONFIG.idle;
 
@@ -431,16 +433,30 @@ export function AgentPanel({
 
           {/* Actions */}
           <div className="flex items-center gap-2">
-            {/* Clear button - only show for chat and output tabs */}
-            {(activeTab === "chat" || activeTab === "output") && (
+            <button
+              onClick={handleToggleStayAtDesk}
+              className={`px-3 py-2 rounded text-[11px] font-medium transition-all duration-200 border flex items-center gap-1.5 ${
+                agent.stayAtDesk
+                  ? "text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/30 hover:bg-[#22c55e]/20"
+                  : "text-[#969696] bg-transparent border-[#3c3c3c] hover:text-white hover:bg-[#37373d] hover:border-[#969696]"
+              }`}
+              title={agent.stayAtDesk ? "Agent stays at desk when idle" : "Allow agent to move to lounge when idle"}
+              aria-label={agent.stayAtDesk ? "Disable stay at desk" : "Enable stay at desk"}
+            >
+              <Pin className="w-3.5 h-3.5" />
+              <span>Stay at Desk</span>
+            </button>
+
+            {/* Clear button - only show for chat tab */}
+            {activeTab === "chat" && (
               <button
                 onClick={handleClear}
                 className="px-4 py-2 rounded text-[11px] font-medium text-[#969696] hover:text-white bg-transparent hover:bg-[#37373d] border border-[#3c3c3c] hover:border-[#969696] transition-all duration-200 flex items-center gap-2"
-                title={`Clear ${activeTab === "chat" ? "chat history" : "output"}`}
-                aria-label={`Clear ${activeTab === "chat" ? "chat history" : "output"}`}
+                title="Clear chat history"
+                aria-label="Clear chat history"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Clear {activeTab === "chat" ? "Chat" : "Output"}</span>
+                <span>Clear Chat</span>
               </button>
             )}
 
@@ -639,11 +655,6 @@ export function AgentPanel({
                 </div>
               </div>
             </>
-          ) : activeTab === "output" ? (
-            /* Agent output view (stdout/stderr from Claude) */
-            <div className="flex-1 overflow-hidden">
-              <TerminalPanel lines={outputLines} onClear={onClearOutput} />
-            </div>
           ) : activeTab === "terminal" ? (
             /* Interactive terminal view */
             <div className="flex-1 overflow-hidden">
@@ -656,6 +667,16 @@ export function AgentPanel({
                 onResize={sendResize}
                 registerOutputCallback={registerOutputCallback}
               />
+            </div>
+          ) : activeTab === "integrations" ? (
+            /* Integrations view */
+            <div className="flex-1 overflow-hidden">
+              <IntegrationsPanel agentId={agent.id} />
+            </div>
+          ) : activeTab === "telegram" ? (
+            /* Telegram view */
+            <div className="flex-1 overflow-hidden">
+              <TelegramPanel agentId={agent.id} />
             </div>
           ) : (
             /* Files view */

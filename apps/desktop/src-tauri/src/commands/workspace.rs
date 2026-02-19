@@ -25,6 +25,24 @@ pub struct SavedAgent {
     pub mcp_servers: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stay_at_desk: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automations: Option<Vec<SavedAutomation>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedAutomation {
+    pub id: String,
+    pub task_description: String,
+    pub prompt: String,
+    pub interval_minutes: u32,
+    pub enabled: bool,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+    pub next_run_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,50 +10,50 @@ export const DESKS_PER_ROW = 6;
 // Height of our office floor above ground level (we're in a high-rise)
 const BUILDING_HEIGHT = 30;
 
-export type LoungeSlot = {
+export type LoungeTarget = {
   x: number;
   z: number;
+  facingY: number;
+  pose: "stand" | "sit_low" | "sit_high" | "arcade" | "vending";
 };
 
-// Lounge "interaction" slots for idle agents (24+).
-// These are intentionally placed around the lounge furniture so idle agents look
-// like they're hanging out instead of lining up in a grid.
-export const LOUNGE_SLOTS: LoungeSlot[] = [
-  // Couch A (world ~[-8, 18], rotated ~+45deg)
-  { x: -10.5, z: 18.6 },
-  { x: -9.4, z: 17.2 },
-  { x: -8.0, z: 16.6 },
-  { x: -6.6, z: 17.2 },
-  { x: -5.5, z: 18.6 },
+// Lounge "interaction" targets for idle agents (24).
+// These are fixed, evenly spaced standing spots so it's easy to find agents.
+export const LOUNGE_TARGETS: LoungeTarget[] = [
+  // Lounge bounds requested:
+  // - X within the divider width (~30 wide) => roughly [-15, +15]
+  // - Z not past the last couch by the city-view window (Couch C at world z≈23)
 
-  // Couch B (world ~[8, 18], rotated ~-45deg)
-  { x: 10.5, z: 18.6 },
-  { x: 9.4, z: 17.2 },
-  { x: 8.0, z: 16.6 },
-  { x: 6.6, z: 17.2 },
-  { x: 5.5, z: 18.6 },
+  // 24 fixed standing spots in front of the lounge furniture.
+  // All agents face the city-view windows (positive Z direction => facingY = 0).
+  // Z stays < 15.3 to avoid the inflated couch obstacles (see pathfinding.ts).
+  // Use 3 rows x 8 columns for better vertical spacing while still supporting 24 agents.
+  { x: -12.6, z: 11.0, facingY: 0, pose: "stand" },
+  { x: -9.0, z: 11.0, facingY: 0, pose: "stand" },
+  { x: -5.4, z: 11.0, facingY: 0, pose: "stand" },
+  { x: -1.8, z: 11.0, facingY: 0, pose: "stand" },
+  { x: 1.8, z: 11.0, facingY: 0, pose: "stand" },
+  { x: 5.4, z: 11.0, facingY: 0, pose: "stand" },
+  { x: 9.0, z: 11.0, facingY: 0, pose: "stand" },
+  { x: 12.6, z: 11.0, facingY: 0, pose: "stand" },
 
-  // Couch C (world ~[0, 23], rotated ~180deg)
-  { x: -1.4, z: 21.9 },
-  { x: 0.0, z: 21.8 },
-  { x: 1.4, z: 21.9 },
+  { x: -12.6, z: 13.0, facingY: 0, pose: "stand" },
+  { x: -9.0, z: 13.0, facingY: 0, pose: "stand" },
+  { x: -5.4, z: 13.0, facingY: 0, pose: "stand" },
+  { x: -1.8, z: 13.0, facingY: 0, pose: "stand" },
+  { x: 1.8, z: 13.0, facingY: 0, pose: "stand" },
+  { x: 5.4, z: 13.0, facingY: 0, pose: "stand" },
+  { x: 9.0, z: 13.0, facingY: 0, pose: "stand" },
+  { x: 12.6, z: 13.0, facingY: 0, pose: "stand" },
 
-  // Beanbags (match placements)
-  { x: -4.0, z: 24.0 },
-  { x: 4.0, z: 24.0 },
-  { x: -10.0, z: 21.0 },
-  { x: 10.0, z: 21.0 },
-
-  // Coffee table (world ~[0, 20]) - stand around it
-  { x: -1.8, z: 20.0 },
-  { x: 1.8, z: 20.0 },
-  { x: 0.0, z: 18.8 },
-  { x: 0.0, z: 21.2 },
-
-  // Arcade / vending
-  { x: 13.5, z: 26.0 }, // Arcade machine "player" spot
-  { x: -16.0, z: 23.0 }, // Vending 1
-  { x: -16.0, z: 26.0 }, // Vending 2
+  { x: -12.6, z: 15.0, facingY: 0, pose: "stand" },
+  { x: -9.0, z: 15.0, facingY: 0, pose: "stand" },
+  { x: -5.4, z: 15.0, facingY: 0, pose: "stand" },
+  { x: -1.8, z: 15.0, facingY: 0, pose: "stand" },
+  { x: 1.8, z: 15.0, facingY: 0, pose: "stand" },
+  { x: 5.4, z: 15.0, facingY: 0, pose: "stand" },
+  { x: 9.0, z: 15.0, facingY: 0, pose: "stand" },
+  { x: 12.6, z: 15.0, facingY: 0, pose: "stand" },
 ];
 
 // Desk positions for working agents (row, col) -> [x, z]
@@ -73,8 +73,8 @@ export function getDeskPosition(index: number): { x: number; z: number } {
 // Lounge positions for idle agents
 export function getLoungePosition(index: number): { x: number; z: number } {
   const clampedIndex = Math.max(0, index);
-  const slot = clampedIndex % LOUNGE_SLOTS.length;
-  return LOUNGE_SLOTS[slot];
+  const slot = clampedIndex % LOUNGE_TARGETS.length;
+  return LOUNGE_TARGETS[slot];
 }
 
 export function OfficeEnvironment() {
@@ -1174,32 +1174,6 @@ function OfficeLight() {
       <directionalLight position={[0, 10, -50]} intensity={0.3} color="#ffaa77" />
       <directionalLight position={[50, 10, 0]} intensity={0.2} color="#ffaa77" />
       <directionalLight position={[-50, 10, 0]} intensity={0.2} color="#ffaa77" />
-
-      {/* Ceiling panel lights - work area */}
-      {[
-        [-15, -22], [-5, -22], [5, -22], [15, -22],
-        [-15, -12], [-5, -12], [5, -12], [15, -12],
-        [-10, -2], [0, -2], [10, -2],
-      ].map(([x, z], i) => (
-        <group key={`ceil-${i}`} position={[x, 9.5, z]}>
-          <pointLight color="#ffffff" intensity={1.2} distance={18} />
-          <mesh>
-            <boxGeometry args={[3, 0.1, 1.5]} />
-            <meshBasicMaterial color="#ffffff" />
-          </mesh>
-        </group>
-      ))}
-
-      {/* Ceiling lights - lounge area */}
-      {[[-10, 15], [0, 15], [10, 15], [-5, 22], [5, 22], [0, 28]].map(([x, z], i) => (
-        <group key={`lounge-ceil-${i}`} position={[x, 9.5, z]}>
-          <pointLight color="#fff5e6" intensity={0.8} distance={15} />
-          <mesh>
-            <sphereGeometry args={[0.4, 16, 16]} />
-            <meshBasicMaterial color="#fff5e6" />
-          </mesh>
-        </group>
-      ))}
 
       {/* Neon accent strips on floor edges */}
       <mesh position={[-halfSize + 0.5, 0.05, 0]}>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCliStatus, CliStatus, isTauri } from "../../lib/api";
 
 interface CliSetupModalProps {
@@ -9,22 +9,50 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
   const [status, setStatus] = useState<CliStatus | null>(null);
   const [initialCheck, setInitialCheck] = useState(true);
   const [serverConnected, setServerConnected] = useState<boolean | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
+  const checkInFlightRef = useRef(false);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollDelayRef = useRef(3000);
   const inBrowser = !isTauri();
+  const MAX_POLL_DELAY_MS = 15_000;
 
-  const checkStatus = async (isInitial = false) => {
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const checkStatus = useCallback(async (
+    isInitial = false,
+    options: { forceRescan?: boolean; includePortScan?: boolean } = {}
+  ): Promise<boolean> => {
+    if (checkInFlightRef.current) return false;
+    checkInFlightRef.current = true;
+    setIsChecking(true);
+
     // Only show loading state on initial check to prevent flickering
     if (isInitial) setInitialCheck(true);
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       // Add timeout to prevent hanging
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Timeout")), 5000)
+        (timeoutId = setTimeout(() => reject(new Error("Timeout")), 5000))
       );
 
-      const result = await Promise.race([getCliStatus(), timeoutPromise]);
+      const result = await Promise.race([
+        getCliStatus({
+          forceRescan: options.forceRescan,
+          includePortScan: options.includePortScan,
+        }),
+        timeoutPromise,
+      ]);
       setStatus(result);
       setServerConnected(true);
       if (result.installed) {
         onReady();
+        return true;
       }
     } catch (err) {
       console.error("Failed to check CLI status:", err);
@@ -37,18 +65,55 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
         setStatus({ installed: false, path: null, version: null });
       }
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      checkInFlightRef.current = false;
+      setIsChecking(false);
       setInitialCheck(false);
     }
-  };
+    return false;
+  }, [inBrowser, onReady]);
 
   useEffect(() => {
-    checkStatus(true); // Initial check
-    // In browser mode, keep polling for server connection
-    if (inBrowser) {
-      const interval = setInterval(() => checkStatus(false), 3000);
-      return () => clearInterval(interval);
-    }
-  }, []);
+    let cancelled = false;
+
+    const schedulePoll = (delayMs: number) => {
+      clearPollTimer();
+      pollTimerRef.current = setTimeout(() => {
+        void pollLoop();
+      }, delayMs);
+    };
+
+    const pollLoop = async () => {
+      if (cancelled) return;
+      const connected = await checkStatus(false);
+      if (cancelled || connected) return;
+      pollDelayRef.current = Math.min(pollDelayRef.current * 2, MAX_POLL_DELAY_MS);
+      schedulePoll(pollDelayRef.current);
+    };
+
+    const start = async () => {
+      pollDelayRef.current = 3000;
+      const connected = await checkStatus(true, {
+        forceRescan: true,
+        includePortScan: inBrowser,
+      });
+
+      if (!inBrowser || connected || cancelled) return;
+      schedulePoll(pollDelayRef.current);
+    };
+
+    void start();
+
+    return () => {
+      cancelled = true;
+      clearPollTimer();
+    };
+  }, [checkStatus, clearPollTimer, inBrowser, MAX_POLL_DELAY_MS]);
+
+  const retryServerConnection = useCallback(() => {
+    pollDelayRef.current = 3000;
+    void checkStatus(false, { forceRescan: true, includePortScan: true });
+  }, [checkStatus]);
 
   // Only show loading spinner on initial check
   if (initialCheck && !status && serverConnected === null) {
@@ -91,33 +156,19 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
           <h2 style={{ margin: 0, marginBottom: 8 }}>Local Server Required</h2>
           <p style={{ color: "var(--text-secondary)", margin: 0, marginBottom: 24 }}>
             Virtual Agency runs on your local machine to use your Claude CLI.
-            Download and run the server to get started.
+            Install and run the server to get started.
           </p>
 
           <div style={instructionsStyle}>
             <h3 style={{ margin: 0, marginBottom: 16, fontSize: 14 }}>
-              Step 1: Download & Run the Server
+              Step 1: Install the Local Server
             </h3>
-            <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-              <a
-                href="/downloads/VirtualAgencyServer-macOS.zip"
-                download
-                style={downloadButtonStyle}
-              >
-                Download for macOS
-              </a>
-              <a
-                href="/downloads/VirtualAgencyServer-windows.msi"
-                download
-                style={downloadButtonStyle}
-              >
-                Download for Windows (MSI)
-              </a>
-            </div>
+            <code style={codeBlockStyle}>npm install -g @virtualagency/server</code>
 
             <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "0 0 16px 0" }}>
-              macOS: extract the zip and double-click the app. Windows: run the MSI installer.
+              Then start it in a terminal:
             </p>
+            <code style={codeBlockStyle}>virtual-agency-server --port 1337</code>
 
             <h3 style={{ margin: 0, marginBottom: 12, fontSize: 14 }}>
               Step 2: Install Node.js (Required)
@@ -162,6 +213,42 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
               Waiting for local server connection...
             </span>
           </div>
+          <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+            <button
+              onClick={retryServerConnection}
+              disabled={isChecking}
+              style={{
+                padding: "10px 20px",
+                background: "var(--accent)",
+                border: "none",
+                borderRadius: 6,
+                color: "white",
+                cursor: isChecking ? "default" : "pointer",
+                fontWeight: 600,
+                flex: 1,
+                opacity: isChecking ? 0.7 : 1,
+              }}
+            >
+              {isChecking ? "Checking..." : "Retry connection"}
+            </button>
+            <button
+              onClick={onReady}
+              style={{
+                padding: "10px 20px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                color: "var(--text-secondary)",
+                cursor: "pointer",
+                fontWeight: 500,
+              }}
+            >
+              Skip for now
+            </button>
+          </div>
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginTop: 12, textAlign: "center" }}>
+            Auto-retrying in the background with backoff to avoid request spam.
+          </p>
         </div>
       </div>
     );
@@ -204,7 +291,7 @@ export function CliSetupModal({ onReady }: CliSetupModalProps) {
 
         <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
           <button
-            onClick={() => checkStatus(false)}
+            onClick={() => checkStatus(false, { forceRescan: true, includePortScan: inBrowser })}
             style={{
               padding: "10px 20px",
               background: "var(--accent)",

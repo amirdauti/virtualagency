@@ -159,4 +159,5 @@ const contentStyle: React.CSSProperties = {
   padding: "0 24px 24px",
   overflowY: "auto",
   flex: 1,
+  position: "relative",
 };

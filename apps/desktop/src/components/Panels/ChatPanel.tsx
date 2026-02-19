@@ -3,6 +3,7 @@ import { sendMessage, stopAgent, isTauri, updateAgentSettings, ClaudeModel, Code
 import { useChatStore } from "../../stores/chatStore";
 import { useAgentStore } from "../../stores/agentStore";
 import { useChatUIStore, DraftImageAttachment } from "../../stores/chatUIStore";
+import type { AgentAutomation } from "@virtual-agency/shared";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { writeFile, mkdir, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { join, tempDir } from "@tauri-apps/api/path";
@@ -12,15 +13,18 @@ interface ChatPanelProps {
   agentId: string;
 }
 
+type PromptKind = "one_off" | "scheduled";
+
 const EMPTY_DRAFT_IMAGES: DraftImageAttachment[] = [];
 
 const CLAUDE_MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
-  { value: "sonnet", label: "Sonnet" },
-  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet 4.5 (Latest)" },
+  { value: "opus", label: "Opus 4.6 (Latest)" },
   { value: "haiku", label: "Haiku" },
 ];
 
 const CODEX_MODEL_OPTIONS: { value: CodexModel; label: string }[] = [
+  { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
   { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
   { value: "gpt-5.2", label: "GPT-5.2" },
   { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
@@ -40,6 +44,41 @@ const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = [
   { value: "high", label: "High" },
   { value: "xhigh", label: "Extra High" },
 ];
+
+const SCHEDULED_TASK_EXAMPLES = [
+  "See if you need to reply to any tweets or DMs",
+  "See if you need to reply to emails",
+];
+
+const AUTOMATION_INTERVAL_OPTIONS = [
+  { value: 5, label: "Every 5m" },
+  { value: 15, label: "Every 15m" },
+  { value: 30, label: "Every 30m" },
+  { value: 60, label: "Every 1h" },
+  { value: 180, label: "Every 3h" },
+  { value: 360, label: "Every 6h" },
+  { value: 720, label: "Every 12h" },
+  { value: 1440, label: "Every 24h" },
+];
+
+function formatInterval(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
+}
+
+function buildScheduledMessage(taskDescription: string, prompt: string, automationId?: string): string {
+  return [
+    "[SCHEDULED_TASK]",
+    ...(automationId ? [`automation_id: ${automationId}`] : []),
+    `scheduled_at: ${new Date().toISOString()}`,
+    `task_description: ${taskDescription.trim() || "Run recurring check task"}`,
+    "",
+    "This prompt was triggered by a recurring scheduled task. Complete the task now and report findings clearly.",
+    "",
+    prompt,
+  ].join("\n");
+}
 
 export function ChatPanel({ agentId }: ChatPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,6 +105,12 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const [selectedModel, setSelectedModel] = useState<string>(agent?.model || defaultModel);
   const [thinkingEnabled, setThinkingEnabled] = useState(agent?.thinkingEnabled || false);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(agent?.reasoningEffort || "medium");
+  const [promptKind, setPromptKind] = useState<PromptKind>("one_off");
+  const [scheduledTaskDescription, setScheduledTaskDescription] = useState<string>(SCHEDULED_TASK_EXAMPLES[0]);
+  const [automationIntervalMinutes, setAutomationIntervalMinutes] = useState<number>(60);
+  const [runningAutomationId, setRunningAutomationId] = useState<string | null>(null);
+
+  const automations = agent?.automations ?? [];
 
   // Sync with agent state when it changes
   useEffect(() => {
@@ -117,6 +162,88 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       console.error("[ChatPanel] Failed to update reasoning effort:", err);
     }
   }, [agentId, updateAgent]);
+
+  const handleCreateAutomation = useCallback(() => {
+    const prompt = input.trim() || scheduledTaskDescription.trim();
+    if (!prompt) return;
+
+    const now = Date.now();
+    const automation: AgentAutomation = {
+      id: `automation-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      taskDescription: scheduledTaskDescription.trim() || prompt,
+      prompt,
+      intervalMinutes: automationIntervalMinutes,
+      enabled: true,
+      createdAt: new Date(now).toISOString(),
+      nextRunAt: new Date(now + automationIntervalMinutes * 60_000).toISOString(),
+    };
+
+    updateAgent(agentId, {
+      automations: [...automations, automation],
+    });
+    setInput("");
+    clearDraft(agentId);
+  }, [
+    agentId,
+    input,
+    scheduledTaskDescription,
+    automationIntervalMinutes,
+    updateAgent,
+    automations,
+    clearDraft,
+  ]);
+
+  const handleToggleAutomation = useCallback((automationId: string, enabled: boolean) => {
+    const now = Date.now();
+    updateAgent(agentId, {
+      automations: automations.map((automation) => {
+        if (automation.id !== automationId) return automation;
+        return {
+          ...automation,
+          enabled,
+          nextRunAt: enabled
+            ? new Date(now + automation.intervalMinutes * 60_000).toISOString()
+            : automation.nextRunAt,
+        };
+      }),
+    });
+  }, [agentId, automations, updateAgent]);
+
+  const handleDeleteAutomation = useCallback((automationId: string) => {
+    updateAgent(agentId, {
+      automations: automations.filter((automation) => automation.id !== automationId),
+    });
+  }, [agentId, automations, updateAgent]);
+
+  const handleRunAutomationNow = useCallback(async (automation: AgentAutomation) => {
+    if (runningAutomationId) return;
+    setRunningAutomationId(automation.id);
+    const now = Date.now();
+
+    try {
+      const message = buildScheduledMessage(automation.taskDescription, automation.prompt, automation.id);
+      addUserMessage(agentId, `[Automation] ${automation.taskDescription}`);
+      updateAgent(agentId, { status: "thinking" });
+      await sendMessage(agentId, message);
+
+      updateAgent(agentId, {
+        automations: automations.map((entry) =>
+          entry.id === automation.id
+            ? {
+                ...entry,
+                lastRunAt: new Date(now).toISOString(),
+                nextRunAt: new Date(now + entry.intervalMinutes * 60_000).toISOString(),
+              }
+            : entry,
+        ),
+      });
+    } catch (err) {
+      console.error("[ChatPanel] Failed to run automation now:", err);
+      updateAgent(agentId, { status: "error" });
+    } finally {
+      setRunningAutomationId(null);
+    }
+  }, [agentId, automations, addUserMessage, runningAutomationId, updateAgent]);
 
   const handlePaste = useCallback(async (e: ClipboardEvent<HTMLTextAreaElement>) => {
     console.log("[ChatPanel] Paste event triggered, isTauri:", isTauri());
@@ -292,6 +419,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     if ((!input.trim() && attachedImages.length === 0) || sending) return;
 
     const messageContent = input.trim() || "(image attached)";
+    const outgoingMessage = promptKind === "scheduled"
+      ? buildScheduledMessage(scheduledTaskDescription, messageContent)
+      : messageContent;
     const imagesToSend = [...attachedImages];
 
     // Resolve paths for API call (in Tauri mode we need real filesystem paths)
@@ -341,8 +471,8 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     clearDraftImages(agentId);
 
     try {
-      console.log("[ChatPanel] Sending message:", { agentId, messageContent, imagePaths });
-      await sendMessage(agentId, messageContent, imagePaths);
+      console.log("[ChatPanel] Sending message:", { agentId, outgoingMessage, imagePaths, promptKind });
+      await sendMessage(agentId, outgoingMessage, imagePaths);
       console.log("[ChatPanel] Message sent successfully");
     } catch (err) {
       console.error("[ChatPanel] Failed to send message:", err);
@@ -351,7 +481,18 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     } finally {
       setSending(false);
     }
-  }, [agentId, input, attachedImages, sending, addUserMessage, updateAgent, clearDraft, clearDraftImages]);
+  }, [
+    agentId,
+    input,
+    attachedImages,
+    sending,
+    addUserMessage,
+    updateAgent,
+    clearDraft,
+    clearDraftImages,
+    promptKind,
+    scheduledTaskDescription,
+  ]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -504,7 +645,106 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             </label>
           </div>
         )}
+        <div style={settingGroupStyle}>
+          <label style={settingLabelStyle}>Prompt Type:</label>
+          <select
+            value={promptKind}
+            onChange={(e) => setPromptKind(e.target.value as PromptKind)}
+            disabled={sending}
+            style={selectStyle}
+          >
+            <option value="one_off">One-off</option>
+            <option value="scheduled">Scheduled Task</option>
+          </select>
+        </div>
+        {promptKind === "scheduled" && (
+          <div style={{ ...settingGroupStyle, minWidth: 260, flex: 1 }}>
+            <input
+              value={scheduledTaskDescription}
+              onChange={(e) => setScheduledTaskDescription(e.target.value)}
+              disabled={sending}
+              placeholder='e.g. "See if you need to reply to emails"'
+              style={{
+                ...selectStyle,
+                width: "100%",
+                cursor: "text",
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+        )}
       </div>
+
+      {promptKind === "scheduled" && (
+        <div style={automationComposerStyle}>
+          <div style={automationComposerControlsStyle}>
+            <label style={settingLabelStyle}>Run Every:</label>
+            <select
+              value={automationIntervalMinutes}
+              onChange={(e) => setAutomationIntervalMinutes(Number(e.target.value))}
+              disabled={sending}
+              style={selectStyle}
+            >
+              {AUTOMATION_INTERVAL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={handleCreateAutomation}
+              disabled={sending || (!input.trim() && !scheduledTaskDescription.trim())}
+              style={automationPrimaryButtonStyle}
+            >
+              Save Automation
+            </button>
+          </div>
+        </div>
+      )}
+
+      {automations.length > 0 && (
+        <div style={automationListStyle}>
+          <div style={automationListHeaderStyle}>Automations</div>
+          {automations.map((automation) => (
+            <div key={automation.id} style={automationCardStyle}>
+              <div style={automationCardTopStyle}>
+                <div style={automationTitleStyle}>{automation.taskDescription || automation.prompt}</div>
+                <div style={automationMetaStyle}>
+                  {formatInterval(automation.intervalMinutes)}
+                </div>
+              </div>
+              <div style={automationMetaStyle}>
+                Next: {new Date(automation.nextRunAt).toLocaleString()}
+                {automation.lastRunAt ? ` • Last: ${new Date(automation.lastRunAt).toLocaleString()}` : ""}
+              </div>
+              <div style={automationActionsStyle}>
+                <label style={automationToggleLabelStyle}>
+                  <input
+                    type="checkbox"
+                    checked={automation.enabled}
+                    onChange={(e) => handleToggleAutomation(automation.id, e.target.checked)}
+                    style={checkboxStyle}
+                  />
+                  Enabled
+                </label>
+                <button
+                  onClick={() => handleRunAutomationNow(automation)}
+                  disabled={runningAutomationId === automation.id}
+                  style={automationSecondaryButtonStyle}
+                >
+                  {runningAutomationId === automation.id ? "Running..." : "Run Now"}
+                </button>
+                <button
+                  onClick={() => handleDeleteAutomation(automation.id)}
+                  style={automationDeleteButtonStyle}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {attachedImages.length > 0 && (
         <div style={imagePreviewContainerStyle}>
@@ -811,4 +1051,116 @@ const checkboxStyle: React.CSSProperties = {
   cursor: "pointer",
   accentColor: "#3b82f6",
   flexShrink: 0,
+};
+
+const automationComposerStyle: React.CSSProperties = {
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: "8px 10px",
+  background: "var(--bg-primary)",
+};
+
+const automationComposerControlsStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const automationPrimaryButtonStyle: React.CSSProperties = {
+  height: 28,
+  padding: "0 10px",
+  borderRadius: 4,
+  border: "1px solid #2f6f42",
+  background: "#11301b",
+  color: "#9ae6b4",
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+const automationListStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  padding: "8px 10px",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  background: "var(--bg-primary)",
+  maxHeight: 220,
+  overflowY: "auto",
+};
+
+const automationListHeaderStyle: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 700,
+  color: "var(--text-secondary)",
+};
+
+const automationCardStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  padding: 8,
+  borderRadius: 6,
+  border: "1px solid #3c3c3c",
+  background: "#1e1e1e",
+};
+
+const automationCardTopStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 8,
+};
+
+const automationTitleStyle: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: "#e5e7eb",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const automationMetaStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "#9ca3af",
+};
+
+const automationActionsStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const automationToggleLabelStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  fontSize: 11,
+  color: "#cbd5e1",
+};
+
+const automationSecondaryButtonStyle: React.CSSProperties = {
+  height: 24,
+  padding: "0 8px",
+  borderRadius: 4,
+  border: "1px solid #3c3c3c",
+  background: "#252526",
+  color: "#d1d5db",
+  fontSize: 11,
+  cursor: "pointer",
+};
+
+const automationDeleteButtonStyle: React.CSSProperties = {
+  height: 24,
+  padding: "0 8px",
+  borderRadius: 4,
+  border: "1px solid rgba(239,68,68,0.35)",
+  background: "rgba(239,68,68,0.12)",
+  color: "#fca5a5",
+  fontSize: 11,
+  cursor: "pointer",
 };

@@ -1,12 +1,45 @@
 import express from "express";
 import Stripe from "stripe";
-import { clerkClient, ClerkExpressRequireAuth, ClerkExpressWithAuth } from "@clerk/clerk-sdk-node";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import {
+  clerkClient,
+  ClerkExpressRequireAuth,
+  ClerkExpressWithAuth,
+} from "@clerk/clerk-sdk-node";
 
 const PORT = Number.parseInt(process.env.PORT || "8787", 10);
 const APP_URL = process.env.APP_URL || "https://virtualagency.ai";
+const BILLING_PUBLIC_URL = process.env.BILLING_PUBLIC_URL || APP_URL;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID || "price_1StBe1GR9CoMLe1tlnlDu4Ik";
+const STRIPE_PRICE_ID =
+  process.env.STRIPE_PRICE_ID || "price_1StBe1GR9CoMLe1tlnlDu4Ik";
+const STRIPE_HOSTED_PRICE_ID =
+  process.env.STRIPE_HOSTED_PRICE_ID || "price_1T2ea3GR9CoMLe1thilBUjZ2";
+
+const HETZNER_API_TOKEN = process.env.HETZNER_API_TOKEN || "";
+const HETZNER_SERVER_TYPE = process.env.HETZNER_SERVER_TYPE || "cpx31";
+const HETZNER_LOCATION = process.env.HETZNER_LOCATION || "ash";
+const HETZNER_IMAGE = process.env.HETZNER_IMAGE || "ubuntu-24.04";
+const HETZNER_SSH_KEY_IDS = (process.env.HETZNER_SSH_KEY_IDS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean)
+  .map((value) => Number.parseInt(value, 10))
+  .filter((value) => Number.isFinite(value) && value > 0);
+
+const HOSTED_SERVER_PORT = Number.parseInt(
+  process.env.HOSTED_SERVER_PORT || "1337",
+  10,
+);
+const HOSTED_CONTROL_PLANE_TOKEN = process.env.HOSTED_CONTROL_PLANE_TOKEN || "";
+const HOSTED_STATE_FILE =
+  process.env.HOSTED_STATE_FILE || "/var/lib/virtualagency/hosted-state.json";
+const VA_SERVER_NPM_PACKAGE =
+  process.env.VA_SERVER_NPM_PACKAGE || "@virtualagency/server";
+const VA_SERVER_NPM_VERSION = process.env.VA_SERVER_NPM_VERSION || "latest";
 
 const stripe = STRIPE_SECRET_KEY
   ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
@@ -17,10 +50,10 @@ app.disable("x-powered-by");
 
 const missingClerkEnv = [];
 if (!process.env.CLERK_SECRET_KEY) missingClerkEnv.push("CLERK_SECRET_KEY");
-if (!process.env.CLERK_PUBLISHABLE_KEY) missingClerkEnv.push("CLERK_PUBLISHABLE_KEY");
+if (!process.env.CLERK_PUBLISHABLE_KEY)
+  missingClerkEnv.push("CLERK_PUBLISHABLE_KEY");
 const hasClerk = missingClerkEnv.length === 0;
 
-// Auth middleware (adds req.auth in normal JSON routes)
 if (hasClerk) {
   app.use(ClerkExpressWithAuth());
 } else {
@@ -31,6 +64,438 @@ const requireAuth = hasClerk
   ? ClerkExpressRequireAuth()
   : (_req, res) =>
       res.status(503).json({ error: "missing_clerk_env", missing: missingClerkEnv });
+
+const HETZNER_API_BASE = "https://api.hetzner.cloud/v1";
+
+let hostedStateLoaded = false;
+let hostedState = { users: {} };
+let hostedStateWriteQueue = Promise.resolve();
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function randomToken(size = 24) {
+  return crypto.randomBytes(size).toString("hex");
+}
+
+function randomCode(size = 8) {
+  return crypto
+    .randomBytes(size)
+    .toString("base64")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, size)
+    .toUpperCase();
+}
+
+function sanitizeServerForClient(server) {
+  if (!server) return null;
+  return {
+    id: server.id,
+    name: server.name,
+    status: server.status,
+    ipAddress: server.ipAddress || null,
+    runtimeBaseUrl: server.runtimeBaseUrl || null,
+    hostedApiBaseUrl: "/api/hosting/va",
+    sshPublicKey: server.sshPublicKey || null,
+    createdAt: server.createdAt || null,
+    updatedAt: server.updatedAt || null,
+    lastError: server.lastError || null,
+    pairingCode: server.pairingCode || null,
+    pairingExpiresAt: server.pairingExpiresAt || null,
+  };
+}
+
+async function ensureHostedStateLoaded() {
+  if (hostedStateLoaded) return;
+  try {
+    const raw = await fs.readFile(HOSTED_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      hostedState = {
+        users: parsed.users && typeof parsed.users === "object" ? parsed.users : {},
+      };
+    }
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      console.warn("[hosting] Failed to read hosted state file:", err);
+    }
+  }
+  hostedStateLoaded = true;
+}
+
+async function persistHostedState() {
+  await fs.mkdir(path.dirname(HOSTED_STATE_FILE), { recursive: true });
+  const tmpPath = `${HOSTED_STATE_FILE}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(hostedState, null, 2), "utf8");
+  await fs.rename(tmpPath, HOSTED_STATE_FILE);
+}
+
+function queueHostedStatePersist() {
+  hostedStateWriteQueue = hostedStateWriteQueue
+    .then(() => persistHostedState())
+    .catch((err) => {
+      console.error("[hosting] Failed to persist hosted state:", err);
+    });
+  return hostedStateWriteQueue;
+}
+
+async function getHostedUserState(userId) {
+  await ensureHostedStateLoaded();
+  if (!hostedState.users[userId]) {
+    hostedState.users[userId] = {
+      updatedAt: nowIso(),
+      server: null,
+    };
+  }
+  return hostedState.users[userId];
+}
+
+function slugifyUserId(userId) {
+  return String(userId)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 26);
+}
+
+function mergePrivateMetadata(currentMeta, updates) {
+  return {
+    ...(currentMeta || {}),
+    ...updates,
+  };
+}
+
+async function updateUserPrivateMetadata(userId, updates) {
+  const user = await clerkClient.users.getUser(userId);
+  const nextMeta = mergePrivateMetadata(user.privateMetadata || {}, updates);
+  await clerkClient.users.updateUser(userId, {
+    privateMetadata: nextMeta,
+  });
+}
+
+function isSubscriptionActive(meta) {
+  const status = meta?.subscriptionStatus;
+  if (status !== "active" && status !== "trialing") return false;
+  const periodEnd = meta?.currentPeriodEnd;
+  if (typeof periodEnd !== "number") return true;
+  return periodEnd * 1000 > Date.now();
+}
+
+function isHostedSubscriptionActive(meta) {
+  const status = meta?.hostedServerSubscriptionStatus;
+  if (status !== "active" && status !== "trialing") return false;
+  const periodEnd = meta?.hostedServerCurrentPeriodEnd;
+  if (typeof periodEnd !== "number") return true;
+  return periodEnd * 1000 > Date.now();
+}
+
+function isSubscriptionStatusActive(status) {
+  return status === "active" || status === "trialing";
+}
+
+function isHostedSubscriptionPlan(sub) {
+  if (sub?.metadata?.plan === "hosted_server") return true;
+  const items = Array.isArray(sub?.items?.data) ? sub.items.data : [];
+  return items.some((item) => item?.price?.id === STRIPE_HOSTED_PRICE_ID);
+}
+
+async function hetznerRequest(method, pathname, body) {
+  if (!HETZNER_API_TOKEN) {
+    throw new Error("missing_hetzner_api_token");
+  }
+
+  const response = await fetch(`${HETZNER_API_BASE}${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${HETZNER_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const text = await response.text();
+  const payload = text ? safeJsonParse(text) : null;
+
+  if (!response.ok) {
+    const message = payload?.error?.message || text || `Hetzner API ${response.status}`;
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+function safeJsonParse(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function buildCloudInit({ bootstrapToken, proxyToken, userId }) {
+  const escapedPackage = `${VA_SERVER_NPM_PACKAGE}@${VA_SERVER_NPM_VERSION}`;
+  const callbackUrl = `${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/bootstrap-report`;
+
+  return `#!/bin/bash
+set -euo pipefail
+
+exec > >(tee /var/log/virtualagency-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y curl ca-certificates gnupg ufw
+
+if ! command -v node >/dev/null 2>&1; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y nodejs
+fi
+
+if ! id -u va >/dev/null 2>&1; then
+  useradd -m -s /bin/bash va
+fi
+
+mkdir -p /opt/virtualagency/workspace
+mkdir -p /etc/virtualagency
+chown -R va:va /opt/virtualagency
+
+npm install -g ${escapedPackage}
+
+if [ ! -f /home/va/.ssh/id_ed25519 ]; then
+  su - va -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "virtualagency-${userId}"'
+fi
+
+cat > /etc/virtualagency/server.env << 'ENV_EOF'
+WORKSPACE_DIR=/opt/virtualagency/workspace
+VIRTUAL_AGENCY_PORT=${HOSTED_SERVER_PORT}
+VA_HOSTED_PROXY_TOKEN=${proxyToken}
+ENV_EOF
+
+cat > /etc/systemd/system/virtualagency-server.service << 'SERVICE_EOF'
+[Unit]
+Description=Virtual Agency Hosted Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=va
+Group=va
+WorkingDirectory=/opt/virtualagency
+EnvironmentFile=/etc/virtualagency/server.env
+ExecStart=/usr/bin/env virtual-agency-server --port ${HOSTED_SERVER_PORT}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp
+ufw allow 1337:1350/tcp
+ufw --force enable
+
+systemctl daemon-reload
+systemctl enable virtualagency-server
+systemctl restart virtualagency-server
+
+SSH_PUB=$(cat /home/va/.ssh/id_ed25519.pub | tr -d '\n')
+
+curl -sS -X POST '${callbackUrl}' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"token":"${bootstrapToken}","status":"ready","sshPublicKey":"'"${SSH_PUB}"'"}' || true
+`;
+}
+
+async function createHostedServerForUser(userId) {
+  const userState = await getHostedUserState(userId);
+
+  if (userState.server && userState.server.status !== "deleted") {
+    return sanitizeServerForClient(userState.server);
+  }
+
+  const bootstrapToken = randomToken(18);
+  const proxyToken = randomToken(24);
+  const pairingCode = randomCode(8);
+  const now = nowIso();
+  const userSlug = slugifyUserId(userId) || "user";
+  const serverName = `va-${userSlug}`.slice(0, 62);
+
+  const requestBody = {
+    name: serverName,
+    server_type: HETZNER_SERVER_TYPE,
+    image: HETZNER_IMAGE,
+    location: HETZNER_LOCATION,
+    start_after_create: true,
+    labels: {
+      managed_by: "virtualagency",
+      clerk_user_id: userId,
+    },
+    user_data: buildCloudInit({ bootstrapToken, proxyToken, userId }),
+  };
+
+  if (HETZNER_SSH_KEY_IDS.length > 0) {
+    requestBody.ssh_keys = HETZNER_SSH_KEY_IDS;
+  }
+
+  const payload = await hetznerRequest("POST", "/servers", requestBody);
+  const server = payload?.server || {};
+  const ipv4 = server?.public_net?.ipv4?.ip || null;
+
+  userState.server = {
+    id: String(server.id),
+    name: server.name || serverName,
+    status: "provisioning",
+    ipAddress: ipv4,
+    runtimeBaseUrl: ipv4 ? `http://${ipv4}:${HOSTED_SERVER_PORT}` : null,
+    sshPublicKey: null,
+    bootstrapToken,
+    proxyToken,
+    pairingCode,
+    pairingExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+  };
+  userState.updatedAt = now;
+
+  await queueHostedStatePersist();
+  return sanitizeServerForClient(userState.server);
+}
+
+async function syncHostedServerStatus(userId) {
+  const userState = await getHostedUserState(userId);
+  const server = userState.server;
+  if (!server || !server.id) return null;
+
+  try {
+    const payload = await hetznerRequest("GET", `/servers/${server.id}`);
+    const remote = payload?.server;
+    const ipv4 = remote?.public_net?.ipv4?.ip || null;
+
+    server.ipAddress = ipv4;
+    server.runtimeBaseUrl = ipv4 ? `http://${ipv4}:${HOSTED_SERVER_PORT}` : null;
+
+    const remoteStatus = String(remote?.status || "unknown");
+    if (remoteStatus === "running" && server.status !== "ready") {
+      // Keep bootstrap status unless we've already been marked ready.
+      server.status = server.sshPublicKey ? "ready" : "bootstrapping";
+    } else if (remoteStatus === "off") {
+      server.status = "stopped";
+    } else if (remoteStatus && remoteStatus !== "unknown") {
+      server.status = remoteStatus;
+    }
+
+    server.updatedAt = nowIso();
+    userState.updatedAt = server.updatedAt;
+    await queueHostedStatePersist();
+    return sanitizeServerForClient(server);
+  } catch (err) {
+    server.lastError = err?.message || String(err);
+    server.updatedAt = nowIso();
+    await queueHostedStatePersist();
+    return sanitizeServerForClient(server);
+  }
+}
+
+async function hostedServerAction(userId, action) {
+  const userState = await getHostedUserState(userId);
+  const server = userState.server;
+  if (!server || !server.id) {
+    throw new Error("server_not_provisioned");
+  }
+
+  if (action === "rebuild") {
+    await hetznerRequest("DELETE", `/servers/${server.id}`);
+    userState.server = null;
+    userState.updatedAt = nowIso();
+    await queueHostedStatePersist();
+    return createHostedServerForUser(userId);
+  }
+
+  if (action === "destroy") {
+    await hetznerRequest("DELETE", `/servers/${server.id}`);
+    userState.server = {
+      ...server,
+      status: "deleted",
+      updatedAt: nowIso(),
+    };
+    userState.updatedAt = userState.server.updatedAt;
+    await queueHostedStatePersist();
+    return sanitizeServerForClient(userState.server);
+  }
+
+  const apiAction =
+    action === "start"
+      ? "poweron"
+      : action === "stop"
+        ? "poweroff"
+        : null;
+
+  if (!apiAction) {
+    throw new Error("unsupported_action");
+  }
+
+  await hetznerRequest("POST", `/servers/${server.id}/actions/${apiAction}`);
+  server.status = action === "start" ? "starting" : "stopping";
+  server.updatedAt = nowIso();
+  userState.updatedAt = server.updatedAt;
+  await queueHostedStatePersist();
+
+  return sanitizeServerForClient(server);
+}
+
+async function destroyHostedServerIfProvisioned(userId, reason = "subscription_inactive") {
+  const userState = await getHostedUserState(userId);
+  if (!userState?.server?.id || userState.server.status === "deleted") {
+    return false;
+  }
+
+  try {
+    await hostedServerAction(userId, "destroy");
+    console.log(`[hosting] auto-destroyed server for ${userId} (${reason})`);
+    return true;
+  } catch (err) {
+    const message = err?.message || String(err);
+    console.error(
+      `[hosting] failed to auto-destroy server for ${userId} (${reason}): ${message}`,
+    );
+    return false;
+  }
+}
+
+async function getUserWithMeta(userId) {
+  const user = await clerkClient.users.getUser(userId);
+  return {
+    user,
+    meta: user.privateMetadata || {},
+  };
+}
+
+function ensureHostedServerAccess(userId) {
+  return getHostedUserState(userId).then((state) => {
+    const server = state.server;
+    if (!server || !server.runtimeBaseUrl) {
+      throw new Error("server_not_ready");
+    }
+    if (server.status === "deleted") {
+      throw new Error("server_deleted");
+    }
+    return server;
+  });
+}
+
+function ensureHostedEnabled() {
+  if (!HETZNER_API_TOKEN) {
+    const err = new Error("missing_hetzner_api_token");
+    err.statusCode = 503;
+    throw err;
+  }
+}
 
 // Stripe webhook must use raw body (must come before json() for this route)
 app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
@@ -64,11 +529,11 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
         const clerkUserId = session.client_reference_id || session.metadata?.clerkUserId;
         const customerId = session.customer;
         const subscriptionId = session.subscription;
+        const plan = session.metadata?.plan;
 
         if (!clerkUserId || typeof clerkUserId !== "string") break;
         if (!customerId || typeof customerId !== "string") break;
 
-        // Ensure Stripe customer is tagged with Clerk user id (so subscription events can map back).
         await stripe.customers.update(customerId, {
           metadata: { clerkUserId },
         });
@@ -78,15 +543,25 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
           subscription = await stripe.subscriptions.retrieve(subscriptionId);
         }
 
-        await clerkClient.users.updateUser(clerkUserId, {
-          privateMetadata: {
+        if (plan === "hosted_server") {
+          await updateUserPrivateMetadata(clerkUserId, {
+            hostedServerStripeCustomerId: customerId,
+            hostedServerSubscriptionId:
+              typeof subscriptionId === "string" ? subscriptionId : null,
+            hostedServerSubscriptionStatus: subscription?.status || "active",
+            hostedServerCurrentPeriodEnd: subscription?.current_period_end || null,
+            hostedServerCancelAtPeriodEnd:
+              subscription?.cancel_at_period_end || false,
+          });
+        } else {
+          await updateUserPrivateMetadata(clerkUserId, {
             stripeCustomerId: customerId,
             stripeSubscriptionId: typeof subscriptionId === "string" ? subscriptionId : null,
             subscriptionStatus: subscription?.status || "active",
             currentPeriodEnd: subscription?.current_period_end || null,
             cancelAtPeriodEnd: subscription?.cancel_at_period_end || false,
-          },
-        });
+          });
+        }
 
         break;
       }
@@ -103,16 +578,61 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
 
         if (!clerkUserId || typeof clerkUserId !== "string") break;
 
-        await clerkClient.users.updateUser(clerkUserId, {
-          privateMetadata: {
+        if (isHostedSubscriptionPlan(sub)) {
+          await updateUserPrivateMetadata(clerkUserId, {
+            hostedServerStripeCustomerId: customerId,
+            hostedServerSubscriptionId: sub.id,
+            hostedServerSubscriptionStatus: sub.status,
+            hostedServerCurrentPeriodEnd: sub.current_period_end,
+            hostedServerCancelAtPeriodEnd: sub.cancel_at_period_end,
+          });
+
+          if (!isSubscriptionStatusActive(sub.status)) {
+            await destroyHostedServerIfProvisioned(
+              clerkUserId,
+              `stripe_${event.type}:${sub.status}`,
+            );
+          }
+        } else {
+          await updateUserPrivateMetadata(clerkUserId, {
             stripeCustomerId: customerId,
             stripeSubscriptionId: sub.id,
             subscriptionStatus: sub.status,
             currentPeriodEnd: sub.current_period_end,
             cancelAtPeriodEnd: sub.cancel_at_period_end,
-          },
+          });
+        }
+
+        break;
+      }
+
+      case "invoice.payment_failed": {
+        const invoice = event.data.object;
+        const customerId = invoice.customer;
+        const subscriptionId = invoice.subscription;
+        if (!customerId || typeof customerId !== "string") break;
+        if (!subscriptionId || typeof subscriptionId !== "string") break;
+
+        const customer = await stripe.customers.retrieve(customerId);
+        const clerkUserId =
+          customer && !customer.deleted ? customer.metadata?.clerkUserId : null;
+        if (!clerkUserId || typeof clerkUserId !== "string") break;
+
+        const sub = await stripe.subscriptions.retrieve(subscriptionId);
+        if (!isHostedSubscriptionPlan(sub)) break;
+
+        await updateUserPrivateMetadata(clerkUserId, {
+          hostedServerStripeCustomerId: customerId,
+          hostedServerSubscriptionId: sub.id,
+          hostedServerSubscriptionStatus: sub.status,
+          hostedServerCurrentPeriodEnd: sub.current_period_end,
+          hostedServerCancelAtPeriodEnd: sub.cancel_at_period_end,
         });
 
+        await destroyHostedServerIfProvisioned(
+          clerkUserId,
+          `stripe_invoice.payment_failed:${sub.status}`,
+        );
         break;
       }
 
@@ -127,24 +647,13 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
   res.json({ received: true });
 });
 
-// JSON for non-webhook routes
-app.use(express.json({ limit: "2mb" }));
-
-function isSubscriptionActive(meta) {
-  const status = meta?.subscriptionStatus;
-  if (status !== "active" && status !== "trialing") return false;
-  const periodEnd = meta?.currentPeriodEnd;
-  if (typeof periodEnd !== "number") return true;
-  // Stripe uses seconds
-  return periodEnd * 1000 > Date.now();
-}
+app.use(express.json({ limit: "6mb" }));
 
 app.get("/api/billing/me", requireAuth, async (req, res) => {
   const userId = req.auth?.userId;
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-  const user = await clerkClient.users.getUser(userId);
-  const meta = user.privateMetadata || {};
+  const { meta } = await getUserWithMeta(userId);
 
   res.json({
     userId,
@@ -154,6 +663,10 @@ app.get("/api/billing/me", requireAuth, async (req, res) => {
     cancelAtPeriodEnd: meta.cancelAtPeriodEnd || false,
     stripeCustomerId: meta.stripeCustomerId || null,
     stripeSubscriptionId: meta.stripeSubscriptionId || null,
+    hostedServerActive: isHostedSubscriptionActive(meta),
+    hostedServerStatus: meta.hostedServerSubscriptionStatus || null,
+    hostedServerCurrentPeriodEnd: meta.hostedServerCurrentPeriodEnd || null,
+    hostedServerCancelAtPeriodEnd: meta.hostedServerCancelAtPeriodEnd || false,
   });
 });
 
@@ -177,11 +690,10 @@ app.post("/api/billing/create-checkout-session", requireAuth, async (req, res) =
       metadata: { clerkUserId: userId },
     });
     customerId = customer.id;
-    await clerkClient.users.updateUser(userId, {
-      privateMetadata: { ...meta, stripeCustomerId: customerId },
+    await updateUserPrivateMetadata(userId, {
+      stripeCustomerId: customerId,
     });
   } else {
-    // Ensure metadata link exists
     await stripe.customers.update(customerId, {
       metadata: { clerkUserId: userId },
     });
@@ -195,7 +707,11 @@ app.post("/api/billing/create-checkout-session", requireAuth, async (req, res) =
     success_url: `${APP_URL}/?checkout=success`,
     cancel_url: `${APP_URL}/?checkout=cancel`,
     subscription_data: {
-      metadata: { clerkUserId: userId },
+      metadata: { clerkUserId: userId, plan: "core" },
+    },
+    metadata: {
+      clerkUserId: userId,
+      plan: "core",
     },
   });
 
@@ -223,9 +739,270 @@ app.post("/api/billing/create-portal-session", requireAuth, async (req, res) => 
   res.json({ url: session.url });
 });
 
-app.get("/api/billing/health", (_req, res) => res.json({ ok: true }));
+app.post("/api/hosting/create-checkout-session", requireAuth, async (req, res) => {
+  if (!stripe) {
+    return res.status(500).json({ error: "missing_stripe_secret_key" });
+  }
+  if (!STRIPE_HOSTED_PRICE_ID) {
+    return res.status(500).json({ error: "missing_hosted_price_id" });
+  }
 
-// Ensure auth middleware errors become JSON responses (not Express HTML 500s)
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  const user = await clerkClient.users.getUser(userId);
+  const meta = user.privateMetadata || {};
+  const existingCustomerId =
+    (typeof meta.hostedServerStripeCustomerId === "string" &&
+      meta.hostedServerStripeCustomerId) ||
+    (typeof meta.stripeCustomerId === "string" && meta.stripeCustomerId) ||
+    null;
+
+  let customerId = existingCustomerId;
+  if (!customerId) {
+    const email = user.primaryEmailAddress?.emailAddress || undefined;
+    const customer = await stripe.customers.create({
+      email,
+      metadata: { clerkUserId: userId },
+    });
+    customerId = customer.id;
+  } else {
+    await stripe.customers.update(customerId, {
+      metadata: { clerkUserId: userId },
+    });
+  }
+
+  await updateUserPrivateMetadata(userId, {
+    hostedServerStripeCustomerId: customerId,
+  });
+
+  const session = await stripe.checkout.sessions.create({
+    mode: "subscription",
+    customer: customerId,
+    client_reference_id: userId,
+    line_items: [{ price: STRIPE_HOSTED_PRICE_ID, quantity: 1 }],
+    success_url: `${APP_URL}/?hostedCheckout=success`,
+    cancel_url: `${APP_URL}/?hostedCheckout=cancel`,
+    subscription_data: {
+      metadata: { clerkUserId: userId, plan: "hosted_server" },
+    },
+    metadata: {
+      clerkUserId: userId,
+      plan: "hosted_server",
+    },
+  });
+
+  res.json({ url: session.url });
+});
+
+app.get("/api/hosting/me", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  const { meta } = await getUserWithMeta(userId);
+  const userState = await getHostedUserState(userId);
+
+  let server = sanitizeServerForClient(userState.server);
+  if (userState.server?.id) {
+    server = await syncHostedServerStatus(userId);
+  }
+
+  res.json({
+    server,
+    hostedSubscriptionActive: isHostedSubscriptionActive(meta),
+    hostedSubscriptionStatus: meta.hostedServerSubscriptionStatus || null,
+    hostedSubscriptionPeriodEnd: meta.hostedServerCurrentPeriodEnd || null,
+  });
+});
+
+app.post("/api/hosting/server/provision", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  ensureHostedEnabled();
+
+  const { meta } = await getUserWithMeta(userId);
+  if (!isHostedSubscriptionActive(meta)) {
+    return res.status(402).json({ error: "hosted_subscription_required" });
+  }
+
+  const server = await createHostedServerForUser(userId);
+  res.json({ server });
+});
+
+app.post("/api/hosting/server/start", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+  ensureHostedEnabled();
+
+  const server = await hostedServerAction(userId, "start");
+  res.json({ server });
+});
+
+app.post("/api/hosting/server/stop", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+  ensureHostedEnabled();
+
+  const server = await hostedServerAction(userId, "stop");
+  res.json({ server });
+});
+
+app.post("/api/hosting/server/rebuild", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+  ensureHostedEnabled();
+
+  const server = await hostedServerAction(userId, "rebuild");
+  res.json({ server });
+});
+
+app.post("/api/hosting/server/destroy", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+  ensureHostedEnabled();
+
+  const server = await hostedServerAction(userId, "destroy");
+  res.json({ server });
+});
+
+app.post("/api/hosting/server/pairing-code", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  const userState = await getHostedUserState(userId);
+  if (!userState.server) {
+    return res.status(404).json({ error: "server_not_provisioned" });
+  }
+
+  userState.server.pairingCode = randomCode(8);
+  userState.server.pairingExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  userState.server.updatedAt = nowIso();
+  await queueHostedStatePersist();
+
+  res.json({
+    pairingCode: userState.server.pairingCode,
+    pairingExpiresAt: userState.server.pairingExpiresAt,
+  });
+});
+
+app.get("/api/hosting/server/ssh-public-key", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  const userState = await getHostedUserState(userId);
+  res.json({
+    sshPublicKey: userState.server?.sshPublicKey || null,
+  });
+});
+
+app.post("/api/hosting/internal/bootstrap-report", async (req, res) => {
+  if (
+    HOSTED_CONTROL_PLANE_TOKEN &&
+    req.headers["x-control-plane-token"] !== HOSTED_CONTROL_PLANE_TOKEN
+  ) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
+  const { token, status, sshPublicKey, error } = req.body || {};
+  if (!token || typeof token !== "string") {
+    return res.status(400).json({ error: "missing_token" });
+  }
+
+  await ensureHostedStateLoaded();
+
+  let matchedUserId = null;
+  for (const [userId, userState] of Object.entries(hostedState.users)) {
+    if (userState?.server?.bootstrapToken === token) {
+      matchedUserId = userId;
+      break;
+    }
+  }
+
+  if (!matchedUserId) {
+    return res.status(404).json({ error: "token_not_found" });
+  }
+
+  const userState = hostedState.users[matchedUserId];
+  if (!userState.server) {
+    return res.status(404).json({ error: "server_not_found" });
+  }
+
+  if (typeof sshPublicKey === "string" && sshPublicKey.trim().length > 0) {
+    userState.server.sshPublicKey = sshPublicKey.trim();
+  }
+
+  userState.server.status = status === "ready" ? "ready" : "bootstrapping";
+  if (typeof error === "string" && error.trim()) {
+    userState.server.status = "error";
+    userState.server.lastError = error.trim();
+  }
+
+  userState.server.updatedAt = nowIso();
+  userState.updatedAt = userState.server.updatedAt;
+
+  await queueHostedStatePersist();
+  res.json({ ok: true });
+});
+
+app.use("/api/hosting/va", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  try {
+    const server = await ensureHostedServerAccess(userId);
+
+    const suffix = req.originalUrl.replace(/^\/api\/hosting\/va/, "") || "/";
+    const targetUrl = `${server.runtimeBaseUrl}${suffix}`;
+
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: req.headers.accept || "application/json",
+    };
+    if (server.proxyToken) {
+      headers["x-va-hosted-token"] = server.proxyToken;
+    }
+
+    const hasBody = !["GET", "HEAD"].includes(req.method.toUpperCase());
+    const upstreamResponse = await fetch(targetUrl, {
+      method: req.method,
+      headers,
+      body: hasBody ? JSON.stringify(req.body || {}) : undefined,
+    });
+
+    const contentType = upstreamResponse.headers.get("content-type") || "";
+    const text = await upstreamResponse.text();
+
+    res.status(upstreamResponse.status);
+    if (contentType) {
+      res.setHeader("content-type", contentType);
+    }
+
+    if (!text) {
+      return res.end();
+    }
+
+    return res.send(text);
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (message === "server_not_ready") {
+      return res.status(409).json({ error: "server_not_ready" });
+    }
+    if (message === "server_deleted") {
+      return res.status(404).json({ error: "server_deleted" });
+    }
+    console.error("[hosting] proxy error:", err);
+    return res.status(502).json({ error: "hosting_proxy_failed", message });
+  }
+});
+
+app.get("/api/billing/health", (_req, res) =>
+  res.json({
+    ok: true,
+    hostingEnabled: Boolean(HETZNER_API_TOKEN),
+  }),
+);
+
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   const status = err?.status || err?.statusCode;
@@ -238,6 +1015,10 @@ app.use((err, _req, res, _next) => {
     return res.status(403).json({ error: "forbidden" });
   }
 
+  if (err?.message === "missing_hetzner_api_token") {
+    return res.status(503).json({ error: "missing_hetzner_api_token" });
+  }
+
   console.error("[billing] unhandled error:", err);
   return res.status(500).json({ error: "internal_error" });
 });
@@ -248,6 +1029,8 @@ app.listen(PORT, "127.0.0.1", () => {
   if (!process.env.CLERK_PUBLISHABLE_KEY) missing.push("CLERK_PUBLISHABLE_KEY");
   if (!STRIPE_SECRET_KEY) missing.push("STRIPE_SECRET_KEY");
   if (!STRIPE_WEBHOOK_SECRET) missing.push("STRIPE_WEBHOOK_SECRET");
+  if (!HETZNER_API_TOKEN) missing.push("HETZNER_API_TOKEN");
+  if (!STRIPE_HOSTED_PRICE_ID) missing.push("STRIPE_HOSTED_PRICE_ID");
   if (missing.length > 0) {
     console.warn(`[billing] missing env: ${missing.join(", ")}`);
   }

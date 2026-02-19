@@ -1,5 +1,8 @@
 use crate::agents::{AgentSpecialty, CliType};
 use crate::state::AppState;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::PathBuf;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -50,6 +53,37 @@ pub fn stop_agent(state: State<AppState>, id: String) -> Result<(), String> {
 pub fn send_message(state: State<AppState>, id: String, message: String, images: Vec<String>) -> Result<(), String> {
     let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     manager.send_message(&id, &message, &images)
+}
+
+const INTEGRATIONS_FILE_REL_PATH: &str = ".virtual-agency/integrations.md";
+
+#[tauri::command]
+pub fn save_integrations_markdown(state: State<AppState>, id: String, markdown: String) -> Result<(), String> {
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    let working_dir = manager.get_agent_working_dir(&id)?;
+    drop(manager);
+
+    let path = PathBuf::from(working_dir).join(INTEGRATIONS_FILE_REL_PATH);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create integrations directory: {}", e))?;
+    }
+
+    fs::write(&path, markdown).map_err(|e| format!("Failed to write integrations markdown: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn load_integrations_markdown(state: State<AppState>, id: String) -> Result<String, String> {
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    let working_dir = manager.get_agent_working_dir(&id)?;
+    drop(manager);
+
+    let path = PathBuf::from(working_dir).join(INTEGRATIONS_FILE_REL_PATH);
+    match fs::read_to_string(&path) {
+        Ok(content) => Ok(content),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(format!("Failed to read integrations markdown: {}", err)),
+    }
 }
 
 #[tauri::command]

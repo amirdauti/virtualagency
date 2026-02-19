@@ -3,15 +3,108 @@
  * Automatically detects the environment and uses the appropriate backend.
  */
 
-import type { AgentSpecialty } from "@virtual-agency/shared";
+import type {
+  AgentAutomation,
+  AgentSpecialty,
+  AgentRuntime,
+} from "@virtual-agency/shared";
 
 // Server URL for browser mode (resolved dynamically when env vars are not provided).
 const ENV_SERVER_URL = import.meta.env.VITE_SERVER_URL as string | undefined;
 const ENV_WS_URL = import.meta.env.VITE_WS_URL as string | undefined;
+const ENV_BILLING_API_URL = import.meta.env.VITE_BILLING_API_URL as
+  | string
+  | undefined;
 
 const SERVER_URL_STORAGE_KEY = "virtual-agency-server-url";
+const AGENT_RUNTIME_STORAGE_KEY = "virtual-agency-agent-runtime-map";
+const DEFAULT_SERVER_URL = "http://127.0.0.1:1337";
+const SERVER_RESOLVE_COOLDOWN_MS = 15_000;
 let resolvedServerUrl: string | null = null;
 let resolvingServerUrl: Promise<string> | null = null;
+let lastServerResolveFailureAt = 0;
+
+let hostedAuthTokenProvider: (() => Promise<string | null>) | null = null;
+
+export function setHostedAuthTokenProvider(
+  provider: (() => Promise<string | null>) | null,
+) {
+  hostedAuthTokenProvider = provider;
+}
+
+function getBillingApiBaseUrl(): string {
+  if (ENV_BILLING_API_URL && ENV_BILLING_API_URL.trim().length > 0) {
+    return ENV_BILLING_API_URL.replace(/\/$/, "");
+  }
+  return "";
+}
+
+async function getHostedAuthToken(): Promise<string> {
+  if (!hostedAuthTokenProvider) {
+    throw new Error("missing_hosted_auth_provider");
+  }
+  const token = await hostedAuthTokenProvider();
+  if (!token) {
+    throw new Error("missing_hosted_auth_token");
+  }
+  return token;
+}
+
+type AgentRuntimeMap = Record<string, AgentRuntime>;
+
+function loadAgentRuntimeMap(): AgentRuntimeMap {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    const raw = localStorage.getItem(AGENT_RUNTIME_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as AgentRuntimeMap;
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function persistAgentRuntimeMap(map: AgentRuntimeMap) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(AGENT_RUNTIME_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+export function setAgentRuntime(id: string, runtime: AgentRuntime) {
+  const map = loadAgentRuntimeMap();
+  map[id] = runtime;
+  persistAgentRuntimeMap(map);
+}
+
+export function removeAgentRuntime(id: string) {
+  const map = loadAgentRuntimeMap();
+  delete map[id];
+  persistAgentRuntimeMap(map);
+}
+
+export function getAgentRuntime(id: string): AgentRuntime {
+  const map = loadAgentRuntimeMap();
+  return map[id] === "hosted" ? "hosted" : "local";
+}
+
+export function replaceAgentRuntimeMap(next: AgentRuntimeMap) {
+  persistAgentRuntimeMap(next);
+}
+
+function hasHostedAgentsMapped(): boolean {
+  const map = loadAgentRuntimeMap();
+  return Object.values(map).some((value) => value === "hosted");
+}
+
+function hasLocalAgentsMapped(): boolean {
+  const values = Object.values(loadAgentRuntimeMap());
+  if (values.length === 0) return true;
+  return values.some((value) => value !== "hosted");
+}
 
 // Detect if running in Tauri (v2 uses __TAURI_INTERNALS__)
 export function isTauri(): boolean {
@@ -38,15 +131,25 @@ function persistServerUrl(url: string) {
   }
 }
 
-function defaultServerCandidates(): string[] {
+interface ServerUrlResolveOptions {
+  forceRescan?: boolean;
+  includePortScan?: boolean;
+}
+
+function defaultServerCandidates(includePortScan: boolean): string[] {
   const candidates: string[] = [];
   const saved = loadSavedServerUrl();
   if (saved) candidates.push(saved);
 
-  // Prefer 1337, but allow fallbacks. The local server will attempt these as well.
-  const ports = [1337, ...Array.from({ length: 13 }, (_, i) => 1338 + i)];
-  for (const port of ports) {
-    candidates.push(`http://127.0.0.1:${port}`);
+  // Always try the primary default first.
+  candidates.push(DEFAULT_SERVER_URL);
+
+  // Optional fallback scan for recovery/manual retries.
+  if (includePortScan) {
+    const ports = Array.from({ length: 13 }, (_, i) => 1338 + i);
+    for (const port of ports) {
+      candidates.push(`http://127.0.0.1:${port}`);
+    }
   }
 
   // Unique, preserve order.
@@ -65,30 +168,42 @@ async function probeServer(url: string): Promise<boolean> {
   }
 }
 
-export async function getServerHttpBaseUrl(): Promise<string> {
+export async function getServerHttpBaseUrl(options: ServerUrlResolveOptions = {}): Promise<string> {
   if (isTauri()) {
     // In Tauri mode we don't use HTTP; requests go through invoke().
     return "";
   }
   if (ENV_SERVER_URL) return ENV_SERVER_URL;
-  if (resolvedServerUrl) return resolvedServerUrl;
+  if (resolvedServerUrl && !options.forceRescan) return resolvedServerUrl;
   if (resolvingServerUrl) return resolvingServerUrl;
 
+  const now = Date.now();
+  const withinCooldown =
+    !options.forceRescan &&
+    lastServerResolveFailureAt > 0 &&
+    now - lastServerResolveFailureAt < SERVER_RESOLVE_COOLDOWN_MS;
+
+  if (withinCooldown) {
+    return DEFAULT_SERVER_URL;
+  }
+
   resolvingServerUrl = (async () => {
-    for (const candidate of defaultServerCandidates()) {
+    for (const candidate of defaultServerCandidates(Boolean(options.includePortScan))) {
       // If the saved URL is dead, quickly move on.
       // When the server is up, /api/health responds immediately.
       // eslint-disable-next-line no-await-in-loop
       const ok = await probeServer(candidate);
       if (ok) {
         resolvedServerUrl = candidate;
+        lastServerResolveFailureAt = 0;
         persistServerUrl(candidate);
         return candidate;
       }
     }
 
+    lastServerResolveFailureAt = Date.now();
     // Default fallback (used by UI for "waiting for server" states).
-    return "http://127.0.0.1:1337";
+    return DEFAULT_SERVER_URL;
   })();
 
   try {
@@ -110,6 +225,10 @@ let ws: WebSocket | null = null;
 let wsReconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 const wsListeners: Set<(event: MessageEvent) => void> = new Set();
 const wsOutboundQueue: string[] = [];
+let wsGeneration = 0;
+let hostedPollTimer: ReturnType<typeof setTimeout> | null = null;
+let hostedPollingInFlight = false;
+let hostedLastSeq = 0;
 
 const EVENT_SEQ_STORAGE_KEY = "virtual-agency-last-event-seq";
 let lastEventSeq = 0;
@@ -156,6 +275,61 @@ function handleIncomingWsData(data: unknown) {
 
   const fakeEvent = { data: text } as MessageEvent;
   wsListeners.forEach((listener) => listener(fakeEvent));
+}
+
+async function pollHostedEventsOnce() {
+  if (isTauri()) return;
+  if (!hasHostedAgentsMapped()) return;
+  if (hostedPollingInFlight) return;
+
+  hostedPollingInFlight = true;
+  try {
+    const suffix =
+      hostedLastSeq > 0
+        ? `?since=${encodeURIComponent(String(hostedLastSeq))}`
+        : "";
+    const payload = await fetchHostedApi<{ latest_seq: number; events: unknown[] }>(
+      `/api/hosting/va/api/events${suffix}`,
+      { method: "GET" },
+    );
+    const events = Array.isArray(payload?.events) ? payload.events : [];
+    for (const event of events) {
+      const seq = (event as { seq?: unknown })?.seq;
+      if (typeof seq === "number" && Number.isFinite(seq) && seq > hostedLastSeq) {
+        hostedLastSeq = seq;
+      }
+      handleIncomingWsData(JSON.stringify(event));
+    }
+    if (
+      typeof payload?.latest_seq === "number" &&
+      Number.isFinite(payload.latest_seq) &&
+      payload.latest_seq > hostedLastSeq
+    ) {
+      hostedLastSeq = payload.latest_seq;
+    }
+  } catch (err) {
+    console.warn("[API] Hosted event poll failed:", err);
+  } finally {
+    hostedPollingInFlight = false;
+  }
+}
+
+function ensureHostedEventPolling() {
+  if (hostedPollTimer) return;
+  const tick = async () => {
+    await pollHostedEventsOnce();
+    hostedPollTimer = setTimeout(() => {
+      void tick();
+    }, 1000);
+  };
+  void tick();
+}
+
+function stopHostedEventPolling() {
+  if (hostedPollTimer) {
+    clearTimeout(hostedPollTimer);
+    hostedPollTimer = null;
+  }
 }
 
 async function replayMissedEvents() {
@@ -207,9 +381,12 @@ async function connectWebSocket() {
   }
 
   const wsUrl = await getServerWsUrl();
+  const generation = ++wsGeneration;
   ws = new WebSocket(wsUrl);
+  const socket = ws;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket || generation !== wsGeneration) return;
     console.log('[API] WebSocket connected');
     if (wsReconnectTimeout) {
       clearTimeout(wsReconnectTimeout);
@@ -220,7 +397,7 @@ async function connectWebSocket() {
       const pending = wsOutboundQueue.splice(0, wsOutboundQueue.length);
       for (const payload of pending) {
         try {
-          ws?.send(payload);
+          socket.send(payload);
         } catch {
           wsOutboundQueue.unshift(payload);
           break;
@@ -235,6 +412,7 @@ async function connectWebSocket() {
     replayMissedEvents()
       .catch(() => {})
       .finally(() => {
+        if (ws !== socket || generation !== wsGeneration) return;
         isReplaying = false;
         seenSeqDuringReplay = null;
         if (pendingDuringReplay.length > 0) {
@@ -261,7 +439,8 @@ async function connectWebSocket() {
       });
   };
 
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (ws !== socket || generation !== wsGeneration) return;
     const data = typeof event.data === "string" ? event.data : String(event.data);
     if (isReplaying) {
       // During replay we buffer most live events to preserve ordering, but terminal IO must
@@ -286,13 +465,15 @@ async function connectWebSocket() {
     handleIncomingWsData(data);
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws !== socket || generation !== wsGeneration) return;
     console.log('[API] WebSocket disconnected, reconnecting...');
     ws = null;
     wsReconnectTimeout = setTimeout(() => void connectWebSocket(), 2000);
   };
 
-  ws.onerror = (error) => {
+  socket.onerror = (error) => {
+    if (ws !== socket || generation !== wsGeneration) return;
     console.error('[API] WebSocket error:', error);
   };
 }
@@ -301,9 +482,17 @@ export function addWebSocketListener(listener: (event: MessageEvent) => void) {
   wsListeners.add(listener);
   // Ensure WebSocket is connected in browser mode
   if (!isTauri()) {
-    void connectWebSocket();
+    if (hasLocalAgentsMapped()) {
+      void connectWebSocket();
+    }
+    ensureHostedEventPolling();
   }
-  return () => wsListeners.delete(listener);
+  return () => {
+    wsListeners.delete(listener);
+    if (wsListeners.size === 0) {
+      stopHostedEventPolling();
+    }
+  };
 }
 
 export function sendWebSocketMessage(message: unknown): boolean {
@@ -352,6 +541,61 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   return JSON.parse(text);
 }
 
+export async function fetchHostedApi<T>(
+  path: string,
+  options?: RequestInit,
+): Promise<T> {
+  const base = getBillingApiBaseUrl();
+  const token = await getHostedAuthToken();
+  const response = await fetch(`${base}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || `HTTP ${response.status}`);
+  }
+
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text);
+}
+
+async function fetchApiForRuntime<T>(
+  runtime: AgentRuntime,
+  path: string,
+  options?: RequestInit,
+): Promise<T> {
+  if (runtime === "hosted") {
+    return fetchHostedApi<T>(`/api/hosting/va${path}`, options);
+  }
+  return fetchApi<T>(path, options);
+}
+
+export async function fetchAgentApi<T>(
+  agentId: string,
+  path: string,
+  options?: RequestInit,
+): Promise<T> {
+  const runtime = getAgentRuntime(agentId);
+  return fetchApiForRuntime<T>(runtime, path, options);
+}
+
+export async function getAgentHttpBaseUrl(agentId: string): Promise<string> {
+  const runtime = getAgentRuntime(agentId);
+  if (runtime === "hosted") {
+    const base = getBillingApiBaseUrl();
+    return `${base}/api/hosting/va`;
+  }
+  const localBase = await getServerHttpBaseUrl();
+  return localBase || DEFAULT_SERVER_URL;
+}
+
 export interface FindAvailablePortResponse {
   port: number;
   start: number;
@@ -373,6 +617,7 @@ export async function findAvailablePort(
 // See: claude --help for more info
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export type CodexModel =
+  | "gpt-5.3-codex"
   | "gpt-5.2-codex"
   | "gpt-5.2"
   | "gpt-5.1-codex-max"
@@ -395,23 +640,29 @@ export interface AgentOptions {
   sessionId?: string; // Session ID to resume conversation
   cliType?: CliType; // CLI backend to use (claude or codex)
   specialty?: AgentSpecialty; // Optional system prompt specialization
+  runtime?: AgentRuntime; // Local process or hosted VPS runtime
 }
 
 // Agent APIs
 export async function createAgent(id: string, workingDir: string, options?: AgentOptions): Promise<void> {
   const cliType = options?.cliType || "claude";
-  const model = options?.model || (cliType === "codex" ? "gpt-5.2-codex" : "sonnet");
+  const model = options?.model || (cliType === "codex" ? "gpt-5.3-codex" : "sonnet");
   const thinkingEnabled = options?.thinkingEnabled || false;
   const reasoningEffort = options?.reasoningEffort || "medium";
   const mcpServers = options?.mcpServers || [];
   const sessionId = options?.sessionId;
   const specialty = options?.specialty || "normal";
+  const runtime = options?.runtime || "local";
 
   if (isTauri()) {
     return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled, reasoningEffort, mcpServers, cliType, sessionId, specialty });
   } else {
+    setAgentRuntime(id, runtime);
+    if (runtime === "local" && wsListeners.size > 0) {
+      void connectWebSocket();
+    }
     // Pass the client-generated ID so the server uses it
-    await fetchApi('/api/agents', {
+    await fetchApiForRuntime<void>(runtime, "/api/agents", {
       method: 'POST',
       body: JSON.stringify({
         id,
@@ -433,7 +684,9 @@ export async function killAgent(id: string): Promise<void> {
   if (isTauri()) {
     return tauriInvoke("kill_agent", { id });
   } else {
-    await fetchApi(`/api/agents/${id}`, { method: 'DELETE' });
+    const runtime = getAgentRuntime(id);
+    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}`, { method: "DELETE" });
+    removeAgentRuntime(id);
   }
 }
 
@@ -441,7 +694,8 @@ export async function stopAgent(id: string): Promise<void> {
   if (isTauri()) {
     return tauriInvoke("stop_agent", { id });
   } else {
-    await fetchApi(`/api/agents/${id}/stop`, { method: 'POST' });
+    const runtime = getAgentRuntime(id);
+    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/stop`, { method: "POST" });
   }
 }
 
@@ -563,10 +817,46 @@ export async function sendMessage(id: string, message: string, images?: string[]
       }
     }
 
-    await fetchApi(`/api/agents/${id}/messages`, {
+    const runtime = getAgentRuntime(id);
+    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify({ message, images: imageData }),
     });
+  }
+}
+
+const INTEGRATIONS_FILE_PATH = ".virtual-agency/integrations.md";
+
+export async function saveIntegrationsMarkdown(id: string, markdown: string): Promise<void> {
+  if (isTauri()) {
+    return tauriInvoke("save_integrations_markdown", { id, markdown });
+  }
+
+  const runtime = getAgentRuntime(id);
+  await fetchApiForRuntime<void>(runtime, `/api/files/write/${id}`, {
+    method: "POST",
+    body: JSON.stringify({
+      path: INTEGRATIONS_FILE_PATH,
+      content: markdown,
+    }),
+  });
+}
+
+export async function loadIntegrationsMarkdown(id: string): Promise<string> {
+  if (isTauri()) {
+    return tauriInvoke("load_integrations_markdown", { id });
+  }
+
+  try {
+    const runtime = getAgentRuntime(id);
+    const response = await fetchApiForRuntime<{ content?: string }>(runtime, `/api/files/read/${id}`, {
+      method: "POST",
+      body: JSON.stringify({ path: INTEGRATIONS_FILE_PATH }),
+    });
+    return typeof response?.content === "string" ? response.content : "";
+  } catch {
+    // Missing file is expected before first save.
+    return "";
   }
 }
 
@@ -574,8 +864,22 @@ export async function listAgents(): Promise<string[]> {
   if (isTauri()) {
     return tauriInvoke("list_agents");
   } else {
-    const agents = await fetchApi<Array<{ id: string }>>('/api/agents');
-    return agents.map(a => a.id);
+    const all = new Set<string>();
+    try {
+      const local = await fetchApi<Array<{ id: string }>>("/api/agents");
+      local.forEach((agent) => all.add(agent.id));
+    } catch {
+      // ignore local errors
+    }
+    if (hasHostedAgentsMapped()) {
+      try {
+        const hosted = await fetchHostedApi<Array<{ id: string }>>("/api/hosting/va/api/agents");
+        hosted.forEach((agent) => all.add(agent.id));
+      } catch {
+        // ignore hosted errors
+      }
+    }
+    return Array.from(all);
   }
 }
 
@@ -597,7 +901,8 @@ export async function updateAgentSettings(
       mcpServers: options.mcpServers,
     });
   } else {
-    await fetchApi(`/api/agents/${id}`, {
+    const runtime = getAgentRuntime(id);
+    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({
         model: options.model,
@@ -609,20 +914,111 @@ export async function updateAgentSettings(
   }
 }
 
+export interface AgentTelegramSettings {
+  enabled: boolean;
+  polling: boolean;
+  connected: boolean;
+  has_token: boolean;
+  allowed_handle: string;
+  allowed_chat_ids: number[];
+  send_typing: boolean;
+  send_updates: boolean;
+  queue_depth: number;
+  has_active_turn: boolean;
+  last_error: string | null;
+  last_update_id: number | null;
+}
+
+export interface SetAgentTelegramRequest {
+  enabled: boolean;
+  bot_token?: string;
+  allowed_handle: string;
+  send_typing?: boolean;
+  send_updates?: boolean;
+}
+
+export async function getAgentTelegramSettings(id: string): Promise<AgentTelegramSettings> {
+  if (isTauri()) {
+    throw new Error("Telegram settings are only available in browser/server mode.");
+  }
+  const runtime = getAgentRuntime(id);
+  return fetchApiForRuntime<AgentTelegramSettings>(runtime, `/api/agents/${id}/telegram`);
+}
+
+export async function setAgentTelegramSettings(
+  id: string,
+  input: SetAgentTelegramRequest
+): Promise<AgentTelegramSettings> {
+  if (isTauri()) {
+    throw new Error("Telegram settings are only available in browser/server mode.");
+  }
+  const runtime = getAgentRuntime(id);
+  return fetchApiForRuntime<AgentTelegramSettings>(runtime, `/api/agents/${id}/telegram`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteAgentTelegramSettings(id: string): Promise<void> {
+  if (isTauri()) {
+    throw new Error("Telegram settings are only available in browser/server mode.");
+  }
+  const runtime = getAgentRuntime(id);
+  await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/telegram`, {
+    method: "DELETE",
+  });
+}
+
 export interface CliStatus {
   installed: boolean;
   path: string | null;
   version: string | null;
 }
 
-export async function getCliStatus(): Promise<CliStatus> {
+export interface CliStatusOptions {
+  forceRescan?: boolean;
+  includePortScan?: boolean;
+}
+
+export async function getCliStatus(options: CliStatusOptions = {}): Promise<CliStatus> {
   if (isTauri()) {
     return tauriInvoke("get_cli_status");
   } else {
-    // In browser mode, check server health as a proxy for CLI status
-    // Let errors propagate so the modal knows the server isn't running
-    await fetchApi('/api/health');
-    return { installed: true, path: 'server', version: null };
+    // In browser mode, check local server first, then hosted control-plane health.
+    try {
+      const base = await getServerHttpBaseUrl({
+        forceRescan: options.forceRescan,
+        includePortScan: options.includePortScan,
+      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2500);
+      try {
+        const response = await fetch(`${base}/api/health`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          return { installed: true, path: "server", version: null };
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {
+      // ignore local health errors and fall back to hosted check
+    }
+
+    try {
+      const hosted = await fetchHostedApi<HostedServerStateResponse>("/api/hosting/me", {
+        method: "GET",
+      });
+      if (hosted?.server && hosted.server.status !== "deleted") {
+        return { installed: true, path: "hosted-server", version: null };
+      }
+    } catch {
+      // ignore hosted errors
+    }
+
+    return { installed: false, path: null, version: null };
   }
 }
 
@@ -641,6 +1037,9 @@ export interface SavedAgent {
   mcp_servers?: string[]; // List of MCP server IDs
   cli_type?: CliType; // CLI backend (claude or codex)
   specialty?: AgentSpecialty;
+  runtime?: AgentRuntime;
+  stay_at_desk?: boolean;
+  automations?: AgentAutomation[];
 }
 
 export interface WorkspaceData {
@@ -659,13 +1058,31 @@ export interface ServerAgentInfo {
   specialty: string;
   status?: string;
   session_id?: string | null;
+  runtime?: AgentRuntime;
 }
 
 export async function listAgentDetails(): Promise<ServerAgentInfo[]> {
   if (isTauri()) {
     return [];
   }
-  return fetchApi<ServerAgentInfo[]>("/api/agents");
+  const result: ServerAgentInfo[] = [];
+  try {
+    const local = await fetchApi<ServerAgentInfo[]>("/api/agents");
+    result.push(...local.map((agent) => ({ ...agent, runtime: "local" as AgentRuntime })));
+  } catch {
+    // ignore local errors
+  }
+  if (hasHostedAgentsMapped()) {
+    try {
+      const hosted = await fetchHostedApi<ServerAgentInfo[]>("/api/hosting/va/api/agents");
+      result.push(
+        ...hosted.map((agent) => ({ ...agent, runtime: "hosted" as AgentRuntime })),
+      );
+    } catch {
+      // ignore hosted errors
+    }
+  }
+  return result;
 }
 
 export interface ServerTerminalInfo {
@@ -676,12 +1093,22 @@ export interface ServerTerminalInfo {
 export async function listTerminals(): Promise<ServerTerminalInfo[]> {
   // Browser-only for now; desktop can add a Tauri command later if needed.
   if (isTauri()) return [];
+  const result: ServerTerminalInfo[] = [];
   try {
-    return fetchApi<ServerTerminalInfo[]>("/api/terminals");
+    const local = await fetchApi<ServerTerminalInfo[]>("/api/terminals");
+    result.push(...local);
   } catch (err) {
     console.warn("[api] Failed to list terminals:", err);
-    return [];
   }
+  if (hasHostedAgentsMapped()) {
+    try {
+      const hosted = await fetchHostedApi<ServerTerminalInfo[]>("/api/hosting/va/api/terminals");
+      result.push(...hosted);
+    } catch (err) {
+      console.warn("[api] Failed to list hosted terminals:", err);
+    }
+  }
+  return result;
 }
 
 const WORKSPACE_STORAGE_KEY = 'virtual-agency-workspace';
@@ -718,6 +1145,7 @@ export interface AppSettings {
   auto_save_enabled: boolean;
   auto_save_interval_seconds: number;
   default_working_directory: string | null;
+  default_agent_runtime: AgentRuntime;
 }
 
 const SETTINGS_STORAGE_KEY = 'virtual-agency-settings';
@@ -728,6 +1156,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   auto_save_enabled: true,
   auto_save_interval_seconds: 60,
   default_working_directory: null,
+  default_agent_runtime: "local",
 };
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
@@ -755,6 +1184,88 @@ export async function getSettingsPath(): Promise<string> {
   }
 }
 
+export interface HostedServerInfo {
+  id: string;
+  name: string;
+  status: string;
+  ipAddress: string | null;
+  runtimeBaseUrl: string | null;
+  hostedApiBaseUrl: string;
+  sshPublicKey: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastError: string | null;
+  pairingCode: string | null;
+  pairingExpiresAt: string | null;
+}
+
+export interface HostedServerStateResponse {
+  server: HostedServerInfo | null;
+  hostedSubscriptionActive: boolean;
+  hostedSubscriptionStatus: string | null;
+  hostedSubscriptionPeriodEnd: number | null;
+}
+
+export async function getHostedServerState(): Promise<HostedServerStateResponse> {
+  if (isTauri()) {
+    throw new Error("Hosted server management is browser-only.");
+  }
+  return fetchHostedApi<HostedServerStateResponse>("/api/hosting/me", {
+    method: "GET",
+  });
+}
+
+export async function createHostedCheckoutSession(): Promise<{ url: string }> {
+  if (isTauri()) {
+    throw new Error("Hosted checkout is browser-only.");
+  }
+  return fetchHostedApi<{ url: string }>("/api/hosting/create-checkout-session", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+async function hostedServerAction(path: string): Promise<HostedServerInfo> {
+  const payload = await fetchHostedApi<{ server: HostedServerInfo }>(path, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  return payload.server;
+}
+
+export async function provisionHostedServer(): Promise<HostedServerInfo> {
+  return hostedServerAction("/api/hosting/server/provision");
+}
+
+export async function startHostedServer(): Promise<HostedServerInfo> {
+  return hostedServerAction("/api/hosting/server/start");
+}
+
+export async function stopHostedServer(): Promise<HostedServerInfo> {
+  return hostedServerAction("/api/hosting/server/stop");
+}
+
+export async function rebuildHostedServer(): Promise<HostedServerInfo> {
+  return hostedServerAction("/api/hosting/server/rebuild");
+}
+
+export async function destroyHostedServer(): Promise<HostedServerInfo> {
+  return hostedServerAction("/api/hosting/server/destroy");
+}
+
+export async function rotateHostedPairingCode(): Promise<{
+  pairingCode: string;
+  pairingExpiresAt: string;
+}> {
+  return fetchHostedApi<{ pairingCode: string; pairingExpiresAt: string }>(
+    "/api/hosting/server/pairing-code",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
 // Directory browsing (browser mode only - uses local server)
 export interface DirEntry {
   name: string;
@@ -768,7 +1279,10 @@ export interface BrowseResponse {
   entries: DirEntry[];
 }
 
-export async function browseDirectory(path?: string): Promise<BrowseResponse> {
+export async function browseDirectory(
+  path?: string,
+  runtime: AgentRuntime = "local",
+): Promise<BrowseResponse> {
   const params = path ? `?path=${encodeURIComponent(path)}` : '';
-  return fetchApi<BrowseResponse>(`/api/browse${params}`);
+  return fetchApiForRuntime<BrowseResponse>(runtime, `/api/browse${params}`);
 }

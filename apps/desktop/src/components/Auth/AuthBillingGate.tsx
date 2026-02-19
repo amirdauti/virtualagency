@@ -1,6 +1,7 @@
 import { SignedIn, SignedOut, SignIn, UserButton, useAuth } from "@clerk/clerk-react";
 import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { setHostedAuthTokenProvider } from "../../lib/api";
 
 type BillingMe = {
   active: boolean;
@@ -51,6 +52,18 @@ export function AuthBillingGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     getTokenRef.current = getToken;
   }, [getToken]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) {
+      setHostedAuthTokenProvider(null);
+      return;
+    }
+
+    setHostedAuthTokenProvider(async () => getTokenRef.current());
+    return () => {
+      setHostedAuthTokenProvider(null);
+    };
+  }, [isLoaded, isSignedIn]);
 
   const baseUrl = useMemo(() => {
     const envUrl = (import.meta as any).env?.VITE_BILLING_API_URL as string | undefined;

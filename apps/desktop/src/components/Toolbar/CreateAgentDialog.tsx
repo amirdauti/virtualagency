@@ -1,8 +1,26 @@
-import { useState, memo, useCallback, useEffect, useRef } from "react";
+import { useState, memo, useCallback, useLayoutEffect, useRef } from "react";
 import { Modal } from "../common/Modal";
-import { createAgent, isTauri, browseDirectory, BrowseResponse, ClaudeModel, CodexModel, CliType, ReasoningEffort } from "../../lib/api";
+import {
+  createAgent,
+  isTauri,
+  browseDirectory,
+  BrowseResponse,
+  ClaudeModel,
+  CodexModel,
+  CliType,
+  ReasoningEffort,
+} from "../../lib/api";
 import { useAgentStore } from "../../stores/agentStore";
-import { generateId, AVATAR_OPTIONS, AvatarId, MCP_SERVERS, MCPServerId, AgentSpecialty } from "@virtual-agency/shared";
+import { useSettingsStore } from "../../stores/settingsStore";
+import {
+  generateId,
+  AVATAR_OPTIONS,
+  AvatarId,
+  MCP_SERVERS,
+  MCPServerId,
+  AgentSpecialty,
+  AgentRuntime,
+} from "@virtual-agency/shared";
 
 // CLI type configurations
 const CLI_TYPES: { value: CliType; name: string; description: string; badge?: string }[] = [
@@ -16,15 +34,27 @@ const AGENT_SPECIALTIES: { value: AgentSpecialty; name: string; description: str
   { value: "roblox_builder", name: "Roblox Builder", description: "Roblox development agent (Rojo + Luau)" },
 ];
 
+const AGENT_RUNTIMES: {
+  value: AgentRuntime;
+  name: string;
+  description: string;
+  badge?: string;
+}[] = [
+  { value: "local", name: "Local", description: "Run on this machine", badge: "Default" },
+  { value: "hosted", name: "Cloud Agents", description: "Run on your managed cloud server" },
+];
+
 // Claude model configurations
 const CLAUDE_MODELS: { value: ClaudeModel; name: string; description: string; badge?: string }[] = [
-  { value: "sonnet", name: "Sonnet", description: "Best balance of speed & capability", badge: "Recommended" },
-  { value: "opus", name: "Opus", description: "Maximum capability for complex tasks" },
+  // `claude --help` recommends using aliases (e.g. "sonnet") to always target the latest Sonnet.
+  { value: "sonnet", name: "Sonnet 4.5 (Latest)", description: "Best balance of speed & capability", badge: "Recommended" },
+  { value: "opus", name: "Opus 4.6 (Latest)", description: "Maximum capability for complex tasks", badge: "New" },
   { value: "haiku", name: "Haiku", description: "Fastest responses, simple tasks" },
 ];
 
 // Codex model configurations
 const CODEX_MODELS: { value: CodexModel; name: string; description: string; badge?: string }[] = [
+  { value: "gpt-5.3-codex", name: "GPT-5.3 Codex", description: "Latest frontier model", badge: "New" },
   { value: "gpt-5.2-codex", name: "GPT-5.2 Codex", description: "Latest frontier model", badge: "Recommended" },
   { value: "gpt-5.2", name: "GPT-5.2", description: "Latest frontier model (general)" },
   { value: "gpt-5.1-codex-max", name: "GPT-5.1 Codex Max", description: "Frontier agentic coding model" },
@@ -68,12 +98,29 @@ const DirectoryBrowser = memo(function DirectoryBrowser({
 
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Reset scroll position when navigating to a new directory
-  useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = 0;
-    }
-  }, [browserData?.current_path]);
+  const scrollToTop = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    // In some browsers, the scroll container can render at an old scroll offset
+    // for a frame when the list content changes (especially after a long scroll).
+    requestAnimationFrame(() => {
+      if (listRef.current) listRef.current.scrollTop = 0;
+    });
+  }, []);
+
+  // Reset scroll position when opening, while loading a new directory, and after contents change.
+  useLayoutEffect(() => {
+    scrollToTop();
+  }, [scrollToTop, showBrowser, browserLoading, browserData?.current_path, browserData?.entries.length]);
+
+  const handleNavigate = useCallback(
+    (path?: string) => {
+      scrollToTop();
+      onNavigate(path);
+    },
+    [onNavigate, scrollToTop],
+  );
 
   return (
     <div style={browserOverlayStyle}>
@@ -92,7 +139,7 @@ const DirectoryBrowser = memo(function DirectoryBrowser({
           <div style={browserPathStyle}>
             {browserData.parent_path && (
               <button
-                onClick={() => onNavigate(browserData.parent_path!)}
+                onClick={() => handleNavigate(browserData.parent_path!)}
                 style={browserBackButtonStyle}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -105,7 +152,10 @@ const DirectoryBrowser = memo(function DirectoryBrowser({
               {browserData.current_path}
             </span>
             <button
-              onClick={() => onSelect(browserData.current_path)}
+              onClick={() => {
+                scrollToTop();
+                onSelect(browserData.current_path);
+              }}
               style={browserSelectButtonStyle}
             >
               Select
@@ -113,7 +163,11 @@ const DirectoryBrowser = memo(function DirectoryBrowser({
           </div>
         )}
 
-        <div ref={listRef} style={browserListStyle}>
+        <div
+          key={browserData?.current_path ?? "__root__"}
+          ref={listRef}
+          style={browserListStyle}
+        >
           {browserLoading ? (
             <div style={{ padding: 32, textAlign: "center", color: "#6b7280" }}>
               <div style={{
@@ -134,7 +188,7 @@ const DirectoryBrowser = memo(function DirectoryBrowser({
             browserData?.entries.map((entry) => (
               <div
                 key={entry.path}
-                onClick={() => onNavigate(entry.path)}
+                onClick={() => handleNavigate(entry.path)}
                 style={browserItemStyle}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = "rgba(59, 130, 246, 0.1)";
@@ -164,12 +218,16 @@ interface CreateAgentDialogProps {
 }
 
 export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
+  const defaultAgentRuntime = useSettingsStore(
+    (state) => state.settings.default_agent_runtime,
+  );
   const [name, setName] = useState("");
   const [workingDir, setWorkingDir] = useState("");
+  const [runtime, setRuntime] = useState<AgentRuntime>(defaultAgentRuntime || "local");
   const [specialty, setSpecialty] = useState<AgentSpecialty>("normal");
   const [cliType, setCliType] = useState<CliType>("claude");
   const [claudeModel, setClaudeModel] = useState<ClaudeModel>("sonnet");
-  const [codexModel, setCodexModel] = useState<CodexModel>("gpt-5.2-codex");
+  const [codexModel, setCodexModel] = useState<CodexModel>("gpt-5.3-codex");
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [avatarId, setAvatarId] = useState<AvatarId>("default");
@@ -184,10 +242,15 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const selectAgent = useAgentStore((state) => state.selectAgent);
   const agentCount = useAgentStore((state) => state.agents.length);
 
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    setRuntime(defaultAgentRuntime || "local");
+  }, [isOpen, defaultAgentRuntime]);
+
   const loadDirectory = useCallback(async (path?: string) => {
     setBrowserLoading(true);
     try {
-      const data = await browseDirectory(path);
+      const data = await browseDirectory(path, runtime);
       setBrowserData(data);
     } catch (err) {
       console.error("Failed to browse directory:", err);
@@ -195,7 +258,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
     } finally {
       setBrowserLoading(false);
     }
-  }, []);
+  }, [runtime]);
 
   const handleBrowse = async () => {
     if (isTauri()) {
@@ -272,6 +335,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
         mcpServers,
         cliType,
         specialty,
+        runtime,
       });
 
       const agent = {
@@ -292,6 +356,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
         avatarId,
         mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
         cliType,
+        runtime,
       };
 
       addAgent(agent);
@@ -308,10 +373,11 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const handleClose = () => {
     setName("");
     setWorkingDir("");
+    setRuntime(defaultAgentRuntime || "local");
     setSpecialty("normal");
     setCliType("claude");
     setClaudeModel("sonnet");
-    setCodexModel("gpt-5.2-codex");
+    setCodexModel("gpt-5.3-codex");
     setThinkingEnabled(false);
     setReasoningEffort("medium");
     setAvatarId("default");
@@ -363,6 +429,23 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
             </FormField>
           </div>
         </section>
+
+        {/* Runtime Selection */}
+        {!isTauri() && (
+          <section>
+            <SectionHeader icon={<CloudIcon />} title="Runtime" />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginTop: 12 }}>
+              {AGENT_RUNTIMES.map((option) => (
+                <RuntimeCard
+                  key={option.value}
+                  option={option}
+                  selected={runtime === option.value}
+                  onClick={() => setRuntime(option.value)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Specialty Selection */}
         <section>
@@ -482,8 +565,8 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           </div>
         </section>
 
-        {/* MCP Servers - only for Claude CLI */}
-        {cliType === "claude" && MCP_SERVERS.length > 0 && (
+        {/* MCP Servers */}
+        {(cliType === "claude" || cliType === "codex") && MCP_SERVERS.length > 0 && (
           <section>
             <SectionHeader icon={<PlugIcon />} title="Capabilities" optional />
             <p style={{ margin: "8px 0 12px", fontSize: 13, color: "#6b7280" }}>
@@ -548,16 +631,16 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           </button>
         </div>
 
-        {/* Directory Browser Overlay */}
-        <DirectoryBrowser
-          showBrowser={showBrowser}
-          browserData={browserData}
-          browserLoading={browserLoading}
-          onClose={handleCloseBrowser}
-          onNavigate={loadDirectory}
-          onSelect={handleSelectDirectory}
-        />
       </div>
+      {/* Directory Browser Overlay */}
+      <DirectoryBrowser
+        showBrowser={showBrowser}
+        browserData={browserData}
+        browserLoading={browserLoading}
+        onClose={handleCloseBrowser}
+        onNavigate={loadDirectory}
+        onSelect={handleSelectDirectory}
+      />
     </Modal>
   );
 }
@@ -668,6 +751,60 @@ function CliTypeCard({ cliType, selected, onClick }: {
       </div>
       <div style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.4 }}>
         {cliType.description}
+      </div>
+    </button>
+  );
+}
+
+function RuntimeCard({
+  option,
+  selected,
+  onClick,
+}: {
+  option: { value: AgentRuntime; name: string; description: string; badge?: string };
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        position: "relative",
+        padding: "14px 12px",
+        background: selected ? "rgba(59, 130, 246, 0.15)" : "#0d0d14",
+        border: `2px solid ${selected ? "#3b82f6" : "#374151"}`,
+        borderRadius: 12,
+        cursor: "pointer",
+        transition: "all 0.2s ease",
+        textAlign: "left",
+      }}
+      onMouseEnter={(e) => {
+        if (!selected) e.currentTarget.style.borderColor = "#4b5563";
+      }}
+      onMouseLeave={(e) => {
+        if (!selected) e.currentTarget.style.borderColor = "#374151";
+      }}
+    >
+      {option.badge && (
+        <span style={{
+          position: "absolute",
+          top: -8,
+          right: 8,
+          padding: "2px 8px",
+          background: "linear-gradient(135deg, #3b82f6, #8b5cf6)",
+          borderRadius: 20,
+          fontSize: 10,
+          fontWeight: 600,
+          color: "white",
+        }}>
+          {option.badge}
+        </span>
+      )}
+      <div style={{ fontSize: 14, fontWeight: 600, color: selected ? "#60a5fa" : "#e5e7eb", marginBottom: 4 }}>
+        {option.name}
+      </div>
+      <div style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.4 }}>
+        {option.description}
       </div>
     </button>
   );
@@ -947,6 +1084,16 @@ function UserIcon() {
   );
 }
 
+function CloudIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25" />
+      <path d="m8 16 4-4 4 4" />
+      <path d="M12 12v9" />
+    </svg>
+  );
+}
+
 function BrainIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1082,6 +1229,8 @@ const browserOverlayStyle: React.CSSProperties = {
   zIndex: 10,
   display: "flex",
   flexDirection: "column",
+  overflow: "hidden",
+  overscrollBehavior: "contain",
   animation: "slideIn 0.2s ease-out",
 };
 
@@ -1089,7 +1238,7 @@ const browserContainerStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   height: "100%",
-  minHeight: 350,
+  minHeight: 0,
 };
 
 const browserHeaderStyle: React.CSSProperties = {
@@ -1150,7 +1299,9 @@ const browserSelectButtonStyle: React.CSSProperties = {
 
 const browserListStyle: React.CSSProperties = {
   flex: 1,
+  minHeight: 0,
   overflow: "auto",
+  overscrollBehavior: "contain",
   padding: "8px 0",
 };
 

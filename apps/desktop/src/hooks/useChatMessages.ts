@@ -2,12 +2,7 @@ import { useCallback, useRef } from "react";
 import { useAgentOutputListener } from "./useTauriEvents";
 import { useChatStore, ChatMessage } from "../stores/chatStore";
 import { useAgentStore } from "../stores/agentStore";
-import { getServerHttpBaseUrl } from "../lib/api";
-
-async function getApiBase(): Promise<string> {
-  const resolved = await getServerHttpBaseUrl();
-  return resolved || "http://127.0.0.1:1337";
-}
+import { fetchAgentApi } from "../lib/api";
 const MAX_DIFF_PREVIEW_CHARS = 20_000;
 const MAX_DIFF_PREVIEW_LINES = 400;
 const MAX_FILE_CACHE_CHARS = 200_000;
@@ -813,15 +808,10 @@ function toWorkspaceRelativePath(path: string, workingDir?: string): string {
 
 async function readWorkspaceFile(agentId: string, path: string): Promise<string | null> {
   try {
-    const base = await getApiBase();
-    const response = await fetch(`${base}/api/files/read/${agentId}`, {
+    const data = await fetchAgentApi<{ content?: string }>(agentId, `/api/files/read/${agentId}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),
     });
-
-    if (!response.ok) return null;
-    const data = (await response.json()) as { content?: string };
     return typeof data.content === "string" ? data.content : null;
   } catch {
     return null;
@@ -830,15 +820,10 @@ async function readWorkspaceFile(agentId: string, path: string): Promise<string 
 
 async function readWorkspaceGitFile(agentId: string, path: string): Promise<string | null> {
   try {
-    const base = await getApiBase();
-    const response = await fetch(`${base}/api/files/read_git/${agentId}`, {
+    const data = await fetchAgentApi<{ content?: string }>(agentId, `/api/files/read_git/${agentId}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),
     });
-
-    if (!response.ok) return null;
-    const data = (await response.json()) as { content?: string };
     return typeof data.content === "string" ? data.content : null;
   } catch {
     return null;

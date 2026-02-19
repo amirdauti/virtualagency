@@ -3,6 +3,7 @@ import { MCPServerId } from "./mcpServers";
 export type AgentStatus = "idle" | "thinking" | "working" | "error";
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export type CodexModel =
+  | "gpt-5.3-codex"
   | "gpt-5.2-codex"
   | "gpt-5.2"
   | "gpt-5.1-codex-max"
@@ -15,8 +16,20 @@ export type CodexModel =
   | "o4-mini"
   | "gpt-4.1";
 export type CliType = "claude" | "codex";
+export type AgentRuntime = "local" | "hosted";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type AgentSpecialty = "normal" | "roblox_builder";
+
+export interface AgentAutomation {
+  id: string;
+  taskDescription: string;
+  prompt: string;
+  intervalMinutes: number;
+  enabled: boolean;
+  createdAt: string;
+  lastRunAt?: string;
+  nextRunAt: string;
+}
 
 export interface Position {
   x: number;
@@ -48,24 +61,6 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     scale: 1.0,
   },
   {
-    id: "supermodel",
-    name: "Supermodel",
-    path: "/models/avatars/animated_supermodel_catwalk_walking_loop.glb",
-    scale: 1.2,
-    // Avoid idling in the catwalk loop; only animate while walking.
-    idleAnims: ["idle", "stand", "Idle", "Stand"],
-    walkAnims: ["catwalk", "walk", "run", "locomotion", "Catwalk", "Walk", "Run"],
-  },
-  {
-    id: "astronaut",
-    name: "Astronaut",
-    path: "/models/avatars/astronaut_character_stylized_rigged_free_model.glb",
-    scale: 1.2,
-    disableFootprintClamp: true,
-    pose: "armsDown",
-    poseOnlyIfNoAnimations: false,
-  },
-  {
     id: "paladin",
     name: "Darien the Paladin",
     path: "/models/avatars/darien_the_paladin_moba_character.glb",
@@ -76,18 +71,11 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
     name: "Humanoid Avatar",
     path: "/models/avatars/humanoid_avatar_with_rig.glb",
     scale: 1.0,
-  },
-  {
-    id: "punk_demon",
-    name: "Punk Demon",
-    path: "/models/avatars/neverblink__punk_demon.glb",
-    scale: 1.0,
-  },
-  {
-    id: "one_armed_hero",
-    name: "One-Armed Hero",
-    path: "/models/avatars/one-armed_hero.glb",
-    scale: 1.0,
+    // Only play an idle animation if the file explicitly provides one. Otherwise,
+    // some rigs' only animation is a walk cycle (often named ambiguously), which
+    // would look like "walking in place" while idle.
+    idleAnims: ["idle", "stand", "Idle", "Stand"],
+    walkAnims: ["walk", "run", "locomotion", "Walk", "Run", "Locomotion"],
   },
   {
     id: "rpm_male",
@@ -129,4 +117,7 @@ export interface Agent {
   mcpServers?: MCPServerId[]; // List of enabled MCP server IDs
   sessionId?: string; // CLI session ID for conversation continuity
   cliType?: CliType; // CLI backend to use (claude or codex)
+  runtime?: AgentRuntime; // Execution runtime (local process or hosted VPS)
+  stayAtDesk?: boolean; // Keep the agent at a desk even while idle/error
+  automations?: AgentAutomation[]; // Recurring scheduled tasks for the agent
 }

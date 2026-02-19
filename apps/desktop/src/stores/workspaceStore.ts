@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useAgentStore } from "./agentStore";
+import { useTerminalStore } from "./terminalStore";
 import {
   saveWorkspace,
   loadWorkspace,
@@ -8,6 +9,9 @@ import {
   createAgent,
   isTauri,
   listAgentDetails,
+  listTerminals,
+  setAgentRuntime,
+  replaceAgentRuntimeMap,
 } from "../lib/api";
 import { MCP_SERVERS } from "@virtual-agency/shared";
 import type { Agent, MCPServerId } from "@virtual-agency/shared";
@@ -33,6 +37,10 @@ function coerceMcpServers(value?: string[]): MCPServerId[] | undefined {
   return filtered.length > 0 ? filtered : undefined;
 }
 
+function normalizeWorkingDir(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+}
+
 // Convert Agent to SavedAgent format for persistence
 function agentToSaved(agent: Agent): SavedAgent {
   return {
@@ -49,6 +57,9 @@ function agentToSaved(agent: Agent): SavedAgent {
     mcp_servers: agent.mcpServers,
     cli_type: agent.cliType,
     specialty: agent.specialty,
+    runtime: agent.runtime || "local",
+    stay_at_desk: agent.stayAtDesk,
+    automations: agent.automations,
   };
 }
 
@@ -77,9 +88,12 @@ function savedToAgent(saved: SavedAgent, index: number): Agent {
     thinkingEnabled: saved.thinking_enabled,
     reasoningEffort: saved.reasoning_effort,
     specialty: saved.specialty || "normal",
+    runtime: saved.runtime === "hosted" ? "hosted" : "local",
     sessionId: saved.session_id,
     mcpServers: coerceMcpServers(saved.mcp_servers),
     cliType: saved.cli_type || inferCliTypeFromModel(saved.model),
+    stayAtDesk: saved.stay_at_desk === true,
+    automations: Array.isArray(saved.automations) ? saved.automations : undefined,
   };
 }
 
@@ -115,6 +129,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
       // Clear existing agents first to avoid duplicates
       agentStore.clearAllAgents();
+      replaceAgentRuntimeMap({});
 
       if (data && data.agents.length > 0) {
         // Load saved agents and spawn their CLI processes
@@ -132,11 +147,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
               cliType: agent.cliType,
               specialty: agent.specialty,
               sessionId: agent.sessionId, // Pass session ID to resume conversation
+              runtime: agent.runtime,
             });
+            setAgentRuntime(agent.id, agent.runtime || "local");
             agentStore.addAgent(agent);
           } catch (err) {
             console.error(`Failed to spawn agent ${agent.name}:`, err);
             // Add agent anyway but mark as error state
+            setAgentRuntime(agent.id, agent.runtime || "local");
             agentStore.addAgent({ ...agent, status: "error" });
           }
         }
@@ -164,7 +182,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
               cliType: a.cli_type === "codex" ? "codex" : "claude",
               specialty: a.specialty === "roblox_builder" ? "roblox_builder" : "normal",
               sessionId: a.session_id || undefined,
+              runtime: a.runtime === "hosted" ? "hosted" : "local",
             });
+            setAgentRuntime(a.id, a.runtime === "hosted" ? "hosted" : "local");
           }
         } catch (err) {
           console.warn("[workspace] Failed to load agents from server snapshot:", err);
@@ -182,15 +202,65 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
             if (!server) continue;
             const nextStatus = toClientStatus(server.status);
             const nextSessionId = server.session_id || undefined;
+            const nextRuntime = server.runtime === "hosted" ? "hosted" : "local";
             const updates: Partial<Agent> = {};
             if (nextStatus && nextStatus !== agent.status) updates.status = nextStatus;
             if (nextSessionId && nextSessionId !== agent.sessionId) updates.sessionId = nextSessionId;
+            if (nextRuntime !== (agent.runtime || "local")) updates.runtime = nextRuntime;
             if (Object.keys(updates).length > 0) {
               agentStore.updateAgent(agent.id, updates);
             }
+            setAgentRuntime(agent.id, nextRuntime);
           }
         } catch (err) {
           console.warn("[workspace] Failed to sync agent runtime snapshot:", err);
+        }
+      }
+
+      // Browser mode: restore existing terminal sessions after refresh by querying the server.
+      // The server's terminal list only includes {id, working_dir}, so we associate terminals to
+      // agents by matching the working directory.
+      if (!isTauri()) {
+        try {
+          const terminals = await listTerminals();
+          const terminalStore = useTerminalStore.getState();
+          terminalStore.clearAllTerminals();
+
+          const currentAgents = useAgentStore.getState().agents;
+          const agentIdsByDir = new Map<string, string[]>();
+          for (const agent of currentAgents) {
+            const key = normalizeWorkingDir(agent.workingDirectory);
+            const existing = agentIdsByDir.get(key) || [];
+            existing.push(agent.id);
+            agentIdsByDir.set(key, existing);
+          }
+
+          const grouped = new Map<string, Array<{ id: string; working_dir: string }>>();
+          for (const t of terminals) {
+            const key = normalizeWorkingDir(t.working_dir);
+            const bucket = grouped.get(key) || [];
+            bucket.push(t);
+            grouped.set(key, bucket);
+          }
+
+          for (const [dirKey, bucket] of grouped.entries()) {
+            const agentIds = agentIdsByDir.get(dirKey);
+            if (!agentIds || agentIds.length === 0) continue;
+            const agentId = agentIds[0];
+
+            // Stable ordering to keep names consistent across refreshes.
+            bucket.sort((a, b) => a.id.localeCompare(b.id));
+            for (let i = 0; i < bucket.length; i++) {
+              const t = bucket[i];
+              terminalStore.addTerminal(agentId, {
+                id: t.id,
+                workingDir: t.working_dir,
+                name: `Terminal ${i + 1}`,
+              });
+            }
+          }
+        } catch (err) {
+          console.warn("[workspace] Failed to restore terminals from server:", err);
         }
       }
 
@@ -211,7 +281,7 @@ function toClientStatus(status?: string): "idle" | "thinking" | "working" | "err
     case "error":
       return "error";
     case "exited":
-      return "error";
+      return "idle";
     case "idle":
     default:
       return "idle";

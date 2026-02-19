@@ -48,6 +48,7 @@ export interface SavedAgent {
   name: string;
   working_directory: string;
   position: { x: number; y: number; z: number };
+  stay_at_desk?: boolean;
 }
 
 export interface WorkspaceData {
@@ -77,6 +78,7 @@ export interface AppSettings {
   auto_save_enabled: boolean;
   auto_save_interval_seconds: number;
   default_working_directory: string | null;
+  default_agent_runtime: "local" | "hosted";
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {

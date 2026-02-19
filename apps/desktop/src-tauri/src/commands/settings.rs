@@ -11,6 +11,12 @@ pub struct AppSettings {
     pub auto_save_enabled: bool,
     pub auto_save_interval_seconds: u32,
     pub default_working_directory: Option<String>,
+    #[serde(default = "default_agent_runtime")]
+    pub default_agent_runtime: String,
+}
+
+fn default_agent_runtime() -> String {
+    "local".to_string()
 }
 
 impl Default for AppSettings {
@@ -21,6 +27,7 @@ impl Default for AppSettings {
             auto_save_enabled: true,
             auto_save_interval_seconds: 30,
             default_working_directory: None,
+            default_agent_runtime: default_agent_runtime(),
         }
     }
 }

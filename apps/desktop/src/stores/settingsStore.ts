@@ -20,6 +20,7 @@ const defaultSettings: AppSettings = {
   auto_save_enabled: true,
   auto_save_interval_seconds: 30,
   default_working_directory: null,
+  default_agent_runtime: "local",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

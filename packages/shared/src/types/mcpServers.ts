@@ -8,6 +8,7 @@
  */
 
 export type MCPServerId =
+  | "dritan"
   | "playwright"
   | "context7"
   | "memory"
@@ -36,6 +37,14 @@ export interface MCPServerDefinition {
  * All servers have been verified to exist and are actively maintained
  */
 export const MCP_SERVERS: MCPServerDefinition[] = [
+  {
+    id: "dritan",
+    name: "Dritan Solana",
+    description: "Solana trading and wallet intelligence tools, including token snapshots, swaps, holdings, performance, and live market/wallet streams.",
+    npmPackage: "@dritan/mcp",
+    category: "automation",
+    requiresConfig: false,
+  },
   {
     id: "playwright",
     name: "Playwright",

@@ -38,7 +38,10 @@ fn build_codex_mcp_overrides(mcp_servers: &[String]) -> Vec<String> {
 
     for server_id in mcp_servers {
         let Some(npm_package) = get_mcp_server_package(server_id) else {
-            tracing::warn!("[AgentProcess] Unknown MCP server id ignored: {}", server_id);
+            tracing::warn!(
+                "[AgentProcess] Unknown MCP server id ignored: {}",
+                server_id
+            );
             continue;
         };
 
@@ -79,7 +82,8 @@ impl CliType {
     }
 }
 
-const ROBLOX_BUILDER_SYSTEM_PROMPT: &str = include_str!("../../../prompts/roblox_builder_system_prompt.txt");
+const ROBLOX_BUILDER_SYSTEM_PROMPT: &str =
+    include_str!("../../../prompts/roblox_builder_system_prompt.txt");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -132,7 +136,11 @@ fn find_on_path(cmd: &str) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         fn ext_rank(p: &PathBuf) -> u8 {
-            match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
+            match p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+            {
                 Some(ref e) if e == "exe" => 0,
                 Some(ref e) if e == "cmd" => 1,
                 Some(ref e) if e == "bat" => 2,
@@ -175,7 +183,10 @@ fn find_on_path(cmd: &str) -> Option<PathBuf> {
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
             // Machine PATH
-            if let Some(v) = read_path(hklm, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") {
+            if let Some(v) = read_path(
+                hklm,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            ) {
                 values.push(v);
             }
             // User PATH
@@ -244,10 +255,7 @@ fn find_on_path(cmd: &str) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn find_cli_via_npm_prefix(bin: &str) -> Option<PathBuf> {
-    let output = Command::new("npm")
-        .args(["prefix", "-g"])
-        .output()
-        .ok()?;
+    let output = Command::new("npm").args(["prefix", "-g"]).output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -282,13 +290,20 @@ fn windows_user_profile_from_working_dir(working_dir: Option<&str>) -> Option<Pa
         return Some(PathBuf::from(format!("{}\\Users\\{}", parts[0], parts[2])));
     }
     if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("documents and settings") {
-        return Some(PathBuf::from(format!("{}\\Documents and Settings\\{}", parts[0], parts[2])));
+        return Some(PathBuf::from(format!(
+            "{}\\Documents and Settings\\{}",
+            parts[0], parts[2]
+        )));
     }
     None
 }
 
 #[cfg(windows)]
-fn push_windows_user_profile_candidates(candidates: &mut Vec<PathBuf>, user_profile: &PathBuf, bin: &str) {
+fn push_windows_user_profile_candidates(
+    candidates: &mut Vec<PathBuf>,
+    user_profile: &PathBuf,
+    bin: &str,
+) {
     let appdata = user_profile.join("AppData").join("Roaming");
     let localappdata = user_profile.join("AppData").join("Local");
 
@@ -298,10 +313,20 @@ fn push_windows_user_profile_candidates(candidates: &mut Vec<PathBuf>, user_prof
 
     // pnpm/yarn (best-effort)
     candidates.push(localappdata.join("pnpm").join(format!("{}.cmd", bin)));
-    candidates.push(localappdata.join("Yarn").join("bin").join(format!("{}.cmd", bin)));
+    candidates.push(
+        localappdata
+            .join("Yarn")
+            .join("bin")
+            .join(format!("{}.cmd", bin)),
+    );
 
     // bun (best-effort)
-    candidates.push(user_profile.join(".bun").join("bin").join(format!("{}.exe", bin)));
+    candidates.push(
+        user_profile
+            .join(".bun")
+            .join("bin")
+            .join(format!("{}.exe", bin)),
+    );
 }
 
 fn find_claude_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
@@ -329,12 +354,26 @@ fn find_claude_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
         }
         if let Ok(local) = env::var("LOCALAPPDATA") {
             candidates.push(PathBuf::from(&local).join("pnpm").join("claude.cmd"));
-            candidates.push(PathBuf::from(&local).join("Yarn").join("bin").join("claude.cmd"));
+            candidates.push(
+                PathBuf::from(&local)
+                    .join("Yarn")
+                    .join("bin")
+                    .join("claude.cmd"),
+            );
         }
         if let Ok(user) = env::var("USERPROFILE") {
-            candidates.push(PathBuf::from(user).join(".bun").join("bin").join("claude.exe"));
+            candidates.push(
+                PathBuf::from(user)
+                    .join(".bun")
+                    .join("bin")
+                    .join("claude.exe"),
+            );
         }
-        candidates.push(PathBuf::from("node_modules").join(".bin").join("claude.cmd"));
+        candidates.push(
+            PathBuf::from("node_modules")
+                .join(".bin")
+                .join("claude.cmd"),
+        );
     }
 
     #[cfg(not(windows))]
@@ -386,10 +425,20 @@ fn find_codex_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
         }
         if let Ok(local) = env::var("LOCALAPPDATA") {
             candidates.push(PathBuf::from(&local).join("pnpm").join("codex.cmd"));
-            candidates.push(PathBuf::from(&local).join("Yarn").join("bin").join("codex.cmd"));
+            candidates.push(
+                PathBuf::from(&local)
+                    .join("Yarn")
+                    .join("bin")
+                    .join("codex.cmd"),
+            );
         }
         if let Ok(user) = env::var("USERPROFILE") {
-            candidates.push(PathBuf::from(user).join(".bun").join("bin").join("codex.exe"));
+            candidates.push(
+                PathBuf::from(user)
+                    .join(".bun")
+                    .join("bin")
+                    .join("codex.exe"),
+            );
         }
         candidates.push(PathBuf::from("node_modules").join(".bin").join("codex.cmd"));
     }
@@ -442,10 +491,42 @@ pub struct AgentProcess {
     session_id: Arc<Mutex<Option<String>>>,
     current_child: Arc<Mutex<Option<Child>>>,
     images_sent_count: Arc<Mutex<u32>>,
+    control_api_base_url: Option<String>,
+    control_api_token: Option<String>,
     event_tx: mpsc::UnboundedSender<BroadcastMessage>,
 }
 
 impl AgentProcess {
+    fn maybe_attach_control_plane_hint(&self, message: &str) -> String {
+        if self.control_api_base_url.is_none() || self.control_api_token.is_none() {
+            return message.to_string();
+        }
+
+        let lower = message.to_ascii_lowercase();
+        let wants_orchestration = [
+            "create agent",
+            "new agent",
+            "spawn agent",
+            "delegate",
+            "project manager",
+            "project management",
+            "other agent",
+            "telegram",
+            "assign",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+
+        if !wants_orchestration {
+            return message.to_string();
+        }
+
+        format!(
+            "{}\n\n[Virtual Agency Control Plane]\nUse bash + curl for orchestration:\n- List agents: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/agents\n- Create agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/create-agent\n- Delegate one task and wait for completion (default): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/message-agent\n- Delegate to many agents (parallel supported): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delegate-many\n- Set Telegram on another agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-telegram\n- Publish a local app port and get a share URL: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/publish-app\nInclude header: x-va-agent-token: $VA_CONTROL_TOKEN.\nFor create-agent, collect from user first: cli_type (claude/codex), name, and working_dir.\nFor publish-app, collect target_agent_id and local_port first.\nBefore replying to the end user, wait for delegated tasks to complete and include what was done.\n",
+            message
+        )
+    }
+
     pub fn new(
         id: String,
         name: String,
@@ -456,6 +537,8 @@ impl AgentProcess {
         specialty: AgentSpecialty,
         mcp_servers: Vec<String>,
         cli_type: CliType,
+        control_api_base_url: Option<String>,
+        control_api_token: Option<String>,
         event_tx: mpsc::UnboundedSender<BroadcastMessage>,
         initial_session_id: Option<String>,
     ) -> Result<Self, String> {
@@ -475,6 +558,8 @@ impl AgentProcess {
             session_id: Arc::new(Mutex::new(initial_session_id)),
             current_child: Arc::new(Mutex::new(None)),
             images_sent_count: Arc::new(Mutex::new(0)),
+            control_api_base_url,
+            control_api_token,
             event_tx,
         })
     }
@@ -504,9 +589,14 @@ impl AgentProcess {
 
     pub fn send_message(&self, message: &str, images: &[String]) -> Result<(), String> {
         let cli_path = find_cli(&self.cli_type, Some(&self.working_dir))?;
+        let message_with_hint = self.maybe_attach_control_plane_hint(message);
 
         if !images.is_empty() {
-            tracing::debug!("[AgentProcess] Received {} image(s): {:?}", images.len(), images);
+            tracing::debug!(
+                "[AgentProcess] Received {} image(s): {:?}",
+                images.len(),
+                images
+            );
         }
 
         // Emit thinking status
@@ -517,11 +607,12 @@ impl AgentProcess {
             CliType::Claude => {
                 // Build the prompt with embedded image paths and metadata for Claude
                 let prompt = if images.is_empty() {
-                    message.to_string()
+                    message_with_hint.clone()
                 } else {
                     // Get current image count and update it
                     let (previous_count, new_total) = {
-                        let mut count_guard = self.images_sent_count.lock().map_err(|e| e.to_string())?;
+                        let mut count_guard =
+                            self.images_sent_count.lock().map_err(|e| e.to_string())?;
                         let prev = *count_guard;
                         let new_count = images.len() as u32;
                         *count_guard = prev + new_count;
@@ -552,7 +643,7 @@ impl AgentProcess {
                             {}",
                             images.len(),
                             image_list.join("\n"),
-                            message
+                            message_with_hint
                         )
                     } else {
                         format!(
@@ -567,7 +658,7 @@ impl AgentProcess {
                             new_total,
                             previous_count,
                             image_list.join("\n"),
-                            message
+                            message_with_hint
                         )
                     }
                 };
@@ -576,7 +667,9 @@ impl AgentProcess {
                 // cmd.exe command-line length limit when the CLI is installed as a `.cmd` shim.
                 // To avoid this, always send the prompt via stdin.
                 let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
-                let prompt = if self.specialty == AgentSpecialty::RobloxBuilder && session_id_opt.is_none() {
+                let prompt = if self.specialty == AgentSpecialty::RobloxBuilder
+                    && session_id_opt.is_none()
+                {
                     format!("{}\n\n---\n\n{}", ROBLOX_BUILDER_SYSTEM_PROMPT, prompt)
                 } else {
                     prompt
@@ -615,7 +708,10 @@ impl AgentProcess {
 
                     for server_id in &self.mcp_servers {
                         let Some(npm_package) = get_mcp_server_package(server_id) else {
-                            tracing::warn!("[AgentProcess] Unknown MCP server id ignored: {}", server_id);
+                            tracing::warn!(
+                                "[AgentProcess] Unknown MCP server id ignored: {}",
+                                server_id
+                            );
                             continue;
                         };
 
@@ -624,25 +720,30 @@ impl AgentProcess {
                             "command".to_string(),
                             serde_json::Value::String("npx".to_string()),
                         );
-                        server_cfg.insert(
-                            "args".to_string(),
-                            serde_json::json!(["-y", npm_package]),
-                        );
+                        server_cfg
+                            .insert("args".to_string(), serde_json::json!(["-y", npm_package]));
 
                         // Optional env injection for known servers
                         if server_id == "brave-search" {
                             if let Ok(key) = env::var("BRAVE_API_KEY") {
-                                server_cfg.insert("env".to_string(), serde_json::json!({ "BRAVE_API_KEY": key }));
+                                server_cfg.insert(
+                                    "env".to_string(),
+                                    serde_json::json!({ "BRAVE_API_KEY": key }),
+                                );
                             }
                         }
 
-                        mcp_servers_obj.insert(server_id.clone(), serde_json::Value::Object(server_cfg));
+                        mcp_servers_obj
+                            .insert(server_id.clone(), serde_json::Value::Object(server_cfg));
                     }
 
                     if !mcp_servers_obj.is_empty() {
                         let mcp_config = serde_json::Value::Object({
                             let mut root = serde_json::Map::new();
-                            root.insert("mcpServers".to_string(), serde_json::Value::Object(mcp_servers_obj));
+                            root.insert(
+                                "mcpServers".to_string(),
+                                serde_json::Value::Object(mcp_servers_obj),
+                            );
                             root
                         });
 
@@ -650,7 +751,10 @@ impl AgentProcess {
                         args.push(mcp_config.to_string());
                         args.push("--strict-mcp-config".to_string());
 
-                        tracing::info!("[AgentProcess] MCP servers enabled: {:?}", self.mcp_servers);
+                        tracing::info!(
+                            "[AgentProcess] MCP servers enabled: {:?}",
+                            self.mcp_servers
+                        );
                     }
                 }
 
@@ -660,10 +764,15 @@ impl AgentProcess {
                 // Build Codex CLI args
                 // Check if we have a session ID for continuation
                 let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
-                let prompt = if session_id_opt.is_none() && self.specialty == AgentSpecialty::RobloxBuilder {
-                    format!("{}\n\n---\n\n{}", ROBLOX_BUILDER_SYSTEM_PROMPT, message)
+                let prompt = if session_id_opt.is_none()
+                    && self.specialty == AgentSpecialty::RobloxBuilder
+                {
+                    format!(
+                        "{}\n\n---\n\n{}",
+                        ROBLOX_BUILDER_SYSTEM_PROMPT, message_with_hint
+                    )
                 } else {
-                    message.to_string()
+                    message_with_hint
                 };
                 let prompt_for_stdin = Some(prompt);
 
@@ -707,18 +816,25 @@ impl AgentProcess {
                 if supports_reasoning && !self.reasoning_effort.is_empty() {
                     // Insert before prompt (last element) or before session_id+prompt (last 2 elements for resume)
                     let insert_pos = if session_id_opt.is_some() {
-                        args.len() - 2  // Before session_id and prompt
+                        args.len() - 2 // Before session_id and prompt
                     } else {
-                        args.len() - 1  // Before prompt
+                        args.len() - 1 // Before prompt
                     };
                     args.insert(insert_pos, "-c".to_string());
-                    args.insert(insert_pos + 1, format!("model_reasoning_effort=\"{}\"", self.reasoning_effort));
+                    args.insert(
+                        insert_pos + 1,
+                        format!("model_reasoning_effort=\"{}\"", self.reasoning_effort),
+                    );
                 }
 
                 // Add MCP server configuration if any servers are enabled.
                 // Codex expects MCP servers via config overrides (TOML), not Claude's `--mcp-config` JSON.
                 if !self.mcp_servers.is_empty() {
-                    let insert_pos = if session_id_opt.is_some() { args.len() - 2 } else { args.len() - 1 };
+                    let insert_pos = if session_id_opt.is_some() {
+                        args.len() - 2
+                    } else {
+                        args.len() - 1
+                    };
                     let overrides = build_codex_mcp_overrides(&self.mcp_servers);
                     for kv in overrides.into_iter().rev() {
                         args.insert(insert_pos, kv);
@@ -741,7 +857,12 @@ impl AgentProcess {
             }
         };
 
-        tracing::debug!("[AgentProcess] Executing {} CLI: {} {:?}", cli_name, cli_path.display(), args);
+        tracing::debug!(
+            "[AgentProcess] Executing {} CLI: {} {:?}",
+            cli_name,
+            cli_path.display(),
+            args
+        );
 
         let mut cmd = {
             #[cfg(windows)]
@@ -805,6 +926,14 @@ impl AgentProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        if let Some(base_url) = &self.control_api_base_url {
+            cmd.env("VA_CONTROL_BASE_URL", base_url);
+        }
+        if let Some(token) = &self.control_api_token {
+            cmd.env("VA_CONTROL_TOKEN", token);
+        }
+        cmd.env("VA_AGENT_ID", &self.id);
+
         // On Unix, put the spawned CLI into its own process group so "stop" can
         // terminate the full tree (e.g., `codex` Node wrapper + native binary).
         #[cfg(unix)]
@@ -823,8 +952,7 @@ impl AgentProcess {
             }
         }
 
-        let mut child = match cmd.spawn()
-        {
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 self.emit_status(AgentStatus::Error);
@@ -877,11 +1005,13 @@ impl AgentProcess {
 
                                 if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
                                     let status = match msg_type {
-                                        "assistant" | "content_block_delta" | "content_block_start" => {
+                                        "assistant"
+                                        | "content_block_delta"
+                                        | "content_block_start" => Some(AgentStatus::Working),
+                                        // Codex JSONL events
+                                        "turn.started" | "item.started" | "item.completed" => {
                                             Some(AgentStatus::Working)
                                         }
-                                        // Codex JSONL events
-                                        "turn.started" | "item.started" | "item.completed" => Some(AgentStatus::Working),
                                         "turn.completed" => Some(AgentStatus::Idle),
                                         "turn.failed" => Some(AgentStatus::Error),
                                         "result" => {
@@ -907,10 +1037,12 @@ impl AgentProcess {
                                         if let Ok(mut guard) = status_arc.lock() {
                                             *guard = s.clone();
                                         }
-                                        let _ = tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
-                                            agent_id: agent_id.clone(),
-                                            status: s,
-                                        }));
+                                        let _ = tx.send(BroadcastMessage::AgentStatus(
+                                            AgentStatusChange {
+                                                agent_id: agent_id.clone(),
+                                                status: s,
+                                            },
+                                        ));
                                     }
                                 }
                             }
@@ -1045,7 +1177,11 @@ impl AgentProcess {
     }
 
     pub fn get_settings(&self) -> (String, bool, Vec<String>) {
-        (self.model.clone(), self.thinking_enabled, self.mcp_servers.clone())
+        (
+            self.model.clone(),
+            self.thinking_enabled,
+            self.mcp_servers.clone(),
+        )
     }
 }
 
@@ -1057,6 +1193,8 @@ impl Drop for AgentProcess {
 
 pub struct AgentManager {
     agents: HashMap<String, AgentProcess>,
+    control_api_base_url: Option<String>,
+    control_api_token: Option<String>,
     event_tx: mpsc::UnboundedSender<BroadcastMessage>,
 }
 
@@ -1064,8 +1202,15 @@ impl AgentManager {
     pub fn new(event_tx: mpsc::UnboundedSender<BroadcastMessage>) -> Self {
         Self {
             agents: HashMap::new(),
+            control_api_base_url: None,
+            control_api_token: None,
             event_tx,
         }
+    }
+
+    pub fn configure_control_plane(&mut self, base_url: String, token: String) {
+        self.control_api_base_url = Some(base_url);
+        self.control_api_token = Some(token);
     }
 
     pub fn create_agent(
@@ -1082,12 +1227,17 @@ impl AgentManager {
         session_id: Option<String>,
     ) -> Result<String, String> {
         // Use provided ID or generate a new one
-        let id = id.map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         // Idempotency: if an agent with this ID already exists, do not replace it.
         // This prevents killing long-running agents when the UI reloads and rehydrates state.
         if self.agents.contains_key(&id) {
-            tracing::info!("[AgentManager] Agent {} already exists; skipping create", id);
+            tracing::info!(
+                "[AgentManager] Agent {} already exists; skipping create",
+                id
+            );
             return Ok(id);
         }
 
@@ -1105,6 +1255,8 @@ impl AgentManager {
             specialty,
             mcp_servers,
             cli_type,
+            self.control_api_base_url.clone(),
+            self.control_api_token.clone(),
             self.event_tx.clone(),
             session_id,
         )?;
@@ -1136,7 +1288,18 @@ impl AgentManager {
         }
     }
 
-    pub fn list_agents(&self) -> Vec<(String, String, String, String, bool, Vec<String>, CliType, AgentSpecialty)> {
+    pub fn list_agents(
+        &self,
+    ) -> Vec<(
+        String,
+        String,
+        String,
+        String,
+        bool,
+        Vec<String>,
+        CliType,
+        AgentSpecialty,
+    )> {
         self.agents
             .iter()
             .map(|(id, agent)| {
@@ -1155,7 +1318,20 @@ impl AgentManager {
             .collect()
     }
 
-    pub fn list_agents_snapshot(&self) -> Vec<(String, String, String, String, bool, Vec<String>, CliType, AgentSpecialty, AgentStatus, Option<String>)> {
+    pub fn list_agents_snapshot(
+        &self,
+    ) -> Vec<(
+        String,
+        String,
+        String,
+        String,
+        bool,
+        Vec<String>,
+        CliType,
+        AgentSpecialty,
+        AgentStatus,
+        Option<String>,
+    )> {
         self.agents
             .iter()
             .map(|(id, agent)| {
@@ -1177,7 +1353,9 @@ impl AgentManager {
     }
 
     pub fn get_agent_runtime(&self, id: &str) -> Option<(AgentStatus, Option<String>)> {
-        self.agents.get(id).map(|agent| (agent.get_status(), agent.get_session_id()))
+        self.agents
+            .get(id)
+            .map(|agent| (agent.get_status(), agent.get_session_id()))
     }
 
     pub fn update_agent_settings(

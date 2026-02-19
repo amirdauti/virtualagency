@@ -98,4 +98,11 @@ impl AgentManager {
             None => Err("Agent not found".to_string()),
         }
     }
+
+    pub fn get_agent_working_dir(&self, id: &str) -> Result<String, String> {
+        match self.agents.get(id) {
+            Some(agent) => Ok(agent.working_dir.clone()),
+            None => Err("Agent not found".to_string()),
+        }
+    }
 }

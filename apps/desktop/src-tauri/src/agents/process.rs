@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter};
 
 fn get_mcp_server_package(id: &str) -> Option<&'static str> {
     match id {
+        "dritan" => Some("@dritan/mcp"),
         "playwright" => Some("@playwright/mcp"),
         "context7" => Some("@upstash/context7-mcp"),
         "memory" => Some("@modelcontextprotocol/server-memory"),
@@ -25,6 +26,38 @@ fn get_mcp_server_package(id: &str) -> Option<&'static str> {
         "shadcn" => Some("@jpisnice/shadcn-ui-mcp-server"),
         _ => None,
     }
+}
+
+fn toml_escape_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn build_codex_mcp_overrides(mcp_servers: &[String]) -> Vec<String> {
+    let mut overrides = Vec::new();
+
+    for server_id in mcp_servers {
+        let Some(npm_package) = get_mcp_server_package(server_id) else {
+            eprintln!("[AgentProcess] Unknown MCP server id ignored: {}", server_id);
+            continue;
+        };
+
+        overrides.push(format!("mcp_servers.{server_id}.command=\"npx\""));
+        overrides.push(format!(
+            "mcp_servers.{server_id}.args=[\"-y\",\"{}\"]",
+            toml_escape_string(npm_package)
+        ));
+
+        if server_id == "brave-search" {
+            if let Ok(key) = env::var("BRAVE_API_KEY") {
+                overrides.push(format!(
+                    "mcp_servers.{server_id}.env={{ BRAVE_API_KEY = \"{}\" }}",
+                    toml_escape_string(&key)
+                ));
+            }
+        }
+    }
+
+    overrides
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -538,6 +571,17 @@ impl AgentProcess {
                         insert_pos + 1,
                         format!("model_reasoning_effort=\"{}\"", self.reasoning_effort),
                     );
+                }
+
+                // Add MCP server configuration if any servers are enabled.
+                // Codex expects MCP servers via config overrides (TOML), not Claude's `--mcp-config` JSON.
+                if !self.mcp_servers.is_empty() {
+                    let insert_pos = if session_id_opt.is_some() { args.len() - 2 } else { args.len() - 1 };
+                    let overrides = build_codex_mcp_overrides(&self.mcp_servers);
+                    for kv in overrides.into_iter().rev() {
+                        args.insert(insert_pos, kv);
+                        args.insert(insert_pos, "-c".to_string());
+                    }
                 }
 
                 // Add images via -i flag for Codex

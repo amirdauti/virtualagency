@@ -6,7 +6,7 @@ import { clearTerminalOutputCallback, useTerminalOutputStore } from "./terminalO
 // Stable empty array to prevent infinite re-renders
 const EMPTY_TERMINALS: TerminalSession[] = [];
 
-export type TabType = "chat" | "output" | "terminal" | "files";
+export type TabType = "chat" | "terminal" | "files" | "integrations" | "telegram";
 
 interface TerminalState {
   // Map of agentId -> terminals for that agent
@@ -119,6 +119,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     })),
 
   getActiveTab: (agentId) => {
-    return get().activeTabByAgent[agentId] ?? "chat";
+    const tab = get().activeTabByAgent[agentId];
+    return tab === "terminal" || tab === "files" || tab === "integrations" || tab === "telegram" || tab === "chat" ? tab : "chat";
   },
 }));

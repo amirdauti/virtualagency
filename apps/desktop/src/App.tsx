@@ -3,41 +3,26 @@ import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { useAgentStore } from "./stores/agentStore";
-import { useAgentOutput } from "./hooks/useAgentOutput";
 import { useChatMessages } from "./hooks/useChatMessages";
 import { useTerminalOutputEvents } from "./hooks/useTerminalOutputEvents";
+import { useAgentAutomations } from "./hooks/useAgentAutomations";
 import { useWorkspaceInit } from "./hooks/useWorkspace";
 import { AgentPanel } from "./components/Panels/AgentPanel";
 import { WorkspacePanel } from "./components/Panels/WorkspacePanel";
 import { Toolbar } from "./components/Toolbar/Toolbar";
 import { AgentAvatar } from "./components/Canvas/AgentAvatar";
-import { OfficeEnvironment, getDeskPosition, LOUNGE_SLOTS, OFFICE_SIZE } from "./components/Canvas/OfficeEnvironment";
+import { OfficeEnvironment, getDeskPosition, LOUNGE_TARGETS, OFFICE_SIZE } from "./components/Canvas/OfficeEnvironment";
 import { CliSetupModal } from "./components/Setup/CliSetupModal";
 import { EditorView } from "./components/FileExplorer/EditorView";
 import { useFileExplorerStore } from "./stores/fileExplorerStore";
 import { AuthBillingGate } from "./components/Auth/AuthBillingGate";
 import { isTauri } from "./lib/api";
+import { useAgentStatusListener } from "./hooks/useTauriEvents";
 
-function mulberry32(seed: number) {
-  let t = seed >>> 0;
-  return () => {
-    t += 0x6D2B79F5;
-    let x = t;
-    x = Math.imul(x ^ (x >>> 15), x | 1);
-    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
+type LoungePose = "stand" | "sit_low" | "sit_high" | "arcade" | "vending";
 
-function shuffleWithSeed<T>(items: T[], seed: number): T[] {
-  const out = items.slice();
-  const rand = mulberry32(seed);
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
+const isDeskBound = (agent: { status: string; stayAtDesk?: boolean }) =>
+  agent.status === "working" || agent.status === "thinking" || agent.stayAtDesk === true;
 
 function Scene({
   onControlsStart,
@@ -52,22 +37,8 @@ function Scene({
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const selectAgent = useAgentStore((state) => state.selectAgent);
 
-  const loungeSeed = useMemo(() => {
-    if (typeof localStorage === "undefined") return 1;
-    const key = "virtual-agency-lounge-seed";
-    const existing = localStorage.getItem(key);
-    const parsed = existing ? Number(existing) : NaN;
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    const created = Math.floor(Math.random() * 2_000_000_000) + 1;
-    localStorage.setItem(key, String(created));
-    return created;
-  }, []);
-
-  const loungeSlots = useMemo(() => {
-    // Shuffle lounge slots so idle agents distribute "randomly" around the lounge,
-    // but keep it stable per-browser (seed stored in localStorage).
-    return shuffleWithSeed(LOUNGE_SLOTS, loungeSeed);
-  }, [loungeSeed]);
+  // Fixed lounge slots (24) so agents are easy to find and always face the city-view windows.
+  const loungeTargets = LOUNGE_TARGETS;
 
   // Keep the AgentPanel open when users click around the office (for camera movement, etc).
   // Provide an intentional "deselect" gesture instead (Shift+Click).
@@ -78,14 +49,17 @@ function Scene({
   };
 
   const { workingIndexById, idleIndexById } = useMemo(() => {
+    const compareCreated = (a: { createdAt?: string; id: string }, b: { createdAt?: string; id: string }) =>
+      (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id);
+
     const working = agents
-      .filter((a) => a.status === "working" || a.status === "thinking")
+      .filter((a) => isDeskBound(a))
       .slice()
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort(compareCreated);
     const idle = agents
-      .filter((a) => !(a.status === "working" || a.status === "thinking"))
+      .filter((a) => !isDeskBound(a))
       .slice()
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort(compareCreated);
 
     return {
       workingIndexById: new Map(working.map((a, i) => [a.id, i] as const)),
@@ -94,18 +68,17 @@ function Scene({
   }, [agents]);
 
   // Calculate agent positions based on status:
-  // - Working/thinking agents go to desks (unique desk slots).
-  // - Idle/error agents "lounge" around lounge furniture using shuffled lounge slots.
+  // - Working/thinking agents (and desk-locked agents) go to desks.
+  // - Other idle/error agents occupy fixed lounge slots (24) facing the city-view windows.
   const getAgentPosition = (agent: typeof agents[0]) => {
-    if (agent.status === "working" || agent.status === "thinking") {
+    if (isDeskBound(agent)) {
       const deskIndex = workingIndexById.get(agent.id) ?? 0;
       const deskPos = getDeskPosition(deskIndex);
-      return { x: deskPos.x, z: deskPos.z + 1.5 }; // Offset to sit at desk
+      return { x: deskPos.x, z: deskPos.z + 2.2 }; // Offset to sit at desk (avoid clipping into desk/chair)
     }
 
-    const idleIndex = idleIndexById.get(agent.id) ?? 0;
-    const slot = loungeSlots[idleIndex % loungeSlots.length];
-    return slot;
+    const base = loungeTargets[(idleIndexById.get(agent.id) ?? 0) % loungeTargets.length];
+    return base;
   };
 
   return (
@@ -126,10 +99,13 @@ function Scene({
       {/* Render all agents */}
       {agents.map((agent) => {
         const pos = getAgentPosition(agent);
+        const idle = isDeskBound(agent) ? undefined : (pos as { facingY: number; pose: LoungePose });
         return (
           <AgentAvatar
             key={agent.id}
             agent={{ ...agent, position: { ...agent.position, x: pos.x, z: pos.z } }}
+            loungeFacingY={idle?.facingY}
+            loungePose={idle?.pose}
             isSelected={selectedAgent?.id === agent.id}
             onClick={() => selectAgent(agent.id)}
           />
@@ -161,7 +137,7 @@ function App() {
   const [isCameraInteracting, setIsCameraInteracting] = useState(false);
   const cameraIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
-  const { getOutputForAgent, clearOutput } = useAgentOutput();
+  const updateAgent = useAgentStore((state) => state.updateAgent);
   const openFiles = useFileExplorerStore((state) => state.openFiles);
   const showEditor = openFiles.length > 0;
 
@@ -172,14 +148,18 @@ function App() {
   useChatMessages();
   // Buffer terminal output even when Terminal tab/panel is closed
   useTerminalOutputEvents();
-
-  const handleClearOutput = useCallback(() => {
-    if (selectedAgent) {
-      clearOutput(selectedAgent.id);
-    }
-  }, [selectedAgent, clearOutput]);
-
-  const outputLines = selectedAgent ? getOutputForAgent(selectedAgent.id) : [];
+  // Run recurring agent automations.
+  useAgentAutomations();
+  // Keep agent status in sync with backend lifecycle events.
+  useAgentStatusListener(
+    useCallback(
+      ({ agent_id, status }) => {
+        const nextStatus = status === "exited" ? "idle" : status;
+        updateAgent(agent_id, { status: nextStatus });
+      },
+      [updateAgent],
+    ),
+  );
 
   // OrbitControls can keep moving after pointer-up when damping/inertia is enabled
   // (common with trackpads/touch). Keep DPR reduced while the camera is still changing,
@@ -272,8 +252,6 @@ function App() {
           <AgentPanel
             key={selectedAgent.id}
             agent={selectedAgent}
-            outputLines={outputLines}
-            onClearOutput={handleClearOutput}
           />
         )}
       </div>

@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { Mesh, Group, Box3, Vector3 } from "three";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import { useFrame } from "@react-three/fiber";
-import { Text, useGLTF, useAnimations } from "@react-three/drei";
+import { Billboard, Text, useGLTF, useAnimations } from "@react-three/drei";
 import type { Agent, AvatarConfig } from "@virtual-agency/shared";
 import { AVATAR_OPTIONS } from "@virtual-agency/shared";
 import { generatePath, Point2D } from "../../lib/pathfinding";
@@ -18,15 +18,71 @@ const ROTATION_SPEED = 8; // How fast agent turns to face direction
 
 interface AgentAvatarProps {
   agent: Agent;
+  loungeFacingY?: number;
+  loungePose?: "stand" | "sit_low" | "sit_high" | "arcade" | "vending";
   isSelected: boolean;
   onClick: () => void;
 }
+
+const isDeskBound = (agent: Pick<Agent, "status" | "stayAtDesk">) =>
+  agent.status === "working" || agent.status === "thinking" || agent.stayAtDesk === true;
 
 // Helper to handle click with proper event stopping
 const handleMeshClick = (onClick: () => void) => (event: { stopPropagation: () => void }) => {
   event.stopPropagation();
   onClick();
 };
+
+function AgentLabelBillboard({
+  name,
+  status,
+  statusColor,
+  y,
+}: {
+  name: string;
+  status: string;
+  statusColor: string;
+  y: number;
+}) {
+  return (
+    <Billboard position={[0, y, 0]} follow>
+      <group renderOrder={1000}>
+        <mesh position={[0, -0.06, -0.02]} renderOrder={1000}>
+          <planeGeometry args={[1.25, 0.55]} />
+          <meshBasicMaterial transparent opacity={0.25} color="#000000" depthWrite={false} />
+        </mesh>
+        <Text
+          position={[0, 0.0, 0]}
+          fontSize={0.16}
+          color="#ffffff"
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.02}
+          outlineColor="#000000"
+          renderOrder={1001}
+          material-depthTest={false}
+          material-depthWrite={false}
+        >
+          {name}
+        </Text>
+        <Text
+          position={[0, -0.18, 0]}
+          fontSize={0.12}
+          color={statusColor}
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.02}
+          outlineColor="#000000"
+          renderOrder={1001}
+          material-depthTest={false}
+          material-depthWrite={false}
+        >
+          {status}
+        </Text>
+      </group>
+    </Billboard>
+  );
+}
 
 // Get avatar config from avatar ID
 function getAvatarConfig(avatarId?: string): AvatarConfig | null {
@@ -89,11 +145,13 @@ function chooseWalkAnimation(
 interface GLBModelAvatarProps {
   config: AvatarConfig;
   agent: Agent;
+  loungeFacingY?: number;
+  loungePose?: "stand" | "sit_low" | "sit_high" | "arcade" | "vending";
   isSelected: boolean;
   onClick: () => void;
 }
 
-function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarProps) {
+function GLBModelAvatar({ config, agent, loungeFacingY, isSelected, onClick }: GLBModelAvatarProps) {
   const groupRef = useRef<Group>(null);
   const modelRef = useRef<Group>(null);
   const { scene, animations } = useGLTF(config.path!);
@@ -459,8 +517,8 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
   const pathRef = useRef<Point2D[]>([]);
   const currentWaypointIndex = useRef(0);
   const isWalkingRef = useRef(false);
-  const isAtDesk = agent.status === "working" || agent.status === "thinking";
-  const currentRotationY = useRef(isAtDesk ? Math.PI : 0);
+  const isAtDesk = isDeskBound(agent);
+  const currentRotationY = useRef(isAtDesk ? Math.PI : (loungeFacingY ?? 0));
   const finalDestination = useRef<{ x: number; z: number } | null>(null);
   const currentAnimRef = useRef<string | null>(null);
 
@@ -531,12 +589,12 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
   // Set initial rotation based on agent status
   useEffect(() => {
     if (groupRef.current) {
-      const isAtDesk = agent.status === "working" || agent.status === "thinking";
-      const targetRotation = isAtDesk ? Math.PI : 0;
+      const isAtDesk = isDeskBound(agent);
+      const targetRotation = isAtDesk ? Math.PI : (loungeFacingY ?? 0);
       groupRef.current.rotation.y = targetRotation;
       currentRotationY.current = targetRotation;
     }
-  }, [agent.status]);
+  }, [agent.status, agent.stayAtDesk, loungeFacingY]);
 
   // Detect position changes and trigger walking
   useEffect(() => {
@@ -580,8 +638,8 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         if (currentWaypointIndex.current >= pathRef.current.length) {
           isWalkingRef.current = false;
           pathRef.current = [];
-          const isAtDesk = agent.status === "working" || agent.status === "thinking";
-          const targetRotation = isAtDesk ? Math.PI : 0;
+          const isAtDesk = isDeskBound(agent);
+          const targetRotation = isAtDesk ? Math.PI : (loungeFacingY ?? 0);
           currentRotationY.current = targetRotation;
           groupRef.current.rotation.y = targetRotation;
 
@@ -615,7 +673,7 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
     agent.status === "error" ? "#ef4444" : "#6b7280";
 
   // Calculate label position based on scaled model height
-  const labelY = 2.0; // Approximate height above ground for label
+  const labelY = 2.6; // Keep labels clearly above taller GLB bodies
 
   // Get current position with fallback to agent position
   const currentPos = currentPositionRef.current ?? { x: agent.position.x, z: agent.position.z };
@@ -645,7 +703,7 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
       )}
 
       {/* Status indicator */}
-      <mesh position={[0, labelY - 0.2, 0]}>
+      <mesh position={[0, labelY - 0.6, 0]}>
         <sphereGeometry args={[0.08, 12, 12]} />
         <meshStandardMaterial
           color={statusColor}
@@ -656,50 +714,52 @@ function GLBModelAvatar({ config, agent, isSelected, onClick }: GLBModelAvatarPr
         />
       </mesh>
 
-      {/* Name label */}
-      <Text
-        position={[0, labelY, 0]}
-        fontSize={0.15}
-        color="white"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.02}
-        outlineColor="#000000"
-      >
-        {agent.name}
-      </Text>
-
-      {/* Status text */}
-      <Text
-        position={[0, 0.0, 0]}
-        fontSize={0.09}
-        color={statusColor}
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.015}
-        outlineColor="#000000"
-      >
-        {agent.status}
-      </Text>
+      <AgentLabelBillboard name={agent.name} status={agent.status} statusColor={statusColor} y={labelY} />
     </group>
   );
 }
 
 // Error boundary wrapper for GLB model loading
-function GLBModelAvatarWithErrorBoundary({ config, agent, isSelected, onClick }: GLBModelAvatarProps) {
+function GLBModelAvatarWithErrorBoundary({
+  config,
+  agent,
+  loungeFacingY,
+  loungePose,
+  isSelected,
+  onClick,
+}: GLBModelAvatarProps) {
   const [hasError, setHasError] = useState(false);
 
   if (hasError) {
     console.warn(`[${agent.name}] Failed to load model, using default avatar`);
-    return <DefaultChibiAvatar agent={agent} isSelected={isSelected} onClick={onClick} />;
+    return (
+      <DefaultChibiAvatar
+        agent={agent}
+        loungeFacingY={loungeFacingY}
+        loungePose={loungePose}
+        isSelected={isSelected}
+        onClick={onClick}
+      />
+    );
   }
 
   return (
-    <Suspense fallback={<DefaultChibiAvatar agent={agent} isSelected={isSelected} onClick={onClick} />}>
+    <Suspense
+      fallback={
+        <DefaultChibiAvatar
+          agent={agent}
+          loungeFacingY={loungeFacingY}
+          loungePose={loungePose}
+          isSelected={isSelected}
+          onClick={onClick}
+        />
+      }
+    >
       <ErrorCatcher onError={() => setHasError(true)}>
         <GLBModelAvatar
           config={config}
           agent={agent}
+          loungeFacingY={loungeFacingY}
           isSelected={isSelected}
           onClick={onClick}
         />
@@ -724,7 +784,7 @@ function ErrorCatcher({ children, onError }: { children: React.ReactNode; onErro
 }
 
 // Main AgentAvatar component that chooses between GLB and default chibi
-export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
+export function AgentAvatar({ agent, loungeFacingY, loungePose, isSelected, onClick }: AgentAvatarProps) {
   const avatarConfig = getAvatarConfig(agent.avatarId);
 
   // If custom avatar is selected, use GLB model with error boundary
@@ -733,6 +793,8 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
       <GLBModelAvatarWithErrorBoundary
         config={avatarConfig}
         agent={agent}
+        loungeFacingY={loungeFacingY}
+        loungePose={loungePose}
         isSelected={isSelected}
         onClick={onClick}
       />
@@ -740,11 +802,19 @@ export function AgentAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
   }
 
   // Otherwise use the default chibi avatar
-  return <DefaultChibiAvatar agent={agent} isSelected={isSelected} onClick={onClick} />;
+  return (
+    <DefaultChibiAvatar
+      agent={agent}
+      loungeFacingY={loungeFacingY}
+      loungePose={loungePose}
+      isSelected={isSelected}
+      onClick={onClick}
+    />
+  );
 }
 
 // The original chibi avatar, now as a separate component
-function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
+function DefaultChibiAvatar({ agent, loungeFacingY, loungePose, isSelected, onClick }: AgentAvatarProps) {
   const groupRef = useRef<Group>(null);
   const bodyRef = useRef<Mesh>(null);
   const headRef = useRef<Group>(null);
@@ -761,7 +831,7 @@ function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
   const currentWaypointIndex = useRef(0);
   const isWalking = useRef(false);
   // Initialize rotation based on status - working/thinking face ocean (Math.PI), idle face city (0)
-  const isAtDesk = agent.status === "working" || agent.status === "thinking";
+  const isAtDesk = isDeskBound(agent);
   const currentRotationY = useRef(isAtDesk ? Math.PI : 0);
   const finalDestination = useRef<{ x: number; z: number } | null>(null);
 
@@ -774,12 +844,12 @@ function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
   // Set initial rotation based on agent status
   useEffect(() => {
     if (groupRef.current) {
-      const isAtDesk = agent.status === "working" || agent.status === "thinking";
-      const targetRotation = isAtDesk ? Math.PI : 0;
+      const isAtDesk = isDeskBound(agent);
+      const targetRotation = isAtDesk ? Math.PI : (loungeFacingY ?? 0);
       groupRef.current.rotation.y = targetRotation;
       currentRotationY.current = targetRotation;
     }
-  }, [agent.status]);
+  }, [agent.status, agent.stayAtDesk, loungeFacingY]);
 
   // Detect position changes and trigger walking with pathfinding
   useEffect(() => {
@@ -838,8 +908,8 @@ function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
           // Set final rotation based on status:
           // - Working/thinking agents face the desk (negative Z, towards ocean view)
           // - Idle agents face the lounge center (positive Z, towards city)
-          const isAtDesk = agent.status === "working" || agent.status === "thinking";
-          const targetRotation = isAtDesk ? Math.PI : 0; // PI = face negative Z (ocean), 0 = face positive Z (city)
+          const isAtDesk = isDeskBound(agent);
+          const targetRotation = isAtDesk ? Math.PI : (loungeFacingY ?? 0); // PI = face negative Z (ocean)
           currentRotationY.current = targetRotation;
           groupRef.current.rotation.y = targetRotation;
         }
@@ -912,26 +982,94 @@ function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
       const status = agent.status;
 
       if (status === "idle") {
-        // Idle: Gentle floating and subtle breathing
-        bodyRef.current.position.y = 0.5 + Math.sin(t * 1.5 + animOffset) * 0.03;
-        headRef.current.position.y = 1.05 + Math.sin(t * 1.5 + animOffset) * 0.03;
-        statusRef.current.position.y = 1.55 + Math.sin(t * 1.5 + animOffset) * 0.03;
+        const idleAtDesk = agent.stayAtDesk === true;
+        const pose = idleAtDesk ? "stand" : (loungePose ?? "stand");
 
-        // Idle agents face towards city (positive Z) with subtle sway
+        // Idle agents face their lounge target (or city) with subtle sway.
         if (groupRef.current) {
-          groupRef.current.rotation.y = 0 + Math.sin(t * 0.5 + animOffset) * 0.05;
+          const base = idleAtDesk ? Math.PI : (loungeFacingY ?? 0);
+          groupRef.current.rotation.y = base + Math.sin(t * 0.5 + animOffset) * 0.05;
+          groupRef.current.rotation.x = 0;
         }
 
-        // Arms relaxed
-        if (leftArmRef.current && rightArmRef.current) {
-          leftArmRef.current.rotation.z = 0.2 + Math.sin(t * 1.5 + animOffset) * 0.02;
-          rightArmRef.current.rotation.z = -0.2 - Math.sin(t * 1.5 + animOffset) * 0.02;
+        if (pose === "sit_low" || pose === "sit_high") {
+          // "Sitting" chibi pose (floor lounge / beanbag vibe).
+          const seat = pose === "sit_high" ? 0.44 : 0.36;
+          const breath = Math.sin(t * 1.3 + animOffset) * 0.02;
+          bodyRef.current.position.y = seat + breath;
+          headRef.current.position.y = seat + 0.55 + breath;
+          statusRef.current.position.y = seat + 1.02 + breath;
+
+          if (leftLegRef.current) leftLegRef.current.rotation.x = 1.05;
+          if (rightLegRef.current) rightLegRef.current.rotation.x = 1.05;
+
+          if (leftArmRef.current && rightArmRef.current) {
+            leftArmRef.current.rotation.z = 0.55;
+            leftArmRef.current.rotation.x = -0.45;
+            rightArmRef.current.rotation.z = -0.55;
+            rightArmRef.current.rotation.x = -0.45;
+          }
+        } else if (pose === "arcade") {
+          // Slight lean + "button mashing" hands.
+          const bob = Math.sin(t * 2.4 + animOffset) * 0.02;
+          bodyRef.current.position.y = 0.5 + bob;
+          headRef.current.position.y = 1.05 + bob;
+          statusRef.current.position.y = 1.55 + bob;
+
+          if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
+          if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+
+          if (groupRef.current) groupRef.current.rotation.x = 0.08;
+
+          const tap = Math.sin(t * 8 + animOffset) * 0.25;
+          if (leftArmRef.current && rightArmRef.current) {
+            leftArmRef.current.rotation.z = 0.85;
+            leftArmRef.current.rotation.x = -0.75 + tap * 0.25;
+            rightArmRef.current.rotation.z = -0.85;
+            rightArmRef.current.rotation.x = -0.75 - tap * 0.25;
+          }
+        } else if (pose === "vending") {
+          // One-hand "press button", small sway.
+          const bob = Math.sin(t * 1.9 + animOffset) * 0.02;
+          bodyRef.current.position.y = 0.5 + bob;
+          headRef.current.position.y = 1.05 + bob;
+          statusRef.current.position.y = 1.55 + bob;
+
+          if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
+          if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+
+          const press = Math.sin(t * 3.0 + animOffset) * 0.12;
+          if (leftArmRef.current && rightArmRef.current) {
+            leftArmRef.current.rotation.z = 0.25;
+            leftArmRef.current.rotation.x = 0;
+            rightArmRef.current.rotation.z = -1.15;
+            rightArmRef.current.rotation.x = -0.35 + press;
+          }
+        } else {
+          // Stand: Gentle floating and subtle breathing.
+          bodyRef.current.position.y = 0.5 + Math.sin(t * 1.5 + animOffset) * 0.03;
+          headRef.current.position.y = 1.05 + Math.sin(t * 1.5 + animOffset) * 0.03;
+          statusRef.current.position.y = 1.55 + Math.sin(t * 1.5 + animOffset) * 0.03;
+
+          if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
+          if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+
+          // Arms relaxed
+          if (leftArmRef.current && rightArmRef.current) {
+            leftArmRef.current.rotation.z = 0.2 + Math.sin(t * 1.5 + animOffset) * 0.02;
+            leftArmRef.current.rotation.x = 0;
+            rightArmRef.current.rotation.z = -0.2 - Math.sin(t * 1.5 + animOffset) * 0.02;
+            rightArmRef.current.rotation.x = 0;
+          }
         }
 
       } else if (status === "thinking") {
         // Thinking: Head tilt, pulsing glow, contemplative pose
         bodyRef.current.position.y = 0.5 + Math.sin(t * 2 + animOffset) * 0.02;
         headRef.current.position.y = 1.05 + Math.sin(t * 2 + animOffset) * 0.02;
+
+        if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
+        if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
 
         // Head tilts side to side
         headRef.current.rotation.z = Math.sin(t * 0.8 + animOffset) * 0.15;
@@ -968,6 +1106,9 @@ function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
         headRef.current.position.y = 1.05 + Math.abs(bounce);
         statusRef.current.position.y = 1.55 + Math.abs(bounce);
 
+        if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
+        if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+
         // Reset head rotation
         headRef.current.rotation.z = 0;
         headRef.current.rotation.x = -0.1; // Looking slightly down
@@ -1000,6 +1141,9 @@ function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
         headRef.current.position.x = shake;
         bodyRef.current.position.y = 0.5;
         headRef.current.position.y = 1.05;
+
+        if (leftLegRef.current) leftLegRef.current.rotation.x = 0;
+        if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
 
         // Head down
         headRef.current.rotation.x = 0.2;
@@ -1346,31 +1490,7 @@ function DefaultChibiAvatar({ agent, isSelected, onClick }: AgentAvatarProps) {
         </mesh>
       )}
 
-      {/* Name label */}
-      <Text
-        position={[0, 1.72, 0]}
-        fontSize={0.12}
-        color="white"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.02}
-        outlineColor="#000000"
-      >
-        {agent.name}
-      </Text>
-
-      {/* Status text */}
-      <Text
-        position={[0, 0.0, 0]}
-        fontSize={0.07}
-        color={statusColor}
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.012}
-        outlineColor="#000000"
-      >
-        {agent.status}
-      </Text>
+      <AgentLabelBillboard name={agent.name} status={agent.status} statusColor={statusColor} y={2.15} />
     </group>
   );
 }

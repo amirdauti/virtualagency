@@ -61,12 +61,10 @@ fn build_file_tree(path: &Path, base_path: &Path) -> Result<FileNode, std::io::E
                 }
             }
         }
-        children.sort_by(|a, b| {
-            match (a.is_directory, b.is_directory) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            }
+        children.sort_by(|a, b| match (a.is_directory, b.is_directory) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
         });
 
         Ok(FileNode {
@@ -86,8 +84,7 @@ fn build_file_tree(path: &Path, base_path: &Path) -> Result<FileNode, std::io::E
 }
 
 pub async fn get_file_tree(workspace_dir: &PathBuf) -> Result<FileNode, String> {
-    build_file_tree(workspace_dir, workspace_dir)
-        .map_err(|e| e.to_string())
+    build_file_tree(workspace_dir, workspace_dir).map_err(|e| e.to_string())
 }
 
 pub async fn read_file(
@@ -108,8 +105,7 @@ pub async fn read_file(
         return Err("Access denied: path outside workspace".to_string());
     }
 
-    let content = fs::read_to_string(&canonical_file)
-        .map_err(|e| e.to_string())?;
+    let content = fs::read_to_string(&canonical_file).map_err(|e| e.to_string())?;
 
     Ok(FileContent { content })
 }
@@ -128,8 +124,7 @@ pub async fn write_file(
     // For write operations, we need to handle the case where the file doesn't exist yet
     // So we check the parent directory instead
     if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
 
         let canonical_parent = parent
             .canonicalize()
@@ -140,8 +135,7 @@ pub async fn write_file(
         }
     }
 
-    fs::write(&file_path, &req.content)
-        .map_err(|e| e.to_string())?;
+    fs::write(&file_path, &req.content).map_err(|e| e.to_string())?;
 
     Ok(serde_json::json!({"success": true}))
 }

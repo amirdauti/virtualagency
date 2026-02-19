@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal } from "../common/Modal";
 import { AVATAR_OPTIONS, AvatarId } from "@virtual-agency/shared";
 import { useAgentStore } from "../../stores/agentStore";
@@ -16,8 +16,17 @@ export function EditAvatarDialog({
   agentId,
   currentAvatarId,
 }: EditAvatarDialogProps) {
-  const [selectedAvatarId, setSelectedAvatarId] = useState<AvatarId>(currentAvatarId);
+  const normalizedCurrentAvatarId = (AVATAR_OPTIONS.some((a) => a.id === currentAvatarId)
+    ? currentAvatarId
+    : "default") as AvatarId;
+
+  const [selectedAvatarId, setSelectedAvatarId] = useState<AvatarId>(normalizedCurrentAvatarId);
   const updateAgent = useAgentStore((state) => state.updateAgent);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setSelectedAvatarId(normalizedCurrentAvatarId);
+  }, [isOpen, normalizedCurrentAvatarId]);
 
   const handleSave = () => {
     updateAgent(agentId, { avatarId: selectedAvatarId });
@@ -25,7 +34,7 @@ export function EditAvatarDialog({
   };
 
   const handleClose = () => {
-    setSelectedAvatarId(currentAvatarId);
+    setSelectedAvatarId(normalizedCurrentAvatarId);
     onClose();
   };
 

@@ -1,10 +1,5 @@
 import { create } from 'zustand';
-import { getServerHttpBaseUrl } from '../lib/api';
-
-async function getApiBase(): Promise<string> {
-  const resolved = await getServerHttpBaseUrl();
-  return resolved || 'http://127.0.0.1:1337';
-}
+import { fetchAgentApi } from '../lib/api';
 
 export interface FileNode {
   name: string;
@@ -80,12 +75,7 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
 
     set({ isLoading: true, error: null });
     try {
-      const base = await getApiBase();
-      const response = await fetch(`${base}/api/files/tree/${agentId}`);
-      if (!response.ok) {
-        throw new Error('Failed to load file tree');
-      }
-      const tree = await response.json();
+      const tree = await fetchAgentApi<FileNode>(agentId, `/api/files/tree/${agentId}`);
       set({ fileTree: tree, isLoading: false });
     } catch (error) {
       set({
@@ -112,18 +102,11 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
 
     set({ error: null });
     try {
-      const base = await getApiBase();
-      const response = await fetch(`${base}/api/files/read/${agentId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetchAgentApi<{ content: string }>(agentId, `/api/files/read/${agentId}`, {
+        method: "POST",
         body: JSON.stringify({ path }),
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to read file');
-      }
-
-      const { content } = await response.json();
+      const content = response.content || "";
 
       const newFile: OpenFile = {
         path,
@@ -194,19 +177,13 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
 
     set({ error: null });
     try {
-      const base = await getApiBase();
-      const response = await fetch(`${base}/api/files/write/${agentId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      await fetchAgentApi<void>(agentId, `/api/files/write/${agentId}`, {
+        method: "POST",
         body: JSON.stringify({
           path: file.path,
           content: file.content,
         }),
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to save file');
-      }
 
       const newOpenFiles = openFiles.map(f => {
         if (f.path === path) {
