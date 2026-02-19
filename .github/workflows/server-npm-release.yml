@@ -28,6 +28,9 @@ jobs:
         with:
           node-version: 22.14.0
           registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: apps/server/package-lock.json
+          package-manager-cache: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
