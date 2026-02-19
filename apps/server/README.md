@@ -2,6 +2,8 @@
 
 Rust-powered Virtual Agency server packaged as an npm CLI.
 
+Includes a `--version` flag in the wrapper CLI so users can verify installed package version quickly.
+
 ## Install
 
 ```bash
