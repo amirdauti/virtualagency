@@ -151,10 +151,15 @@ function extractCodexUserCode(text) {
   const dashed = text.match(/\b([A-Z0-9]{4}(?:-[A-Z0-9]{4}){1,2})\b/);
   if (dashed) return dashed[1];
 
-  const tagged = text.match(
-    /(?:user\s*code|device\s*code|code)\s*[:=]?\s*([A-Z0-9]{6,12})/i,
+  const contextual = text.match(
+    /(?:user\s*code|device\s*code|enter(?:\s+the)?\s+code)\s*[:=]?\s*([A-Z0-9-]{6,20})/i,
   );
-  if (tagged) return tagged[1].toUpperCase();
+  if (contextual) {
+    const candidate = contextual[1].toUpperCase();
+    if (/[0-9-]/.test(candidate) && !/^AUTHORIZATION$|^AUTHORIZE$|^AUTHENTICATE$/.test(candidate)) {
+      return candidate;
+    }
+  }
 
   return null;
 }
