@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/amirdauti/virtualagency/compare/v1.0.0...v1.0.1) (2026-02-19)
+
+### Bug Fixes
+
+* **ci:** drop unavailable macos-13 runner from server release ([35cb30d](https://github.com/amirdauti/virtualagency/commit/35cb30de82a7b891d5aed7cc7e4e5cdc2500c7ba))
+* **ci:** publish server package with multi-platform binaries ([d65a198](https://github.com/amirdauti/virtualagency/commit/d65a198e3089e1456a02029609fc4e1a97ac8b43))
+
 ## 1.0.0 (2026-02-19)
 
 ### Features
