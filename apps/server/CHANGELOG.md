@@ -1,3 +1,9 @@
+## [1.1.1](https://github.com/amirdauti/virtualagency/compare/v1.1.0...v1.1.1) (2026-02-19)
+
+### Bug Fixes
+
+* **server:** allow PUT preflight for telegram settings ([c9eb3b3](https://github.com/amirdauti/virtualagency/commit/c9eb3b3a435a07826ec24f2103daec35eb1c670d))
+
 ## [1.1.0](https://github.com/amirdauti/virtualagency/compare/v1.0.1...v1.1.0) (2026-02-19)
 
 ### Features
