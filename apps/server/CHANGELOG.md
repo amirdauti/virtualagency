@@ -1,3 +1,15 @@
+## [1.3.0](https://github.com/amirdauti/virtualagency/compare/v1.2.0...v1.3.0) (2026-02-19)
+
+### Features
+
+* **hosting:** automate codex device auth setup for hosted VPS ([2ee16b2](https://github.com/amirdauti/virtualagency/commit/2ee16b27720a19c8188e24f8f234fdac481c01c5))
+
+### Bug Fixes
+
+* **deploy:** proxy hosting api routes in nginx setup ([157c996](https://github.com/amirdauti/virtualagency/commit/157c996e5642ee4c109a4dac144dccfcab57e8d0))
+* **hosting:** escape SSH_PUB in cloud-init bootstrap payload ([08e08e2](https://github.com/amirdauti/virtualagency/commit/08e08e2feb0c1f4afda89d01c8272d373a1599b2))
+* **hosting:** restore hosted proxy connectivity and improve telegram progress ([e7ac180](https://github.com/amirdauti/virtualagency/commit/e7ac1801f1526af3de2755aa0760e786e267a87c))
+
 ## [1.2.0](https://github.com/amirdauti/virtualagency/compare/v1.1.1...v1.2.0) (2026-02-19)
 
 ### Features
