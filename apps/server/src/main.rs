@@ -51,7 +51,7 @@ async fn private_network_access_middleware(
     // Ensure PATCH is included in allowed methods for preflight
     response.headers_mut().insert(
         "Access-Control-Allow-Methods",
-        HeaderValue::from_static("GET, POST, DELETE, PATCH, OPTIONS"),
+        HeaderValue::from_static("GET, POST, PUT, DELETE, PATCH, OPTIONS"),
     );
 
     response
@@ -214,7 +214,14 @@ async fn main() {
     // Build router with CORS and Private Network Access support
     let cors = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::PATCH, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::AUTHORIZATION])
         .expose_headers([header::CONTENT_TYPE]);
 
