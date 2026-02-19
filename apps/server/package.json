@@ -1,6 +1,6 @@
 {
   "name": "@virtualagency/server",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Virtual Agency Rust server packaged as an npm global CLI",
   "license": "MIT",
   "repository": {

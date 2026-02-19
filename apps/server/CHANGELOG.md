@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/amirdauti/virtualagency/compare/v1.0.1...v1.1.0) (2026-02-19)
+
+### Features
+
+* **server:** add persistent telegram agent routing ([1f5e6ff](https://github.com/amirdauti/virtualagency/commit/1f5e6ff5c94086cc27bafe439df2e8c1a7d42a26))
+
 ## [1.0.1](https://github.com/amirdauti/virtualagency/compare/v1.0.0...v1.0.1) (2026-02-19)
 
 ### Bug Fixes
