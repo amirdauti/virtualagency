@@ -1,3 +1,12 @@
+## [1.3.1](https://github.com/amirdauti/virtualagency/compare/v1.3.0...v1.3.1) (2026-02-19)
+
+### Bug Fixes
+
+* **hosted:** run codex device auth via hosted runtime instead of SSH ([a916eac](https://github.com/amirdauti/virtualagency/commit/a916eacff6f22b353ce1a661f913334477148c2d))
+* **hosting:** tighten codex device code extraction ([856b69b](https://github.com/amirdauti/virtualagency/commit/856b69b441644aa0da78b44017e1d7fd84c432ec))
+* **server:** improve telegram codex progress and file-change snippets ([f111140](https://github.com/amirdauti/virtualagency/commit/f11114045a0bec1e004845535ce88820104f47a4))
+* **ui:** keep hosted codex auth action clickable with backend error feedback ([9f4e2ee](https://github.com/amirdauti/virtualagency/commit/9f4e2eee304d036b651aa336c01f2e1bf7ac3b7a))
+
 ## [1.3.0](https://github.com/amirdauti/virtualagency/compare/v1.2.0...v1.3.0) (2026-02-19)
 
 ### Features
