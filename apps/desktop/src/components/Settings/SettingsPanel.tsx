@@ -13,6 +13,9 @@ import {
   rebuildHostedServer,
   destroyHostedServer,
   rotateHostedPairingCode,
+  startHostedCodexAuth,
+  getHostedCodexAuthStatus,
+  type HostedCodexAuthState,
   type HostedServerStateResponse,
 } from "../../lib/api";
 
@@ -29,6 +32,19 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [hostedLoading, setHostedLoading] = useState(false);
   const [hostedError, setHostedError] = useState<string | null>(null);
   const [hostedAction, setHostedAction] = useState<string | null>(null);
+
+  const applyHostedCodexAuthState = (codexAuth: HostedCodexAuthState) => {
+    setHostedState((prev) => {
+      if (!prev?.server) return prev;
+      return {
+        ...prev,
+        server: {
+          ...prev.server,
+          codexAuth,
+        },
+      };
+    });
+  };
 
   useEffect(() => {
     load();
@@ -81,6 +97,26 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
   };
 
+  useEffect(() => {
+    if (isTauri()) return undefined;
+    const status = hostedState?.server?.codexAuth?.status;
+    if (!status || !["starting", "awaiting_user", "authorizing"].includes(status)) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      getHostedCodexAuthStatus()
+        .then((codexAuth) => {
+          applyHostedCodexAuthState(codexAuth);
+        })
+        .catch((err) => {
+          setHostedError(err instanceof Error ? err.message : String(err));
+        });
+    }, 2000);
+
+    return () => window.clearInterval(timer);
+  }, [hostedState?.server?.codexAuth?.status]);
+
   const handleBrowseCli = async () => {
     try {
       // Dynamic import to avoid crashes if plugin not available
@@ -132,6 +168,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const hostedIsReady = hostedServerStatus === "ready";
   const hostedIsStopped = hostedServerStatus === "stopped";
   const hostedCanManage = hostedIsReady || hostedIsStopped;
+  const codexAuth = hostedState?.server?.codexAuth;
+  const codexAuthStatus = codexAuth?.status || "not_started";
+  const codexAuthInProgress = ["starting", "awaiting_user", "authorizing"].includes(
+    codexAuthStatus,
+  );
   const canProvisionHostedServer =
     hostedAction === null &&
     Boolean(hostedState?.hostedSubscriptionActive) &&
@@ -358,16 +399,40 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
               {hostedState?.server?.ipAddress && (
                 <div style={fieldStyle}>
-                  <label style={labelStyle}>CLI Auth (Hosted VPS)</label>
-                  <textarea
+                  <label style={labelStyle}>Codex Auth</label>
+                  <input
+                    type="text"
+                    value={codexAuthStatus}
                     readOnly
-                    rows={4}
-                    value={`ssh va@${hostedState.server.ipAddress}\ncodex login\nclaude login`}
-                    style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace" }}
+                    style={{ ...inputStyle, opacity: 0.85 }}
                   />
                   <span style={hintStyle}>
-                    Run this once on your hosted VPS to authenticate Codex/Claude CLIs for hosted agents.
+                    Virtual Agency runs <code>codex login --device-auth</code> on your VPS and waits for browser confirmation.
                   </span>
+                  {codexAuth?.userCode && (
+                    <input
+                      type="text"
+                      value={`Code: ${codexAuth.userCode}`}
+                      readOnly
+                      style={{ ...inputStyle, marginTop: 8, fontFamily: "monospace" }}
+                    />
+                  )}
+                  {codexAuth?.verificationUri && (
+                    <input
+                      type="text"
+                      value={codexAuth.verificationUri}
+                      readOnly
+                      style={{ ...inputStyle, marginTop: 8, fontFamily: "monospace" }}
+                    />
+                  )}
+                  {codexAuth?.lastMessage && (
+                    <div style={{ ...hintStyle, marginTop: 8 }}>{codexAuth.lastMessage}</div>
+                  )}
+                  {codexAuth?.lastError && (
+                    <div style={{ ...hintStyle, marginTop: 6, color: "#ef4444" }}>
+                      {codexAuth.lastError}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -454,6 +519,24 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   disabled={hostedAction !== null || !hasHostedServer || !hostedCanManage}
                 >
                   Destroy
+                </button>
+
+                <button
+                  type="button"
+                  style={secondaryActionButtonStyle}
+                  onClick={() =>
+                    runHostedAction("codex-auth", async () => {
+                      const codexAuthState = await startHostedCodexAuth();
+                      applyHostedCodexAuthState(codexAuthState);
+                    })
+                  }
+                  disabled={hostedAction !== null || !hasHostedServer || !hostedIsReady || codexAuthInProgress}
+                >
+                  {hostedAction === "codex-auth"
+                    ? "Starting Codex auth..."
+                    : codexAuthInProgress
+                      ? "Codex auth in progress..."
+                      : "Set up Codex Auth"}
                 </button>
 
                 <button

@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import {
   clerkClient,
   ClerkExpressRequireAuth,
@@ -70,6 +71,8 @@ const HETZNER_API_BASE = "https://api.hetzner.cloud/v1";
 let hostedStateLoaded = false;
 let hostedState = { users: {} };
 let hostedStateWriteQueue = Promise.resolve();
+const codexAuthSessions = new Map();
+const CODEX_AUTH_ACTIVE_STATUSES = new Set(["starting", "awaiting_user", "authorizing"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -88,6 +91,284 @@ function randomCode(size = 8) {
     .toUpperCase();
 }
 
+function defaultCodexAuthState() {
+  return {
+    status: "not_started",
+    startedAt: null,
+    updatedAt: nowIso(),
+    verificationUri: null,
+    userCode: null,
+    lastMessage: null,
+    lastError: null,
+  };
+}
+
+function sanitizeCodexAuthForClient(auth) {
+  if (!auth || typeof auth !== "object") return defaultCodexAuthState();
+  return {
+    status: auth.status || "not_started",
+    startedAt: auth.startedAt || null,
+    updatedAt: auth.updatedAt || null,
+    verificationUri: auth.verificationUri || null,
+    userCode: auth.userCode || null,
+    lastMessage: auth.lastMessage || null,
+    lastError: auth.lastError || null,
+  };
+}
+
+function getServerCodexAuth(server) {
+  if (!server || typeof server !== "object") return defaultCodexAuthState();
+  if (!server.codexAuth || typeof server.codexAuth !== "object") {
+    server.codexAuth = defaultCodexAuthState();
+  }
+  return server.codexAuth;
+}
+
+function truncateText(value, max = 320) {
+  if (typeof value !== "string") return "";
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
+function stripAnsi(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function extractCodexVerificationUri(text) {
+  const match = text.match(/https?:\/\/[^\s)]+/i);
+  return match ? match[0] : null;
+}
+
+function extractCodexUserCode(text) {
+  const dashed = text.match(/\b([A-Z0-9]{4}(?:-[A-Z0-9]{4}){1,2})\b/);
+  if (dashed) return dashed[1];
+
+  const tagged = text.match(
+    /(?:user\s*code|device\s*code|code)\s*[:=]?\s*([A-Z0-9]{6,12})/i,
+  );
+  if (tagged) return tagged[1].toUpperCase();
+
+  return null;
+}
+
+async function persistCodexAuthSnapshot(userId, snapshot) {
+  const userState = await getHostedUserState(userId);
+  if (!userState?.server) return null;
+
+  const current = getServerCodexAuth(userState.server);
+  const next = {
+    ...current,
+    ...snapshot,
+    updatedAt: nowIso(),
+  };
+
+  userState.server.codexAuth = next;
+  userState.server.updatedAt = next.updatedAt;
+  userState.updatedAt = next.updatedAt;
+  await queueHostedStatePersist();
+  return sanitizeCodexAuthForClient(next);
+}
+
+function pushCodexAuthLogLine(session, line) {
+  if (!line) return;
+  if (!Array.isArray(session.outputTail)) session.outputTail = [];
+  session.outputTail.push(line);
+  if (session.outputTail.length > 20) {
+    session.outputTail.shift();
+  }
+}
+
+function stopCodexAuthSession(userId, reason = "cancelled") {
+  const session = codexAuthSessions.get(userId);
+  if (!session) return;
+
+  if (session.process && !session.process.killed) {
+    try {
+      session.process.kill("SIGTERM");
+    } catch {
+      // ignore
+    }
+  }
+
+  codexAuthSessions.delete(userId);
+  void persistCodexAuthSnapshot(userId, {
+    status: "failed",
+    lastError: reason,
+    lastMessage: `Codex auth stopped: ${reason}`,
+  });
+}
+
+function handleCodexAuthOutput(userId, chunk, isStderr = false) {
+  const session = codexAuthSessions.get(userId);
+  if (!session) return;
+
+  const text = stripAnsi(String(chunk || ""));
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return;
+
+  let changed = false;
+  for (const line of lines) {
+    pushCodexAuthLogLine(session, line);
+    const verificationUri = extractCodexVerificationUri(line);
+    const userCode = extractCodexUserCode(line);
+
+    if (verificationUri && verificationUri !== session.verificationUri) {
+      session.verificationUri = verificationUri;
+      changed = true;
+    }
+    if (userCode && userCode !== session.userCode) {
+      session.userCode = userCode;
+      changed = true;
+    }
+
+    if (isStderr && /error|failed|denied/i.test(line)) {
+      session.lastError = truncateText(line, 400);
+      changed = true;
+    }
+    session.lastMessage = truncateText(line, 400);
+  }
+
+  if (session.verificationUri || session.userCode) {
+    if (session.status !== "awaiting_user") {
+      session.status = "awaiting_user";
+      changed = true;
+    }
+  } else if (session.status === "starting") {
+    session.status = "authorizing";
+    changed = true;
+  }
+
+  if (!changed) return;
+  session.updatedAt = nowIso();
+  void persistCodexAuthSnapshot(userId, {
+    status: session.status,
+    verificationUri: session.verificationUri || null,
+    userCode: session.userCode || null,
+    lastMessage: session.lastMessage || null,
+    lastError: session.lastError || null,
+  });
+}
+
+async function startHostedCodexDeviceAuth(userId) {
+  const userState = await getHostedUserState(userId);
+  const server = userState?.server;
+  if (!server?.id) {
+    throw new Error("server_not_provisioned");
+  }
+  if (!server.ipAddress) {
+    throw new Error("server_not_ready");
+  }
+  if (server.status === "deleted") {
+    throw new Error("server_deleted");
+  }
+  if (server.status !== "ready" && server.status !== "running") {
+    throw new Error("server_not_ready");
+  }
+
+  const existing = codexAuthSessions.get(userId);
+  if (existing && CODEX_AUTH_ACTIVE_STATUSES.has(existing.status)) {
+    return sanitizeCodexAuthForClient(getServerCodexAuth(server));
+  }
+
+  const startedAt = nowIso();
+  const session = {
+    process: null,
+    status: "starting",
+    startedAt,
+    updatedAt: startedAt,
+    verificationUri: null,
+    userCode: null,
+    lastMessage: "Starting Codex device authentication on hosted VPS...",
+    lastError: null,
+    outputTail: [],
+  };
+  codexAuthSessions.set(userId, session);
+
+  await persistCodexAuthSnapshot(userId, {
+    status: "starting",
+    startedAt,
+    verificationUri: null,
+    userCode: null,
+    lastMessage: session.lastMessage,
+    lastError: null,
+  });
+
+  const remoteCommand =
+    "sudo -u va -H bash -lc 'export HOME=/home/va; export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; codex login --device-auth'";
+  const child = spawn(
+    "ssh",
+    [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+      "-o",
+      "ConnectTimeout=10",
+      `root@${server.ipAddress}`,
+      remoteCommand,
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  session.process = child;
+
+  child.stdout?.on("data", (chunk) => {
+    handleCodexAuthOutput(userId, chunk, false);
+  });
+  child.stderr?.on("data", (chunk) => {
+    handleCodexAuthOutput(userId, chunk, true);
+  });
+  child.on("error", (err) => {
+    const message = truncateText(err?.message || String(err), 400);
+    session.status = "failed";
+    session.lastError = message;
+    session.lastMessage = "Codex auth process failed to start.";
+    session.updatedAt = nowIso();
+    void persistCodexAuthSnapshot(userId, {
+      status: "failed",
+      lastError: message,
+      lastMessage: session.lastMessage,
+      verificationUri: session.verificationUri || null,
+      userCode: session.userCode || null,
+    });
+    codexAuthSessions.delete(userId);
+  });
+  child.on("close", (code, signal) => {
+    const wasActive = codexAuthSessions.get(userId) === session;
+    if (!wasActive) return;
+
+    if (code === 0) {
+      session.status = "completed";
+      session.lastError = null;
+      session.lastMessage = "Codex authentication completed.";
+    } else {
+      session.status = "failed";
+      const reason =
+        session.lastError ||
+        `codex login exited with code ${code ?? "unknown"}${signal ? ` (signal ${signal})` : ""}`;
+      session.lastError = reason;
+      session.lastMessage = "Codex authentication failed.";
+    }
+    session.updatedAt = nowIso();
+
+    void persistCodexAuthSnapshot(userId, {
+      status: session.status,
+      verificationUri: session.verificationUri || null,
+      userCode: session.userCode || null,
+      lastMessage: session.lastMessage || null,
+      lastError: session.lastError || null,
+    });
+    codexAuthSessions.delete(userId);
+  });
+
+  return sanitizeCodexAuthForClient(getServerCodexAuth(server));
+}
+
 function sanitizeServerForClient(server) {
   if (!server) return null;
   return {
@@ -103,6 +384,7 @@ function sanitizeServerForClient(server) {
     lastError: server.lastError || null,
     pairingCode: server.pairingCode || null,
     pairingExpiresAt: server.pairingExpiresAt || null,
+    codexAuth: sanitizeCodexAuthForClient(server.codexAuth),
   };
 }
 
@@ -358,6 +640,7 @@ async function createHostedServerForUser(userId) {
     proxyToken,
     pairingCode,
     pairingExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    codexAuth: defaultCodexAuthState(),
     createdAt: now,
     updatedAt: now,
     lastError: null,
@@ -411,6 +694,7 @@ async function hostedServerAction(userId, action) {
   }
 
   if (action === "rebuild") {
+    stopCodexAuthSession(userId, "server_rebuild");
     await hetznerRequest("DELETE", `/servers/${server.id}`);
     userState.server = null;
     userState.updatedAt = nowIso();
@@ -419,6 +703,7 @@ async function hostedServerAction(userId, action) {
   }
 
   if (action === "destroy") {
+    stopCodexAuthSession(userId, "server_destroyed");
     await hetznerRequest("DELETE", `/servers/${server.id}`);
     userState.server = {
       ...server,
@@ -895,6 +1180,44 @@ app.get("/api/hosting/server/ssh-public-key", requireAuth, async (req, res) => {
   res.json({
     sshPublicKey: userState.server?.sshPublicKey || null,
   });
+});
+
+app.post("/api/hosting/server/codex-auth/start", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  ensureHostedEnabled();
+
+  try {
+    const codexAuth = await startHostedCodexDeviceAuth(userId);
+    return res.json({ codexAuth });
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (message === "server_not_provisioned") {
+      return res.status(404).json({ error: "server_not_provisioned" });
+    }
+    if (message === "server_deleted") {
+      return res.status(404).json({ error: "server_deleted" });
+    }
+    if (message === "server_not_ready") {
+      return res.status(409).json({ error: "server_not_ready" });
+    }
+    console.error("[hosting] codex auth start error:", err);
+    return res.status(500).json({ error: "codex_auth_start_failed", message });
+  }
+});
+
+app.get("/api/hosting/server/codex-auth/status", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  const userState = await getHostedUserState(userId);
+  if (!userState.server) {
+    return res.status(404).json({ error: "server_not_provisioned" });
+  }
+
+  const codexAuth = sanitizeCodexAuthForClient(userState.server.codexAuth);
+  return res.json({ codexAuth });
 });
 
 app.post("/api/hosting/internal/bootstrap-report", async (req, res) => {

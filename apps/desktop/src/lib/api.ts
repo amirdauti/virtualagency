@@ -1197,6 +1197,23 @@ export interface HostedServerInfo {
   lastError: string | null;
   pairingCode: string | null;
   pairingExpiresAt: string | null;
+  codexAuth: HostedCodexAuthState | null;
+}
+
+export interface HostedCodexAuthState {
+  status:
+    | "not_started"
+    | "starting"
+    | "awaiting_user"
+    | "authorizing"
+    | "completed"
+    | "failed";
+  startedAt: string | null;
+  updatedAt: string | null;
+  verificationUri: string | null;
+  userCode: string | null;
+  lastMessage: string | null;
+  lastError: string | null;
 }
 
 export interface HostedServerStateResponse {
@@ -1264,6 +1281,27 @@ export async function rotateHostedPairingCode(): Promise<{
       body: JSON.stringify({}),
     },
   );
+}
+
+export async function startHostedCodexAuth(): Promise<HostedCodexAuthState> {
+  const payload = await fetchHostedApi<{ codexAuth: HostedCodexAuthState }>(
+    "/api/hosting/server/codex-auth/start",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+  return payload.codexAuth;
+}
+
+export async function getHostedCodexAuthStatus(): Promise<HostedCodexAuthState> {
+  const payload = await fetchHostedApi<{ codexAuth: HostedCodexAuthState }>(
+    "/api/hosting/server/codex-auth/status",
+    {
+      method: "GET",
+    },
+  );
+  return payload.codexAuth;
 }
 
 // Directory browsing (browser mode only - uses local server)
