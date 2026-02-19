@@ -3,7 +3,6 @@ import Stripe from "stripe";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import {
   clerkClient,
   ClerkExpressRequireAuth,
@@ -73,6 +72,14 @@ let hostedState = { users: {} };
 let hostedStateWriteQueue = Promise.resolve();
 const codexAuthSessions = new Map();
 const CODEX_AUTH_ACTIVE_STATUSES = new Set(["starting", "awaiting_user", "authorizing"]);
+const CODEX_AUTH_POLL_INTERVAL_MS = Math.max(
+  500,
+  Number.parseInt(process.env.CODEX_AUTH_POLL_INTERVAL_MS || "1000", 10) || 1000,
+);
+const CODEX_AUTH_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.CODEX_AUTH_TIMEOUT_MS || "900000", 10) || 900_000,
+);
 
 function nowIso() {
   return new Date().toISOString();
@@ -179,21 +186,114 @@ function pushCodexAuthLogLine(session, line) {
   }
 }
 
-function stopCodexAuthSession(userId, reason = "cancelled") {
-  const session = codexAuthSessions.get(userId);
-  if (!session) return;
+async function hostedRuntimeRequest(server, method, suffix, body) {
+  const normalizedSuffix = suffix.startsWith("/") ? suffix : `/${suffix}`;
+  const targetUrl = `${server.runtimeBaseUrl}${normalizedSuffix}`;
 
-  if (session.process && !session.process.killed) {
+  const headers = {
+    Accept: "application/json",
+  };
+  if (server.proxyToken) {
+    headers["x-va-hosted-token"] = server.proxyToken;
+  }
+  const hasBody = !["GET", "HEAD"].includes(String(method || "").toUpperCase());
+  if (hasBody) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const response = await fetch(targetUrl, {
+    method,
+    headers,
+    body: hasBody ? JSON.stringify(body || {}) : undefined,
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const raw = await response.text();
+  let parsed = null;
+  if (raw && contentType.includes("application/json")) {
     try {
-      session.process.kill("SIGTERM");
+      parsed = JSON.parse(raw);
     } catch {
-      // ignore
+      parsed = null;
     }
   }
 
+  if (!response.ok) {
+    const errorMessage =
+      (parsed && (parsed.message || parsed.error)) || truncateText(raw || "", 280);
+    const err = new Error(
+      `hosted_runtime_request_failed:${response.status}:${errorMessage || "unknown_error"}`,
+    );
+    err.statusCode = response.status;
+    throw err;
+  }
+
+  if (parsed !== null) return parsed;
+  return raw;
+}
+
+function buildCodexTerminalId(userId) {
+  const digest = crypto.createHash("sha256").update(userId).digest("hex").slice(0, 16);
+  return `codex-auth-${digest}`;
+}
+
+async function cleanupCodexAuthTerminal(userId, terminalId) {
+  if (!terminalId) return;
+  try {
+    const server = await ensureHostedServerAccess(userId);
+    await hostedRuntimeRequest(server, "DELETE", `/api/terminals/${encodeURIComponent(terminalId)}`);
+  } catch (err) {
+    if (err?.statusCode === 404) return;
+    console.warn(
+      `[hosting] failed cleaning codex auth terminal for ${userId}:`,
+      err?.message || err,
+    );
+  }
+}
+
+function clearCodexAuthSessionTimers(session) {
+  if (!session) return;
+  if (session.pollTimer) {
+    clearInterval(session.pollTimer);
+    session.pollTimer = null;
+  }
+  if (session.timeoutTimer) {
+    clearTimeout(session.timeoutTimer);
+    session.timeoutTimer = null;
+  }
+}
+
+async function finishCodexAuthSession(userId, status, overrides = {}) {
+  const session = codexAuthSessions.get(userId);
+  if (!session) return;
+
+  clearCodexAuthSessionTimers(session);
   codexAuthSessions.delete(userId);
-  void persistCodexAuthSnapshot(userId, {
-    status: "failed",
+
+  const terminalId = session.terminalId;
+  await cleanupCodexAuthTerminal(userId, terminalId);
+
+  const snapshot = {
+    status,
+    verificationUri: session.verificationUri || null,
+    userCode: session.userCode || null,
+    lastMessage:
+      overrides.lastMessage ??
+      session.lastMessage ??
+      (status === "completed" ? "Codex authentication completed." : "Codex authentication failed."),
+    lastError:
+      overrides.lastError !== undefined
+        ? overrides.lastError
+        : status === "completed"
+          ? null
+          : session.lastError || "codex_auth_failed",
+  };
+
+  await persistCodexAuthSnapshot(userId, snapshot);
+}
+
+function stopCodexAuthSession(userId, reason = "cancelled") {
+  void finishCodexAuthSession(userId, "failed", {
     lastError: reason,
     lastMessage: `Codex auth stopped: ${reason}`,
   });
@@ -205,7 +305,7 @@ function handleCodexAuthOutput(userId, chunk, isStderr = false) {
 
   const text = stripAnsi(String(chunk || ""));
   const lines = text
-    .split(/\r?\n/)
+    .split(/[\r\n]+/)
     .map((line) => line.trim())
     .filter(Boolean);
   if (lines.length === 0) return;
@@ -253,6 +353,88 @@ function handleCodexAuthOutput(userId, chunk, isStderr = false) {
   });
 }
 
+async function pollHostedCodexAuthSession(userId) {
+  const session = codexAuthSessions.get(userId);
+  if (!session) return;
+
+  const userState = await getHostedUserState(userId);
+  const server = userState?.server;
+  if (!server?.runtimeBaseUrl || server.status === "deleted") {
+    await finishCodexAuthSession(userId, "failed", {
+      lastError: "server_not_ready",
+      lastMessage: "Hosted VPS is not reachable for Codex auth.",
+    });
+    return;
+  }
+
+  try {
+    const since = Number.isFinite(session.lastSeq) ? session.lastSeq : 0;
+    const payload = await hostedRuntimeRequest(
+      server,
+      "GET",
+      `/api/events?since=${encodeURIComponent(String(since))}`,
+    );
+
+    const latestSeq = Number.isFinite(payload?.latest_seq)
+      ? payload.latest_seq
+      : Number.isFinite(session.lastSeq)
+        ? session.lastSeq
+        : 0;
+    const events = Array.isArray(payload?.events) ? payload.events : [];
+
+    session.lastSeq = latestSeq;
+    session.pollErrors = 0;
+
+    for (const event of events) {
+      if (event?.type !== "terminal-output") continue;
+      if (event?.terminal_id !== session.terminalId) continue;
+
+      const chunk = String(event?.data || "");
+      if (!chunk) continue;
+
+      handleCodexAuthOutput(userId, chunk, false);
+      const normalizedChunk = stripAnsi(chunk);
+      session.exitBuffer = `${session.exitBuffer || ""}${normalizedChunk}`.slice(-256);
+      const exitMatch = session.exitBuffer.match(/__VA_CODEX_AUTH_EXIT__:(\d+)/);
+      if (!exitMatch) continue;
+
+      const exitCode = Number.parseInt(exitMatch[1], 10);
+      if (Number.isFinite(exitCode) && exitCode === 0) {
+        await finishCodexAuthSession(userId, "completed", {
+          lastError: null,
+          lastMessage: "Codex authentication completed.",
+        });
+      } else {
+        await finishCodexAuthSession(userId, "failed", {
+          lastError: session.lastError || `codex_login_exit_${exitMatch[1]}`,
+          lastMessage: "Codex authentication failed.",
+        });
+      }
+      return;
+    }
+  } catch (err) {
+    session.pollErrors = (session.pollErrors || 0) + 1;
+    const message = truncateText(err?.message || String(err), 400);
+    session.lastError = message;
+    session.lastMessage = "Unable to read Codex auth status from hosted server.";
+    session.updatedAt = nowIso();
+    if (session.pollErrors >= 5) {
+      await finishCodexAuthSession(userId, "failed", {
+        lastError: message,
+        lastMessage: session.lastMessage,
+      });
+      return;
+    }
+    await persistCodexAuthSnapshot(userId, {
+      status: session.status,
+      verificationUri: session.verificationUri || null,
+      userCode: session.userCode || null,
+      lastMessage: session.lastMessage,
+      lastError: session.lastError,
+    });
+  }
+}
+
 async function startHostedCodexDeviceAuth(userId) {
   const userState = await getHostedUserState(userId);
   const server = userState?.server;
@@ -274,9 +456,21 @@ async function startHostedCodexDeviceAuth(userId) {
     return sanitizeCodexAuthForClient(getServerCodexAuth(server));
   }
 
+  if (existing) {
+    await finishCodexAuthSession(userId, "failed", {
+      lastError: "superseded",
+      lastMessage: "Previous Codex auth session replaced by a new request.",
+    });
+  }
+
   const startedAt = nowIso();
+  const terminalId = buildCodexTerminalId(userId);
   const session = {
-    process: null,
+    terminalId,
+    lastSeq: 0,
+    pollErrors: 0,
+    pollTimer: null,
+    timeoutTimer: null,
     status: "starting",
     startedAt,
     updatedAt: startedAt,
@@ -285,6 +479,7 @@ async function startHostedCodexDeviceAuth(userId) {
     lastMessage: "Starting Codex device authentication on hosted VPS...",
     lastError: null,
     outputTail: [],
+    exitBuffer: "",
   };
   codexAuthSessions.set(userId, session);
 
@@ -297,74 +492,58 @@ async function startHostedCodexDeviceAuth(userId) {
     lastError: null,
   });
 
-  const remoteCommand =
-    "sudo -u va -H bash -lc 'export HOME=/home/va; export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; codex login --device-auth'";
-  const child = spawn(
-    "ssh",
-    [
-      "-o",
-      "BatchMode=yes",
-      "-o",
-      "StrictHostKeyChecking=accept-new",
-      "-o",
-      "ConnectTimeout=10",
-      `root@${server.ipAddress}`,
-      remoteCommand,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  session.process = child;
+  try {
+    const seed = await hostedRuntimeRequest(server, "GET", "/api/events");
+    session.lastSeq = Number.isFinite(seed?.latest_seq) ? seed.latest_seq : 0;
 
-  child.stdout?.on("data", (chunk) => {
-    handleCodexAuthOutput(userId, chunk, false);
-  });
-  child.stderr?.on("data", (chunk) => {
-    handleCodexAuthOutput(userId, chunk, true);
-  });
-  child.on("error", (err) => {
-    const message = truncateText(err?.message || String(err), 400);
-    session.status = "failed";
-    session.lastError = message;
-    session.lastMessage = "Codex auth process failed to start.";
-    session.updatedAt = nowIso();
-    void persistCodexAuthSnapshot(userId, {
-      status: "failed",
-      lastError: message,
-      lastMessage: session.lastMessage,
-      verificationUri: session.verificationUri || null,
-      userCode: session.userCode || null,
+    await cleanupCodexAuthTerminal(userId, terminalId);
+    await hostedRuntimeRequest(server, "POST", "/api/terminals", {
+      id: terminalId,
+      working_dir: "/home/va",
+      cols: 120,
+      rows: 36,
     });
-    codexAuthSessions.delete(userId);
-  });
-  child.on("close", (code, signal) => {
-    const wasActive = codexAuthSessions.get(userId) === session;
-    if (!wasActive) return;
 
-    if (code === 0) {
-      session.status = "completed";
-      session.lastError = null;
-      session.lastMessage = "Codex authentication completed.";
-    } else {
-      session.status = "failed";
-      const reason =
-        session.lastError ||
-        `codex login exited with code ${code ?? "unknown"}${signal ? ` (signal ${signal})` : ""}`;
-      session.lastError = reason;
-      session.lastMessage = "Codex authentication failed.";
-    }
+    const command =
+      "export HOME=/home/va; export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; codex login --device-auth; __VA_CODEX_AUTH_EXIT__=$?; printf '\\n__VA_CODEX_AUTH_EXIT__:%s\\n' \"$__VA_CODEX_AUTH_EXIT__\"";
+    await hostedRuntimeRequest(
+      server,
+      "POST",
+      `/api/terminals/${encodeURIComponent(terminalId)}/input`,
+      { data: `${command}\n` },
+    );
+
+    session.status = "authorizing";
+    session.lastMessage = "Waiting for Codex device code from hosted VPS...";
     session.updatedAt = nowIso();
-
-    void persistCodexAuthSnapshot(userId, {
+    await persistCodexAuthSnapshot(userId, {
       status: session.status,
-      verificationUri: session.verificationUri || null,
-      userCode: session.userCode || null,
-      lastMessage: session.lastMessage || null,
-      lastError: session.lastError || null,
+      verificationUri: null,
+      userCode: null,
+      lastMessage: session.lastMessage,
+      lastError: null,
     });
-    codexAuthSessions.delete(userId);
-  });
+
+    session.pollTimer = setInterval(() => {
+      void pollHostedCodexAuthSession(userId);
+    }, CODEX_AUTH_POLL_INTERVAL_MS);
+
+    session.timeoutTimer = setTimeout(() => {
+      void finishCodexAuthSession(userId, "failed", {
+        lastError: "timeout",
+        lastMessage: "Codex authentication timed out. Try again.",
+      });
+    }, CODEX_AUTH_TIMEOUT_MS);
+
+    void pollHostedCodexAuthSession(userId);
+  } catch (err) {
+    const message = truncateText(err?.message || String(err), 400);
+    await finishCodexAuthSession(userId, "failed", {
+      lastError: message,
+      lastMessage: "Codex auth process failed to start.",
+    });
+    throw err;
+  }
 
   return sanitizeCodexAuthForClient(getServerCodexAuth(server));
 }
