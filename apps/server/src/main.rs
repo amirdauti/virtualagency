@@ -295,6 +295,23 @@ async fn main() {
         }
     });
 
+    let telegram_typing_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(TokioDuration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            let actions = {
+                let mut telegram = telegram_typing_state.telegram_manager.write().await;
+                telegram.collect_typing_heartbeats()
+            };
+            if !actions.is_empty() {
+                execute_telegram_actions(telegram_typing_state.clone(), actions).await;
+            }
+        }
+    });
+
     // Build router with CORS and Private Network Access support
     let cors = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
@@ -377,6 +394,19 @@ async fn main() {
         .layer(axum::middleware::from_fn(private_network_access_middleware))
         .with_state(state.clone());
 
+    let bind_host = std::env::var("VIRTUAL_AGENCY_BIND_HOST")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let bind_ip: IpAddr = bind_host.parse().unwrap_or_else(|_| {
+        tracing::warn!(
+            "Invalid VIRTUAL_AGENCY_BIND_HOST='{}'; falling back to 127.0.0.1",
+            bind_host
+        );
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    });
+
     let preferred_port_raw = std::env::var("VIRTUAL_AGENCY_PORT").ok();
     let preferred_port = preferred_port_raw
         .as_deref()
@@ -410,7 +440,7 @@ async fn main() {
     let mut listener_opt: Option<tokio::net::TcpListener> = None;
 
     for port in candidates {
-        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+        match tokio::net::TcpListener::bind((bind_ip, port)).await {
             Ok(listener) => {
                 bound_port = Some(port);
                 listener_opt = Some(listener);
@@ -431,10 +461,7 @@ async fn main() {
     };
 
     let port = bound_port.unwrap_or(1337);
-    tracing::info!(
-        "Virtual Agency server listening on http://127.0.0.1:{}",
-        port
-    );
+    tracing::info!("Virtual Agency server listening on http://{}:{}", bind_ip, port);
 
     {
         let mut manager = state.agent_manager.write().await;

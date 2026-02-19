@@ -259,7 +259,7 @@ mkdir -p /opt/virtualagency/workspace
 mkdir -p /etc/virtualagency
 chown -R va:va /opt/virtualagency
 
-npm install -g ${escapedPackage}
+npm install -g ${escapedPackage} @openai/codex @anthropic-ai/claude-code
 
 if [ ! -f /home/va/.ssh/id_ed25519 ]; then
   su - va -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "virtualagency-${userId}"'
@@ -268,6 +268,7 @@ fi
 cat > /etc/virtualagency/server.env << 'ENV_EOF'
 WORKSPACE_DIR=/opt/virtualagency/workspace
 VIRTUAL_AGENCY_PORT=${HOSTED_SERVER_PORT}
+VIRTUAL_AGENCY_BIND_HOST=0.0.0.0
 VA_HOSTED_PROXY_TOKEN=${proxyToken}
 ENV_EOF
 

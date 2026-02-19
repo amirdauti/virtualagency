@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
@@ -99,6 +100,7 @@ struct TelegramActiveTurn {
     chat_id: i64,
     accumulated: String,
     latest_complete: Option<String>,
+    pending_progress_text: String,
     last_typing_at: Option<Instant>,
     sent_update_ids: HashSet<String>,
 }
@@ -107,6 +109,7 @@ struct TelegramAgentState {
     config: TelegramBindingConfig,
     polling: bool,
     connected: bool,
+    status_active: bool,
     last_error: Option<String>,
     last_update_id: Option<i64>,
     allowed_chat_ids: Vec<i64>,
@@ -179,6 +182,7 @@ impl TelegramManager {
                     },
                     polling: false,
                     connected: false,
+                    status_active: false,
                     last_error: None,
                     last_update_id: binding.last_update_id,
                     allowed_chat_ids: binding.allowed_chat_ids,
@@ -326,6 +330,7 @@ impl TelegramManager {
                         },
                         polling: false,
                         connected: false,
+                        status_active: false,
                         last_error: None,
                         last_update_id: None,
                         allowed_chat_ids: Vec::new(),
@@ -450,6 +455,7 @@ impl TelegramManager {
             return actions;
         };
 
+        state.status_active = false;
         state.last_error = Some(error.to_string());
 
         if let Some(active) = state.active_turn.take() {
@@ -509,6 +515,7 @@ impl TelegramManager {
                     status.status,
                     crate::agents::AgentStatus::Thinking | crate::agents::AgentStatus::Working
                 ) {
+                    state.status_active = true;
                     maybe_enqueue_typing(state, &mut actions);
                 }
 
@@ -518,6 +525,7 @@ impl TelegramManager {
                         | crate::agents::AgentStatus::Error
                         | crate::agents::AgentStatus::Exited
                 ) {
+                    state.status_active = false;
                     if let Some(active) = state.active_turn.take() {
                         let response = finalize_turn_text(&active, &status.status);
                         for chunk in split_for_telegram(&response) {
@@ -536,6 +544,17 @@ impl TelegramManager {
 
         actions
     }
+
+    pub fn collect_typing_heartbeats(&mut self) -> Vec<TelegramAction> {
+        let mut actions = Vec::new();
+        for state in self.agents.values_mut() {
+            if !state.config.enabled || !state.status_active {
+                continue;
+            }
+            maybe_enqueue_typing(state, &mut actions);
+        }
+        actions
+    }
 }
 
 fn maybe_start_next_turn(
@@ -550,11 +569,13 @@ fn maybe_start_next_turn(
         return;
     };
 
+    state.status_active = false;
     let chat_id = next.chat_id;
     state.active_turn = Some(TelegramActiveTurn {
         chat_id,
         accumulated: String::new(),
         latest_complete: None,
+        pending_progress_text: String::new(),
         last_typing_at: None,
         sent_update_ids: HashSet::new(),
     });
@@ -716,9 +737,21 @@ fn collect_incremental_updates(raw: &str, turn: &mut TelegramActiveTurn) -> Vec<
                 }
             }
         }
+        "content_block_delta" => {
+            if let Some(update) = format_claude_text_delta_update(&value, turn) {
+                updates.push(update);
+            }
+        }
         "item.started" => {
             if let Some(item) = value.get("item") {
                 if let Some(update) = format_codex_item_started_update(item, turn) {
+                    updates.push(update);
+                }
+            }
+        }
+        "item.updated" => {
+            if let Some(item) = value.get("item") {
+                if let Some(update) = format_codex_item_updated_update(item, turn) {
                     updates.push(update);
                 }
             }
@@ -743,6 +776,45 @@ fn collect_incremental_updates(raw: &str, turn: &mut TelegramActiveTurn) -> Vec<
     }
 
     updates
+}
+
+fn format_claude_text_delta_update(
+    event: &serde_json::Value,
+    turn: &mut TelegramActiveTurn,
+) -> Option<String> {
+    let delta = event
+        .get("delta")
+        .and_then(|v| v.get("text"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+
+    turn.pending_progress_text.push_str(delta);
+
+    let should_flush = turn.pending_progress_text.contains('\n')
+        || turn.pending_progress_text.chars().count() >= 180
+        || delta.ends_with('.')
+        || delta.ends_with('!')
+        || delta.ends_with('?')
+        || delta.ends_with(':');
+
+    if !should_flush {
+        return None;
+    }
+
+    let text = turn.pending_progress_text.trim().to_string();
+    turn.pending_progress_text.clear();
+    if text.is_empty() {
+        return None;
+    }
+
+    let summary = truncate_text(&text, 320);
+    let key = format!("claude-progress:{}", stable_hash(&summary));
+    if !turn.sent_update_ids.insert(key) {
+        return None;
+    }
+
+    Some(format!("Update: {}", summary))
 }
 
 fn format_claude_tool_use_update(
@@ -884,6 +956,61 @@ fn format_codex_item_started_update(
     }
 }
 
+fn format_codex_item_updated_update(
+    item: &serde_json::Value,
+    turn: &mut TelegramActiveTurn,
+) -> Option<String> {
+    let item_type = json_get_str(item, "type")?;
+    if item_type == "agent_message" {
+        return None;
+    }
+
+    match item_type {
+        "reasoning" => {
+            let summary = json_get_first_str(item, &["text", "summary", "reasoning", "message"])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?;
+            let update = format!("Update: {}", truncate_text(summary, 320));
+            let item_id = get_codex_item_id(item).unwrap_or_else(|| "reasoning".to_string());
+            let key = format!("codex-update:{}:{}", item_id, stable_hash(&update));
+            if !turn.sent_update_ids.insert(key) {
+                return None;
+            }
+            Some(update)
+        }
+        "todo_list" => {
+            let item_id = get_codex_item_id(item).unwrap_or_else(|| "todo_list".to_string());
+            let key = format!("codex-update:{}:todos", item_id);
+            if !turn.sent_update_ids.insert(key) {
+                return None;
+            }
+            Some("Updating todos...".to_string())
+        }
+        "file_change" => {
+            let changes = get_codex_file_changes(item);
+            let first_change = changes.first();
+            let path = first_change.map(|(path, _)| path.as_str()).unwrap_or("");
+            let label = if path.is_empty() {
+                "file".to_string()
+            } else {
+                short_path(path)
+            };
+
+            let snippet = extract_codex_file_change_snippet(item)?;
+            let language = language_from_path(path);
+            let update =
+                format_code_update_message(&format!("Edit {}", label), &language, &snippet);
+            let item_id = get_codex_item_id(item).unwrap_or_else(|| "file_change".to_string());
+            let key = format!("codex-update:{}:{}", item_id, stable_hash(&update));
+            if !turn.sent_update_ids.insert(key) {
+                return None;
+            }
+            Some(update)
+        }
+        _ => None,
+    }
+}
+
 fn format_codex_item_completed_update(
     item: &serde_json::Value,
     turn: &mut TelegramActiveTurn,
@@ -923,34 +1050,12 @@ fn format_codex_item_completed_update(
         short_path(path)
     };
 
-    let new_text = json_get_first_str(
-        item,
-        &[
-            "new_string",
-            "newString",
-            "new_content",
-            "newContent",
-            "content",
-        ],
-    )
-    .unwrap_or("");
-    let old_text = json_get_first_str(
-        item,
-        &["old_string", "oldString", "old_content", "oldContent"],
-    )
-    .unwrap_or("");
-    if !new_text.is_empty() {
-        let added_only = extract_added_lines(old_text, new_text);
-        let snippet = if added_only.trim().is_empty() {
-            new_text
-        } else {
-            added_only.as_str()
-        };
+    if let Some(snippet) = extract_codex_file_change_snippet(item) {
         let language = language_from_path(path);
         return Some(format_code_update_message(
             &format!("Edit {}", label),
             &language,
-            snippet,
+            &snippet,
         ));
     }
 
@@ -969,6 +1074,123 @@ fn format_codex_item_completed_update(
     }
 
     Some(lines.join("\n"))
+}
+
+fn extract_codex_file_change_snippet(item: &serde_json::Value) -> Option<String> {
+    let top_level_new = json_get_first_str(
+        item,
+        &[
+            "new_string",
+            "newString",
+            "new_content",
+            "newContent",
+            "content",
+            "after",
+            "new_text",
+            "newText",
+        ],
+    );
+    let top_level_old = json_get_first_str(
+        item,
+        &[
+            "old_string",
+            "oldString",
+            "old_content",
+            "oldContent",
+            "before",
+            "old_text",
+            "oldText",
+        ],
+    );
+    if let Some(new_text) = top_level_new {
+        return Some(extract_preferred_snippet(
+            top_level_old.unwrap_or(""),
+            new_text,
+        ));
+    }
+
+    if let Some(changes) = item.get("changes").and_then(|v| v.as_array()) {
+        for change in changes {
+            let new_text = json_get_first_str(
+                change,
+                &[
+                    "new_string",
+                    "newString",
+                    "new_content",
+                    "newContent",
+                    "content",
+                    "after",
+                    "new_text",
+                    "newText",
+                ],
+            );
+            let old_text = json_get_first_str(
+                change,
+                &[
+                    "old_string",
+                    "oldString",
+                    "old_content",
+                    "oldContent",
+                    "before",
+                    "old_text",
+                    "oldText",
+                ],
+            );
+            if let Some(new_text) = new_text {
+                return Some(extract_preferred_snippet(old_text.unwrap_or(""), new_text));
+            }
+
+            if let Some(patch) = json_get_first_str(change, &["diff", "patch"]) {
+                if let Some(from_patch) = extract_added_lines_from_patch(patch) {
+                    return Some(from_patch);
+                }
+            }
+        }
+    }
+
+    if let Some(patch) = json_get_first_str(item, &["diff", "patch"]) {
+        return extract_added_lines_from_patch(patch);
+    }
+
+    None
+}
+
+fn extract_preferred_snippet(old_text: &str, new_text: &str) -> String {
+    let added_only = extract_added_lines(old_text, new_text);
+    if added_only.trim().is_empty() {
+        new_text.to_string()
+    } else {
+        added_only
+    }
+}
+
+fn extract_added_lines_from_patch(patch: &str) -> Option<String> {
+    let mut added_lines = Vec::new();
+    for line in patch.lines() {
+        if line.starts_with("+++ ")
+            || line.starts_with("--- ")
+            || line.starts_with("@@")
+            || line.starts_with("diff --git")
+            || line.starts_with("index ")
+        {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix('+') {
+            added_lines.push(rest.to_string());
+        }
+    }
+
+    if added_lines.is_empty() {
+        let trimmed = patch.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        Some(added_lines.join("\n"))
+    }
 }
 
 fn get_codex_item_id(item: &serde_json::Value) -> Option<String> {
@@ -1123,6 +1345,12 @@ fn truncate_text(input: &str, max_chars: usize) -> String {
     let mut out: String = input.chars().take(max_chars).collect();
     out.push_str("...");
     out
+}
+
+fn stable_hash(input: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn extract_added_lines(old_text: &str, new_text: &str) -> String {

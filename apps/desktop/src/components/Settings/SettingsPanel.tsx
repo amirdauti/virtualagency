@@ -127,6 +127,16 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     );
   }
 
+  const hostedServerStatus = hostedState?.server?.status?.toLowerCase() || "";
+  const hasHostedServer = Boolean(hostedState?.server && hostedServerStatus !== "deleted");
+  const hostedIsReady = hostedServerStatus === "ready";
+  const hostedIsStopped = hostedServerStatus === "stopped";
+  const hostedCanManage = hostedIsReady || hostedIsStopped;
+  const canProvisionHostedServer =
+    hostedAction === null &&
+    Boolean(hostedState?.hostedSubscriptionActive) &&
+    (!hasHostedServer || hostedServerStatus === "deleted");
+
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
@@ -346,6 +356,21 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 </div>
               )}
 
+              {hostedState?.server?.ipAddress && (
+                <div style={fieldStyle}>
+                  <label style={labelStyle}>CLI Auth (Hosted VPS)</label>
+                  <textarea
+                    readOnly
+                    rows={4}
+                    value={`ssh va@${hostedState.server.ipAddress}\ncodex login\nclaude login`}
+                    style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace" }}
+                  />
+                  <span style={hintStyle}>
+                    Run this once on your hosted VPS to authenticate Codex/Claude CLIs for hosted agents.
+                  </span>
+                </div>
+              )}
+
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 <button
                   type="button"
@@ -374,7 +399,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       await provisionHostedServer();
                     })
                   }
-                  disabled={hostedAction !== null || !hostedState?.hostedSubscriptionActive}
+                  disabled={!canProvisionHostedServer}
                 >
                   {hostedAction === "provision" ? "Provisioning..." : "Provision VPS"}
                 </button>
@@ -387,7 +412,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       await startHostedServer();
                     })
                   }
-                  disabled={hostedAction !== null || !hostedState?.server}
+                  disabled={hostedAction !== null || !hasHostedServer || !hostedIsStopped}
                 >
                   Start
                 </button>
@@ -400,7 +425,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       await stopHostedServer();
                     })
                   }
-                  disabled={hostedAction !== null || !hostedState?.server}
+                  disabled={hostedAction !== null || !hasHostedServer || !hostedIsReady}
                 >
                   Stop
                 </button>
@@ -413,7 +438,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       await rebuildHostedServer();
                     })
                   }
-                  disabled={hostedAction !== null || !hostedState?.server}
+                  disabled={hostedAction !== null || !hasHostedServer || !hostedCanManage}
                 >
                   Rebuild
                 </button>
@@ -426,7 +451,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       await destroyHostedServer();
                     })
                   }
-                  disabled={hostedAction !== null || !hostedState?.server}
+                  disabled={hostedAction !== null || !hasHostedServer || !hostedCanManage}
                 >
                   Destroy
                 </button>
@@ -439,7 +464,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       await rotateHostedPairingCode();
                     })
                   }
-                  disabled={hostedAction !== null || !hostedState?.server}
+                  disabled={hostedAction !== null || !hasHostedServer || !hostedIsReady}
                 >
                   Rotate Pairing Code
                 </button>
@@ -455,6 +480,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   Refresh
                 </button>
               </div>
+
+              {hasHostedServer && !hostedCanManage && (
+                <div style={{ ...hintStyle, marginTop: 8 }}>
+                  Server actions unlock when status is <code>ready</code> (or <code>stopped</code> for start/rebuild/destroy).
+                </div>
+              )}
 
               {(hostedLoading || hostedError || hostedState?.server?.lastError) && (
                 <div style={{ marginTop: 10 }}>
