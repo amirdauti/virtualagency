@@ -530,7 +530,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       applyHostedCodexAuthState(codexAuthState);
                     })
                   }
-                  disabled={hostedAction !== null || !hasHostedServer || !hostedIsReady || codexAuthInProgress}
+                  disabled={hostedAction !== null || !hasHostedServer || codexAuthInProgress}
                 >
                   {hostedAction === "codex-auth"
                     ? "Starting Codex auth..."
