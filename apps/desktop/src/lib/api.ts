@@ -50,6 +50,17 @@ async function waitForHostedAuthProvider(timeoutMs = 12000): Promise<boolean> {
   return Boolean(hostedAuthTokenProvider);
 }
 
+async function tryGetClerkTokenFallback(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  try {
+    const clerk = (window as any).Clerk;
+    const token = await clerk?.session?.getToken?.();
+    return typeof token === "string" && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
 function getBillingApiBaseUrl(): string {
   if (ENV_BILLING_API_URL && ENV_BILLING_API_URL.trim().length > 0) {
     return ENV_BILLING_API_URL.replace(/\/$/, "");
@@ -61,10 +72,26 @@ async function getHostedAuthToken(): Promise<string> {
   if (!hostedAuthTokenProvider) {
     await waitForHostedAuthProvider();
   }
+  if (hostedAuthTokenProvider) {
+    const token = await hostedAuthTokenProvider();
+    if (token) {
+      return token;
+    }
+  }
+
+  const fallbackToken = await tryGetClerkTokenFallback();
+  if (fallbackToken) {
+    return fallbackToken;
+  }
+
   if (!hostedAuthTokenProvider) {
     throw new Error("missing_hosted_auth_provider");
   }
-  const token = await hostedAuthTokenProvider();
+  throw new Error("missing_hosted_auth_token");
+}
+
+async function getHostedAuthTokenStrict(): Promise<string> {
+  const token = await getHostedAuthToken();
   if (!token) {
     throw new Error("missing_hosted_auth_token");
   }
@@ -584,7 +611,7 @@ export async function fetchHostedApi<T>(
   options?: RequestInit,
 ): Promise<T> {
   const base = getBillingApiBaseUrl();
-  const token = await getHostedAuthToken();
+  const token = await getHostedAuthTokenStrict();
   const response = await fetch(`${base}${path}`, {
     ...options,
     headers: {

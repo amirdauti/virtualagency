@@ -1,6 +1,6 @@
 import { SignedIn, SignedOut, SignIn, UserButton, useAuth } from "@clerk/clerk-react";
 import type { CSSProperties, ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { setHostedAuthTokenProvider } from "../../lib/api";
 
 type BillingMe = {
@@ -53,7 +53,7 @@ export function AuthBillingGate({ children }: { children: ReactNode }) {
     getTokenRef.current = getToken;
   }, [getToken]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isLoaded || !isSignedIn) {
       setHostedAuthTokenProvider(null);
       return;
