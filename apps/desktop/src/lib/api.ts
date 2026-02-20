@@ -51,6 +51,9 @@ async function getHostedAuthToken(): Promise<string> {
 }
 
 type AgentRuntimeMap = Record<string, AgentRuntime>;
+interface RuntimeQueryOptions {
+  includeHosted?: boolean;
+}
 
 function loadAgentRuntimeMap(): AgentRuntimeMap {
   try {
@@ -104,6 +107,20 @@ function hasLocalAgentsMapped(): boolean {
   const values = Object.values(loadAgentRuntimeMap());
   if (values.length === 0) return true;
   return values.some((value) => value !== "hosted");
+}
+
+function shouldIncludeHosted(options?: RuntimeQueryOptions): boolean {
+  if (options?.includeHosted === true) return true;
+  if (options?.includeHosted === false) return false;
+  return hasHostedAgentsMapped();
+}
+
+function isHostedAuthBootError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes("missing_hosted_auth_provider") ||
+    message.includes("missing_hosted_auth_token")
+  );
 }
 
 // Detect if running in Tauri (v2 uses __TAURI_INTERNALS__)
@@ -860,7 +877,7 @@ export async function loadIntegrationsMarkdown(id: string): Promise<string> {
   }
 }
 
-export async function listAgents(): Promise<string[]> {
+export async function listAgents(options: RuntimeQueryOptions = {}): Promise<string[]> {
   if (isTauri()) {
     return tauriInvoke("list_agents");
   } else {
@@ -871,7 +888,7 @@ export async function listAgents(): Promise<string[]> {
     } catch {
       // ignore local errors
     }
-    if (hasHostedAgentsMapped()) {
+    if (shouldIncludeHosted(options)) {
       try {
         const hosted = await fetchHostedApi<Array<{ id: string }>>("/api/hosting/va/api/agents");
         hosted.forEach((agent) => all.add(agent.id));
@@ -1061,7 +1078,7 @@ export interface ServerAgentInfo {
   runtime?: AgentRuntime;
 }
 
-export async function listAgentDetails(): Promise<ServerAgentInfo[]> {
+export async function listAgentDetails(options: RuntimeQueryOptions = {}): Promise<ServerAgentInfo[]> {
   if (isTauri()) {
     return [];
   }
@@ -1072,7 +1089,7 @@ export async function listAgentDetails(): Promise<ServerAgentInfo[]> {
   } catch {
     // ignore local errors
   }
-  if (hasHostedAgentsMapped()) {
+  if (shouldIncludeHosted(options)) {
     try {
       const hosted = await fetchHostedApi<ServerAgentInfo[]>("/api/hosting/va/api/agents");
       result.push(
@@ -1090,7 +1107,7 @@ export interface ServerTerminalInfo {
   working_dir: string;
 }
 
-export async function listTerminals(): Promise<ServerTerminalInfo[]> {
+export async function listTerminals(options: RuntimeQueryOptions = {}): Promise<ServerTerminalInfo[]> {
   // Browser-only for now; desktop can add a Tauri command later if needed.
   if (isTauri()) return [];
   const result: ServerTerminalInfo[] = [];
@@ -1100,12 +1117,14 @@ export async function listTerminals(): Promise<ServerTerminalInfo[]> {
   } catch (err) {
     console.warn("[api] Failed to list terminals:", err);
   }
-  if (hasHostedAgentsMapped()) {
+  if (shouldIncludeHosted(options)) {
     try {
       const hosted = await fetchHostedApi<ServerTerminalInfo[]>("/api/hosting/va/api/terminals");
       result.push(...hosted);
     } catch (err) {
-      console.warn("[api] Failed to list hosted terminals:", err);
+      if (!isHostedAuthBootError(err)) {
+        console.warn("[api] Failed to list hosted terminals:", err);
+      }
     }
   }
   return result;

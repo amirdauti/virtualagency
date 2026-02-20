@@ -11,10 +11,11 @@ import {
   listAgentDetails,
   listTerminals,
   setAgentRuntime,
+  getAgentRuntime,
   replaceAgentRuntimeMap,
 } from "../lib/api";
 import { MCP_SERVERS } from "@virtual-agency/shared";
-import type { Agent, MCPServerId } from "@virtual-agency/shared";
+import type { Agent, MCPServerId, AgentRuntime } from "@virtual-agency/shared";
 
 interface WorkspaceState {
   isLoading: boolean;
@@ -97,6 +98,12 @@ function savedToAgent(saved: SavedAgent, index: number): Agent {
   };
 }
 
+function resolveSavedRuntime(saved: SavedAgent): AgentRuntime {
+  if (saved.runtime === "hosted") return "hosted";
+  if (saved.runtime === "local") return "local";
+  return getAgentRuntime(saved.id);
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   isLoading: false,
   lastSaved: null,
@@ -126,16 +133,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       const data = await loadWorkspace();
 
       const agentStore = useAgentStore.getState();
+      const nextRuntimeMap: Record<string, AgentRuntime> = {};
 
       // Clear existing agents first to avoid duplicates
       agentStore.clearAllAgents();
-      replaceAgentRuntimeMap({});
 
       if (data && data.agents.length > 0) {
         // Load saved agents and spawn their CLI processes
         for (let index = 0; index < data.agents.length; index++) {
           const saved = data.agents[index];
           const agent = savedToAgent(saved, index);
+          const runtime = resolveSavedRuntime(saved);
+          agent.runtime = runtime;
 
           try {
             // Spawn the CLI process for this agent with saved model settings and session ID
@@ -147,14 +156,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
               cliType: agent.cliType,
               specialty: agent.specialty,
               sessionId: agent.sessionId, // Pass session ID to resume conversation
-              runtime: agent.runtime,
+              runtime,
             });
-            setAgentRuntime(agent.id, agent.runtime || "local");
+            setAgentRuntime(agent.id, runtime);
+            nextRuntimeMap[agent.id] = runtime;
             agentStore.addAgent(agent);
           } catch (err) {
             console.error(`Failed to spawn agent ${agent.name}:`, err);
             // Add agent anyway but mark as error state
-            setAgentRuntime(agent.id, agent.runtime || "local");
+            setAgentRuntime(agent.id, runtime);
+            nextRuntimeMap[agent.id] = runtime;
             agentStore.addAgent({ ...agent, status: "error" });
           }
         }
@@ -162,9 +173,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         // Browser mode fallback: if we have agents running on the server but no saved workspace,
         // still render them so a refresh doesn't "lose" running sessions.
         try {
-          const serverAgents = await listAgentDetails();
+          const serverAgents = await listAgentDetails({ includeHosted: true });
           for (let index = 0; index < serverAgents.length; index++) {
             const a = serverAgents[index];
+            const runtime = a.runtime === "hosted" ? "hosted" : "local";
             agentStore.addAgent({
               id: a.id,
               name: a.name,
@@ -182,9 +194,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
               cliType: a.cli_type === "codex" ? "codex" : "claude",
               specialty: a.specialty === "roblox_builder" ? "roblox_builder" : "normal",
               sessionId: a.session_id || undefined,
-              runtime: a.runtime === "hosted" ? "hosted" : "local",
+              runtime,
             });
-            setAgentRuntime(a.id, a.runtime === "hosted" ? "hosted" : "local");
+            setAgentRuntime(a.id, runtime);
+            nextRuntimeMap[a.id] = runtime;
           }
         } catch (err) {
           console.warn("[workspace] Failed to load agents from server snapshot:", err);
@@ -194,7 +207,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       // Browser mode: after (re)hydration, sync runtime status/session from server snapshot.
       if (!isTauri()) {
         try {
-          const serverAgents = await listAgentDetails();
+          const serverAgents = await listAgentDetails({ includeHosted: true });
           const byId = new Map(serverAgents.map((a) => [a.id, a]));
           const currentAgents = useAgentStore.getState().agents;
           for (const agent of currentAgents) {
@@ -211,6 +224,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
               agentStore.updateAgent(agent.id, updates);
             }
             setAgentRuntime(agent.id, nextRuntime);
+            nextRuntimeMap[agent.id] = nextRuntime;
           }
         } catch (err) {
           console.warn("[workspace] Failed to sync agent runtime snapshot:", err);
@@ -222,7 +236,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       // agents by matching the working directory.
       if (!isTauri()) {
         try {
-          const terminals = await listTerminals();
+          const terminals = await listTerminals({ includeHosted: true });
           const terminalStore = useTerminalStore.getState();
           terminalStore.clearAllTerminals();
 
@@ -263,6 +277,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           console.warn("[workspace] Failed to restore terminals from server:", err);
         }
       }
+
+      // Keep runtime map in sync with hydrated agents and remove stale entries.
+      if (!isTauri()) {
+        const currentAgents = useAgentStore.getState().agents;
+        for (const agent of currentAgents) {
+          if (!nextRuntimeMap[agent.id]) {
+            nextRuntimeMap[agent.id] = agent.runtime === "hosted" ? "hosted" : "local";
+          }
+        }
+      }
+      replaceAgentRuntimeMap(nextRuntimeMap);
 
       set({ isLoading: false, lastSaved: Date.now() });
     } catch (err) {
