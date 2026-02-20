@@ -178,22 +178,26 @@ function extractCodexUserCode(text) {
     /(?:paste|enter|input|use)\s+(?:the\s+)?(?:following\s+)?code\s*[:=]?\s*([`"'([{<\s]*[A-Z0-9][A-Z0-9\s-]{5,30}[`"')\]}>.,:;!?\s]*)/i,
   ];
   for (const pattern of contextualPatterns) {
-    const match = text.match(pattern);
-    const normalized = normalizeCandidate(match?.[1]);
-    if (normalized) return normalized;
+    for (const match of text.matchAll(new RegExp(pattern.source, "gi"))) {
+      const normalized = normalizeCandidate(match?.[1]);
+      if (normalized) return normalized;
+    }
   }
 
-  const dashed = text.match(/\b([A-Z0-9]{3,8}(?:-[A-Z0-9]{3,8}){1,3})\b/i);
-  const dashedCandidate = normalizeCandidate(dashed?.[1]);
-  if (dashedCandidate) return dashedCandidate;
+  for (const match of text.matchAll(/\b([A-Z0-9]{3,8}(?:-[A-Z0-9]{3,8}){1,3})\b/gi)) {
+    const dashedCandidate = normalizeCandidate(match?.[1]);
+    if (dashedCandidate) return dashedCandidate;
+  }
 
-  const groupedNineDigits = text.match(/\b(\d{3}[-\s]?\d{3}[-\s]?\d{3})\b/);
-  const groupedCandidate = normalizeCandidate(groupedNineDigits?.[1]);
-  if (groupedCandidate) return groupedCandidate;
+  for (const match of text.matchAll(/\b(\d{3}[-\s]?\d{3}[-\s]?\d{3})\b/g)) {
+    const groupedCandidate = normalizeCandidate(match?.[1]);
+    if (groupedCandidate) return groupedCandidate;
+  }
 
-  const standaloneNineDigits = text.match(/\b(\d{9})\b/);
-  const standaloneCandidate = normalizeCandidate(standaloneNineDigits?.[1]);
-  if (standaloneCandidate) return standaloneCandidate;
+  for (const match of text.matchAll(/\b(\d{9})\b/g)) {
+    const standaloneCandidate = normalizeCandidate(match?.[1]);
+    if (standaloneCandidate) return standaloneCandidate;
+  }
 
   return null;
 }
