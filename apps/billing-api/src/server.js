@@ -82,7 +82,15 @@ const CODEX_AUTH_TIMEOUT_MS = Math.max(
 );
 const HOSTED_RUNTIME_TIMEOUT_MS = Math.max(
   2_000,
-  Number.parseInt(process.env.HOSTED_RUNTIME_TIMEOUT_MS || "12000", 10) || 12_000,
+  Number.parseInt(process.env.HOSTED_RUNTIME_TIMEOUT_MS || "25000", 10) || 25_000,
+);
+const HOSTED_EVENTS_TIMEOUT_MS = Math.max(
+  5_000,
+  Number.parseInt(process.env.HOSTED_EVENTS_TIMEOUT_MS || "30000", 10) || 30_000,
+);
+const HOSTED_FILE_TREE_TIMEOUT_MS = Math.max(
+  10_000,
+  Number.parseInt(process.env.HOSTED_FILE_TREE_TIMEOUT_MS || "120000", 10) || 120_000,
 );
 const HOSTED_REBUILD_COMMAND_POLL_INTERVAL_MS = Math.max(
   500,
@@ -1729,11 +1737,59 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     }
 
     const hasBody = !["GET", "HEAD"].includes(req.method.toUpperCase());
+    const methodUpper = req.method.toUpperCase();
+    const fileTreeMatch = suffix.match(/^\/api\/files\/tree\/([^/?#]+)/);
+
+    // Guardrail: a hosted agent with working_dir "/" triggers an extremely expensive full-disk
+    // recursive file-tree walk that can stall the runtime (and break terminals/events).
+    // Detect and block this request with a clear error so clients can recreate/fix the agent.
+    if (methodUpper === "GET" && fileTreeMatch) {
+      const agentId = decodeURIComponent(fileTreeMatch[1]);
+      try {
+        const probe = await fetchWithTimeout(
+          `${server.runtimeBaseUrl}/api/agents`,
+          { method: "GET", headers },
+          8_000,
+        );
+        const text = await probe.text();
+        const parsed = safeJsonParse(text);
+        if (Array.isArray(parsed)) {
+          const hit = parsed.find((agent) => agent?.id === agentId);
+          if (hit?.working_dir === "/" || hit?.working_dir === "") {
+            return res.status(409).json({
+              error: "hosted_invalid_working_dir",
+              message:
+                'Hosted agent working directory is "/". Update/recreate the agent with a project path (for example /opt/virtualagency/workspace).',
+            });
+          }
+        }
+      } catch {
+        // best-effort guard only
+      }
+    }
+
+    let upstreamBody = req.body || {};
+    if (methodUpper === "POST" && suffix === "/api/agents") {
+      const requestedDir = String(req.body?.working_dir || "").trim();
+      if (requestedDir === "/" || requestedDir === "") {
+        upstreamBody = {
+          ...(req.body || {}),
+          working_dir: "/opt/virtualagency/workspace",
+        };
+      }
+    }
+
+    const timeoutMs =
+      suffix.startsWith("/api/events")
+        ? HOSTED_EVENTS_TIMEOUT_MS
+        : suffix.startsWith("/api/files/tree/")
+          ? HOSTED_FILE_TREE_TIMEOUT_MS
+          : HOSTED_RUNTIME_TIMEOUT_MS;
     const upstreamResponse = await fetchWithTimeout(targetUrl, {
       method: req.method,
       headers,
-      body: hasBody ? JSON.stringify(req.body || {}) : undefined,
-    });
+      body: hasBody ? JSON.stringify(upstreamBody) : undefined,
+    }, timeoutMs);
 
     const contentType = upstreamResponse.headers.get("content-type") || "";
     const text = await upstreamResponse.text();

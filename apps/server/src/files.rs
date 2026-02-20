@@ -3,6 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const MAX_TREE_DEPTH: usize = 12;
+const MAX_TREE_NODES: usize = 25_000;
+const MAX_CHILDREN_PER_DIRECTORY: usize = 2_000;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileNode {
     pub name: String,
@@ -30,11 +34,31 @@ pub struct FileContent {
 fn should_ignore(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | "target" | ".next" | "dist" | "build" | ".DS_Store"
+        ".git"
+            | "node_modules"
+            | "target"
+            | ".next"
+            | "dist"
+            | "build"
+            | ".DS_Store"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".turbo"
+            | ".cache"
+            | ".idea"
+            | ".vscode"
     )
 }
 
-fn build_file_tree(path: &Path, base_path: &Path) -> Result<FileNode, std::io::Error> {
+fn build_file_tree(
+    path: &Path,
+    base_path: &Path,
+    depth: usize,
+    remaining_budget: &mut usize,
+) -> Result<FileNode, std::io::Error> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -47,15 +71,51 @@ fn build_file_tree(path: &Path, base_path: &Path) -> Result<FileNode, std::io::E
         .to_string_lossy()
         .to_string();
 
+    if *remaining_budget == 0 {
+        return Ok(FileNode {
+            name,
+            path: relative_path,
+            is_directory: path.is_dir(),
+            children: if path.is_dir() { Some(Vec::new()) } else { None },
+        });
+    }
+    *remaining_budget = remaining_budget.saturating_sub(1);
+
     if path.is_dir() {
+        if depth >= MAX_TREE_DEPTH {
+            return Ok(FileNode {
+                name,
+                path: relative_path,
+                is_directory: true,
+                children: Some(Vec::new()),
+            });
+        }
+
         let mut children = Vec::new();
         if let Ok(entries) = fs::read_dir(path) {
+            let mut added = 0usize;
             for entry in entries.flatten() {
+                if *remaining_budget == 0 || added >= MAX_CHILDREN_PER_DIRECTORY {
+                    break;
+                }
+
                 let entry_path = entry.path();
                 if let Some(entry_name) = entry_path.file_name().and_then(|n| n.to_str()) {
                     if !should_ignore(entry_name) {
-                        if let Ok(child) = build_file_tree(&entry_path, base_path) {
+                        // Avoid symlink loops in recursively scanned trees.
+                        if let Ok(file_type) = entry.file_type() {
+                            if file_type.is_symlink() {
+                                continue;
+                            }
+                        }
+                        if let Ok(child) = build_file_tree(
+                            &entry_path,
+                            base_path,
+                            depth + 1,
+                            remaining_budget,
+                        ) {
                             children.push(child);
+                            added += 1;
                         }
                     }
                 }
@@ -84,7 +144,13 @@ fn build_file_tree(path: &Path, base_path: &Path) -> Result<FileNode, std::io::E
 }
 
 pub async fn get_file_tree(workspace_dir: &PathBuf) -> Result<FileNode, String> {
-    build_file_tree(workspace_dir, workspace_dir).map_err(|e| e.to_string())
+    let workspace = workspace_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut remaining_budget = MAX_TREE_NODES;
+        build_file_tree(&workspace, &workspace, 0, &mut remaining_budget).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 pub async fn read_file(

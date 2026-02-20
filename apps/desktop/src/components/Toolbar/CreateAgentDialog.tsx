@@ -316,6 +316,10 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
       setError("Working directory is required");
       return;
     }
+    if (runtime === "hosted" && workingDir.trim() === "/") {
+      setError("For hosted agents, select a project directory instead of '/'.");
+      return;
+    }
 
     setCreating(true);
     setError(null);

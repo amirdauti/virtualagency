@@ -596,8 +596,27 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || `HTTP ${response.status}`);
+    const errorText = await response.text();
+    let message = errorText;
+    try {
+      const parsed = JSON.parse(errorText) as { error?: unknown; message?: unknown };
+      if (typeof parsed?.message === "string" && parsed.message.trim()) {
+        message = parsed.message;
+      } else if (typeof parsed?.error === "string" && parsed.error.trim()) {
+        message = parsed.error;
+      }
+      if (
+        typeof parsed?.error === "string" &&
+        parsed.error.trim() &&
+        typeof parsed?.message === "string" &&
+        parsed.message.trim()
+      ) {
+        message = `${parsed.error}: ${parsed.message}`;
+      }
+    } catch {
+      // Keep original text when non-JSON errors are returned.
+    }
+    throw new Error(message || `HTTP ${response.status}`);
   }
 
   // Handle empty responses
@@ -622,8 +641,27 @@ export async function fetchHostedApi<T>(
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || `HTTP ${response.status}`);
+    const errorText = await response.text();
+    let message = errorText;
+    try {
+      const parsed = JSON.parse(errorText) as { error?: unknown; message?: unknown };
+      if (typeof parsed?.message === "string" && parsed.message.trim()) {
+        message = parsed.message;
+      } else if (typeof parsed?.error === "string" && parsed.error.trim()) {
+        message = parsed.error;
+      }
+      if (
+        typeof parsed?.error === "string" &&
+        parsed.error.trim() &&
+        typeof parsed?.message === "string" &&
+        parsed.message.trim()
+      ) {
+        message = `${parsed.error}: ${parsed.message}`;
+      }
+    } catch {
+      // Keep original text when non-JSON errors are returned.
+    }
+    throw new Error(message || `HTTP ${response.status}`);
   }
 
   const text = await response.text();
