@@ -148,18 +148,52 @@ function extractCodexVerificationUri(text) {
 }
 
 function extractCodexUserCode(text) {
-  const dashed = text.match(/\b([A-Z0-9]{4}(?:-[A-Z0-9]{4}){1,2})\b/);
-  if (dashed) return dashed[1];
+  if (typeof text !== "string" || !text.trim()) return null;
 
-  const contextual = text.match(
-    /(?:user\s*code|device\s*code|enter(?:\s+the)?\s+code)\s*[:=]?\s*([A-Z0-9-]{6,20})/i,
-  );
-  if (contextual) {
-    const candidate = contextual[1].toUpperCase();
-    if (/[0-9-]/.test(candidate) && !/^AUTHORIZATION$|^AUTHORIZE$|^AUTHENTICATE$/.test(candidate)) {
-      return candidate;
+  const normalizeCandidate = (raw) => {
+    if (!raw) return null;
+    const candidate = String(raw)
+      .toUpperCase()
+      .replace(/[_\s]+/g, "-")
+      .replace(/^[`"'([{<\s]+/, "")
+      .replace(/[`"')\]}>.,:;!?\\\s]+$/, "");
+
+    if (candidate.length < 6 || candidate.length > 24) return null;
+    if (!/^[A-Z0-9-]+$/.test(candidate)) return null;
+    if (
+      /^(AUTHORIZATION|AUTHORIZE|AUTHENTICATE|AUTHENTICATION|VERIFICATION|CONFIRMATION|CONTINUE)$/i.test(
+        candidate,
+      )
+    ) {
+      return null;
     }
+    const compact = candidate.replace(/-/g, "");
+    if (!/\d/.test(compact)) return null;
+    if (/^\d{9}$/.test(compact)) return compact;
+    return candidate.replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  };
+
+  const contextualPatterns = [
+    /(?:user\s*code|device\s*code|enter(?:\s+the)?\s+code|code\s*[:=])\s*([`"'([{<\s]*[A-Z0-9][A-Z0-9\s-]{5,30}[`"')\]}>.,:;!?\s]*)/i,
+    /(?:paste|enter|input|use)\s+(?:the\s+)?(?:following\s+)?code\s*[:=]?\s*([`"'([{<\s]*[A-Z0-9][A-Z0-9\s-]{5,30}[`"')\]}>.,:;!?\s]*)/i,
+  ];
+  for (const pattern of contextualPatterns) {
+    const match = text.match(pattern);
+    const normalized = normalizeCandidate(match?.[1]);
+    if (normalized) return normalized;
   }
+
+  const dashed = text.match(/\b([A-Z0-9]{3,8}(?:-[A-Z0-9]{3,8}){1,3})\b/i);
+  const dashedCandidate = normalizeCandidate(dashed?.[1]);
+  if (dashedCandidate) return dashedCandidate;
+
+  const groupedNineDigits = text.match(/\b(\d{3}[-\s]?\d{3}[-\s]?\d{3})\b/);
+  const groupedCandidate = normalizeCandidate(groupedNineDigits?.[1]);
+  if (groupedCandidate) return groupedCandidate;
+
+  const standaloneNineDigits = text.match(/\b(\d{9})\b/);
+  const standaloneCandidate = normalizeCandidate(standaloneNineDigits?.[1]);
+  if (standaloneCandidate) return standaloneCandidate;
 
   return null;
 }
