@@ -1283,12 +1283,16 @@ export async function rotateHostedPairingCode(): Promise<{
   );
 }
 
-export async function startHostedCodexAuth(): Promise<HostedCodexAuthState> {
+export async function startHostedCodexAuth(options: {
+  forceRestart?: boolean;
+} = {}): Promise<HostedCodexAuthState> {
   const payload = await fetchHostedApi<{ codexAuth: HostedCodexAuthState }>(
     "/api/hosting/server/codex-auth/start",
     {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        force: options.forceRestart === true,
+      }),
     },
   );
   return payload.codexAuth;

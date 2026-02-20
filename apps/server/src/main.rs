@@ -19,8 +19,12 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    sync::Arc,
+    path::{Path as FsPath, PathBuf},
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -36,6 +40,7 @@ use telegram::{
 };
 
 type SharedState = Arc<AppState>;
+static WHISPER_INSTALL_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 // Middleware to add Private Network Access headers for browser security
 async fn private_network_access_middleware(
@@ -461,7 +466,11 @@ async fn main() {
     };
 
     let port = bound_port.unwrap_or(1337);
-    tracing::info!("Virtual Agency server listening on http://{}:{}", bind_ip, port);
+    tracing::info!(
+        "Virtual Agency server listening on http://{}:{}",
+        bind_ip,
+        port
+    );
 
     {
         let mut manager = state.agent_manager.write().await;
@@ -2072,11 +2081,399 @@ fn save_telegram_media(media: &TelegramInboundMedia, index: usize) -> Result<Str
     Ok(file_path.to_string_lossy().to_string())
 }
 
-fn build_telegram_dispatch_payload(
+fn parse_env_bool(name: &str, default_value: bool) -> bool {
+    let Some(raw) = std::env::var(name).ok() else {
+        return default_value;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default_value,
+    }
+}
+
+fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max_chars).collect();
+    out.push_str("...");
+    out
+}
+
+fn is_telegram_audio_media(media: &TelegramInboundMedia) -> bool {
+    if matches!(media.kind.as_str(), "voice" | "audio") {
+        return true;
+    }
+    media
+        .mime_type
+        .as_deref()
+        .map(|mime| mime.starts_with("audio/"))
+        .unwrap_or(false)
+}
+
+fn find_whisper_cli() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("VA_TELEGRAM_WHISPER_PATH") {
+        let candidate = PathBuf::from(path.trim());
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(path_env) = std::env::var("PATH") {
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        let names: &[&str] = if cfg!(windows) {
+            &["whisper.exe", "whisper.cmd", "whisper.bat"]
+        } else {
+            &["whisper"]
+        };
+        for dir in path_env.split(separator) {
+            let trimmed = dir.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            for name in names {
+                let candidate = FsPath::new(trimmed).join(name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    if cfg!(windows) {
+        if let Ok(user) = std::env::var("USERPROFILE") {
+            let candidate = PathBuf::from(user)
+                .join("AppData")
+                .join("Roaming")
+                .join("Python")
+                .join("Python39")
+                .join("Scripts")
+                .join("whisper.exe");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    } else if let Ok(home) = std::env::var("HOME") {
+        let candidates = [
+            PathBuf::from(&home)
+                .join("Library")
+                .join("Python")
+                .join("3.9")
+                .join("bin")
+                .join("whisper"),
+            PathBuf::from(&home)
+                .join(".local")
+                .join("bin")
+                .join("whisper"),
+        ];
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn install_whisper_cli_blocking() -> Result<(), String> {
+    let mut plans: Vec<(String, Vec<String>)> = Vec::new();
+    if let Ok(explicit_python) = std::env::var("VA_TELEGRAM_WHISPER_PYTHON") {
+        let trimmed = explicit_python.trim();
+        if !trimmed.is_empty() {
+            plans.push((
+                trimmed.to_string(),
+                vec![
+                    "-m".to_string(),
+                    "pip".to_string(),
+                    "install".to_string(),
+                    "--user".to_string(),
+                    "openai-whisper".to_string(),
+                ],
+            ));
+        }
+    }
+    plans.push((
+        "python3".to_string(),
+        vec![
+            "-m".to_string(),
+            "pip".to_string(),
+            "install".to_string(),
+            "--user".to_string(),
+            "openai-whisper".to_string(),
+        ],
+    ));
+    plans.push((
+        "python".to_string(),
+        vec![
+            "-m".to_string(),
+            "pip".to_string(),
+            "install".to_string(),
+            "--user".to_string(),
+            "openai-whisper".to_string(),
+        ],
+    ));
+    #[cfg(windows)]
+    {
+        plans.push((
+            "py".to_string(),
+            vec![
+                "-3".to_string(),
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "--user".to_string(),
+                "openai-whisper".to_string(),
+            ],
+        ));
+    }
+
+    let mut failures = Vec::new();
+    for (python, args) in plans {
+        match Command::new(&python).args(&args).output() {
+            Ok(output) => {
+                if output.status.success() {
+                    return Ok(());
+                }
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                failures.push(format!(
+                    "{} exited {}: {}",
+                    python,
+                    output.status.code().unwrap_or(-1),
+                    truncate_for_prompt(stderr.trim(), 240)
+                ));
+            }
+            Err(err) => {
+                failures.push(format!("{} failed to start: {}", python, err));
+            }
+        }
+    }
+
+    Err(format!(
+        "whisper_auto_install_failed: {}",
+        truncate_for_prompt(&failures.join(" | "), 480)
+    ))
+}
+
+async fn ensure_whisper_cli_available() -> Result<PathBuf, String> {
+    if let Some(path) = find_whisper_cli() {
+        return Ok(path);
+    }
+    if !parse_env_bool("VA_TELEGRAM_AUTO_INSTALL_WHISPER", true) {
+        return Err("whisper_cli_not_found".to_string());
+    }
+    if WHISPER_INSTALL_ATTEMPTED.swap(true, Ordering::SeqCst) {
+        return find_whisper_cli().ok_or_else(|| "whisper_cli_not_found".to_string());
+    }
+
+    let install_timeout_secs = std::env::var("VA_TELEGRAM_WHISPER_INSTALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(90);
+    match tokio::time::timeout(
+        TokioDuration::from_secs(install_timeout_secs),
+        tokio::task::spawn_blocking(install_whisper_cli_blocking),
+    )
+    .await
+    {
+        Ok(Ok(Ok(()))) => {
+            tracing::info!("[telegram] Auto-installed whisper for audio transcription");
+        }
+        Ok(Ok(Err(err))) => {
+            tracing::warn!("[telegram] Whisper auto-install failed: {}", err);
+        }
+        Ok(Err(err)) => {
+            tracing::warn!("[telegram] Whisper auto-install join error: {}", err);
+        }
+        Err(_) => {
+            tracing::warn!(
+                "[telegram] Whisper auto-install timed out after {}s",
+                install_timeout_secs
+            );
+        }
+    }
+
+    find_whisper_cli().ok_or_else(|| "whisper_cli_not_found".to_string())
+}
+
+fn transcribe_audio_with_local_whisper_blocking(
+    path: &str,
+    whisper: &FsPath,
+) -> Result<String, String> {
+    let model =
+        std::env::var("VA_TELEGRAM_WHISPER_MODEL").unwrap_or_else(|_| "tiny.en".to_string());
+    let language =
+        std::env::var("VA_TELEGRAM_WHISPER_LANGUAGE").unwrap_or_else(|_| "en".to_string());
+    let output_dir = std::env::temp_dir();
+    let output_dir_str = output_dir.to_string_lossy().to_string();
+
+    let output = Command::new(whisper)
+        .arg(path)
+        .args([
+            "--model",
+            &model,
+            "--language",
+            &language,
+            "--fp16",
+            "False",
+            "--output_format",
+            "txt",
+            "--output_dir",
+            &output_dir_str,
+            "--verbose",
+            "False",
+        ])
+        .output()
+        .map_err(|e| format!("failed starting whisper: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "whisper_failed_exit_{}: {}",
+            output.status.code().unwrap_or(-1),
+            truncate_for_prompt(stderr.trim(), 300)
+        ));
+    }
+
+    let stem = FsPath::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "invalid_audio_filename".to_string())?;
+    let transcript_path = output_dir.join(format!("{}.txt", stem));
+    let transcript = std::fs::read_to_string(&transcript_path)
+        .map_err(|e| format!("failed reading whisper output: {}", e))?;
+    let _ = std::fs::remove_file(&transcript_path);
+
+    let cleaned = transcript.trim();
+    if cleaned.is_empty() {
+        return Err("empty_transcript".to_string());
+    }
+    Ok(cleaned.to_string())
+}
+
+async fn transcribe_audio_with_local_whisper(path: &str) -> Result<String, String> {
+    let whisper_path = ensure_whisper_cli_available().await?;
+    let path_owned = path.to_string();
+    let whisper_owned = whisper_path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        transcribe_audio_with_local_whisper_blocking(&path_owned, &whisper_owned)
+    })
+    .await
+    .map_err(|e| format!("whisper_task_join_error: {}", e))??;
+    Ok(result)
+}
+
+async fn transcribe_audio_with_openai(path: &str) -> Result<String, String> {
+    let api_key =
+        std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not configured".to_string())?;
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("failed reading audio file: {}", e))?;
+
+    let filename = FsPath::new(path)
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("voice.ogg")
+        .to_string();
+
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
+
+    let model = std::env::var("VA_TELEGRAM_TRANSCRIBE_MODEL")
+        .unwrap_or_else(|_| "gpt-4o-mini-transcribe".to_string());
+    let language = std::env::var("VA_TELEGRAM_TRANSCRIBE_LANGUAGE").ok();
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", model)
+        .part("file", part);
+    if let Some(lang) = language {
+        if !lang.trim().is_empty() {
+            form = form.text("language", lang.trim().to_string());
+        }
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.openai.com/v1/audio/transcriptions")
+        .bearer_auth(api_key)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("openai_transcribe_request_failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unable_to_read_response".to_string());
+        return Err(format!(
+            "openai_transcribe_http_{}: {}",
+            status,
+            truncate_for_prompt(body.trim(), 300)
+        ));
+    }
+
+    let payload = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("openai_transcribe_invalid_json: {}", e))?;
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "openai_transcribe_missing_text".to_string())?;
+
+    Ok(text.to_string())
+}
+
+async fn maybe_transcribe_telegram_audio(
+    path: &str,
+    media: &TelegramInboundMedia,
+) -> Option<String> {
+    if !is_telegram_audio_media(media) {
+        return None;
+    }
+    if !parse_env_bool("VA_TELEGRAM_TRANSCRIBE_VOICE", true) {
+        return None;
+    }
+
+    let openai_timeout_secs = std::env::var("VA_TELEGRAM_TRANSCRIBE_OPENAI_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(12);
+    if let Ok(Ok(transcript)) = tokio::time::timeout(
+        TokioDuration::from_secs(openai_timeout_secs),
+        transcribe_audio_with_openai(path),
+    )
+    .await
+    {
+        return Some(transcript);
+    }
+
+    let local_timeout_secs = std::env::var("VA_TELEGRAM_TRANSCRIBE_LOCAL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(16);
+    if let Ok(Ok(transcript)) = tokio::time::timeout(
+        TokioDuration::from_secs(local_timeout_secs),
+        transcribe_audio_with_local_whisper(path),
+    )
+    .await
+    {
+        return Some(transcript);
+    }
+
+    None
+}
+
+async fn build_telegram_dispatch_payload(
     dispatch: &TelegramDispatch,
 ) -> Result<(String, Vec<String>), String> {
     let mut image_paths = Vec::new();
     let mut attachment_notes = Vec::new();
+    let mut transcript_notes = Vec::new();
 
     for (idx, media) in dispatch.media.iter().enumerate() {
         let path = save_telegram_media(media, idx)?;
@@ -2092,9 +2489,24 @@ fn build_telegram_dispatch_payload(
             .clone()
             .unwrap_or_else(|| format!("{} #{}", media.kind, idx + 1));
         attachment_notes.push(format!("- {} ({}) -> {}", label, media.kind, path));
+
+        if let Some(transcript) = maybe_transcribe_telegram_audio(&path, media).await {
+            transcript_notes.push(format!(
+                "- {}: {}",
+                label,
+                truncate_for_prompt(transcript.trim(), 500)
+            ));
+        }
     }
 
     let mut message = dispatch.text.trim().to_string();
+    if !transcript_notes.is_empty() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("[Telegram Voice Transcript]\n");
+        message.push_str(&transcript_notes.join("\n"));
+    }
     if !attachment_notes.is_empty() {
         if !message.is_empty() {
             message.push_str("\n\n");
@@ -2113,7 +2525,7 @@ async fn dispatch_telegram_turn(
     state: SharedState,
     dispatch: TelegramDispatch,
 ) -> Result<(), String> {
-    let (message, image_paths) = build_telegram_dispatch_payload(&dispatch)?;
+    let (message, image_paths) = build_telegram_dispatch_payload(&dispatch).await?;
 
     let manager = state.agent_manager.read().await;
     manager.send_message(&dispatch.agent_id, &message, &image_paths)

@@ -526,16 +526,20 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   style={secondaryActionButtonStyle}
                   onClick={() =>
                     runHostedAction("codex-auth", async () => {
-                      const codexAuthState = await startHostedCodexAuth();
+                      const codexAuthState = await startHostedCodexAuth({
+                        forceRestart: codexAuthInProgress,
+                      });
                       applyHostedCodexAuthState(codexAuthState);
                     })
                   }
-                  disabled={hostedAction !== null || !hasHostedServer || codexAuthInProgress}
+                  disabled={hostedAction !== null || !hasHostedServer}
                 >
                   {hostedAction === "codex-auth"
-                    ? "Starting Codex auth..."
+                    ? codexAuthInProgress
+                      ? "Restarting Codex auth..."
+                      : "Starting Codex auth..."
                     : codexAuthInProgress
-                      ? "Codex auth in progress..."
+                      ? "Restart Codex Auth"
                       : "Set up Codex Auth"}
                 </button>
 

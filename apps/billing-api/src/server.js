@@ -440,7 +440,8 @@ async function pollHostedCodexAuthSession(userId) {
   }
 }
 
-async function startHostedCodexDeviceAuth(userId) {
+async function startHostedCodexDeviceAuth(userId, options = {}) {
+  const forceRestart = options?.forceRestart === true;
   const userState = await getHostedUserState(userId);
   const server = userState?.server;
   if (!server?.id) {
@@ -457,14 +458,19 @@ async function startHostedCodexDeviceAuth(userId) {
   }
 
   const existing = codexAuthSessions.get(userId);
-  if (existing && CODEX_AUTH_ACTIVE_STATUSES.has(existing.status)) {
+  const existingIsActive = Boolean(
+    existing && CODEX_AUTH_ACTIVE_STATUSES.has(existing.status),
+  );
+  if (existingIsActive && !forceRestart) {
     return sanitizeCodexAuthForClient(getServerCodexAuth(server));
   }
 
   if (existing) {
     await finishCodexAuthSession(userId, "failed", {
       lastError: "superseded",
-      lastMessage: "Previous Codex auth session replaced by a new request.",
+      lastMessage: existingIsActive
+        ? "Active Codex auth session restarted by user request."
+        : "Previous Codex auth session replaced by a new request.",
     });
   }
 
@@ -1371,9 +1377,10 @@ app.post("/api/hosting/server/codex-auth/start", requireAuth, async (req, res) =
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
   ensureHostedEnabled();
+  const forceRestart = req.body?.force === true;
 
   try {
-    const codexAuth = await startHostedCodexDeviceAuth(userId);
+    const codexAuth = await startHostedCodexDeviceAuth(userId, { forceRestart });
     return res.json({ codexAuth });
   } catch (err) {
     const message = err?.message || String(err);

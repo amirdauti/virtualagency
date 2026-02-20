@@ -113,9 +113,11 @@ struct TelegramAgentState {
     status_active: bool,
     last_error: Option<String>,
     last_update_id: Option<i64>,
+    last_seen_chat_id: Option<i64>,
     allowed_chat_ids: Vec<i64>,
     queue: VecDeque<TelegramQueuedTurn>,
     active_turn: Option<TelegramActiveTurn>,
+    passive_turn: Option<TelegramActiveTurn>,
     worker_stop: Option<watch::Sender<bool>>,
 }
 
@@ -150,6 +152,8 @@ struct PersistedBinding {
     allowed_chat_ids: Vec<i64>,
     #[serde(default)]
     last_update_id: Option<i64>,
+    #[serde(default)]
+    last_seen_chat_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,9 +190,11 @@ impl TelegramManager {
                     status_active: false,
                     last_error: None,
                     last_update_id: binding.last_update_id,
+                    last_seen_chat_id: binding.last_seen_chat_id,
                     allowed_chat_ids: binding.allowed_chat_ids,
                     queue: VecDeque::new(),
                     active_turn: None,
+                    passive_turn: None,
                     worker_stop: None,
                 };
                 (agent_id, state)
@@ -239,6 +245,7 @@ impl TelegramManager {
                     send_updates: state.config.send_updates,
                     allowed_chat_ids: state.allowed_chat_ids.clone(),
                     last_update_id: state.last_update_id,
+                    last_seen_chat_id: state.last_seen_chat_id,
                 },
             );
         }
@@ -334,9 +341,11 @@ impl TelegramManager {
                         status_active: false,
                         last_error: None,
                         last_update_id: None,
+                        last_seen_chat_id: None,
                         allowed_chat_ids: Vec::new(),
                         queue: VecDeque::new(),
                         active_turn: None,
+                        passive_turn: None,
                         worker_stop: None,
                     });
 
@@ -418,10 +427,13 @@ impl TelegramManager {
                 return actions;
             }
 
+            if state.last_seen_chat_id != Some(msg.chat_id) {
+                state.last_seen_chat_id = Some(msg.chat_id);
+                should_persist = true;
+            }
+
             if !state.allowed_chat_ids.iter().any(|id| *id == msg.chat_id) {
                 state.allowed_chat_ids.push(msg.chat_id);
-                state.allowed_chat_ids.sort_unstable();
-                state.allowed_chat_ids.dedup();
                 should_persist = true;
             }
 
@@ -484,25 +496,40 @@ impl TelegramManager {
                 }
 
                 let bot_token = state.config.bot_token.clone();
-                let Some(active) = state.active_turn.as_mut() else {
+                let using_active_turn = state.active_turn.is_some();
+                if !using_active_turn && state.passive_turn.is_none() {
+                    if let Some(chat_id) = resolve_mirror_chat_id(state) {
+                        state.passive_turn = Some(new_turn(chat_id));
+                    }
+                }
+
+                let turn_opt = if using_active_turn {
+                    state.active_turn.as_mut()
+                } else {
+                    state.passive_turn.as_mut()
+                };
+                let Some(turn) = turn_opt else {
                     return actions;
                 };
 
-                apply_agent_output_to_turn(&output.data, active);
+                apply_agent_output_to_turn(&output.data, turn);
+                let chat_id = turn.chat_id;
 
                 if state.config.send_updates {
-                    for message in collect_incremental_updates(&output.data, active) {
+                    for message in collect_incremental_updates(&output.data, turn) {
                         for chunk in split_for_telegram(&message) {
                             actions.push(TelegramAction::SendMessage {
                                 bot_token: bot_token.clone(),
-                                chat_id: active.chat_id,
+                                chat_id,
                                 text: chunk,
                             });
                         }
                     }
                 }
 
-                maybe_enqueue_typing(state, &mut actions);
+                if using_active_turn {
+                    maybe_enqueue_typing(state, &mut actions);
+                }
             }
             crate::BroadcastMessage::AgentStatus(status) => {
                 let Some(state) = self.agents.get_mut(&status.agent_id) else {
@@ -517,7 +544,14 @@ impl TelegramManager {
                     crate::agents::AgentStatus::Thinking | crate::agents::AgentStatus::Working
                 ) {
                     state.status_active = true;
-                    maybe_enqueue_typing(state, &mut actions);
+                    if state.active_turn.is_none() && state.passive_turn.is_none() {
+                        if let Some(chat_id) = resolve_mirror_chat_id(state) {
+                            state.passive_turn = Some(new_turn(chat_id));
+                        }
+                    }
+                    if state.active_turn.is_some() {
+                        maybe_enqueue_typing(state, &mut actions);
+                    }
                 }
 
                 if matches!(
@@ -535,6 +569,25 @@ impl TelegramManager {
                                 chat_id: active.chat_id,
                                 text: chunk,
                             });
+                        }
+                        maybe_start_next_turn(&status.agent_id, state, &mut actions);
+                    } else if let Some(passive) = state.passive_turn.take() {
+                        let has_text = passive
+                            .latest_complete
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .is_some()
+                            || !passive.accumulated.trim().is_empty();
+                        if has_text || matches!(status.status, crate::agents::AgentStatus::Error) {
+                            let response = finalize_turn_text(&passive, &status.status);
+                            for chunk in split_for_telegram(&response) {
+                                actions.push(TelegramAction::SendMessage {
+                                    bot_token: state.config.bot_token.clone(),
+                                    chat_id: passive.chat_id,
+                                    text: chunk,
+                                });
+                            }
                         }
                         maybe_start_next_turn(&status.agent_id, state, &mut actions);
                     }
@@ -563,7 +616,7 @@ fn maybe_start_next_turn(
     state: &mut TelegramAgentState,
     actions: &mut Vec<TelegramAction>,
 ) {
-    if state.active_turn.is_some() {
+    if state.active_turn.is_some() || state.passive_turn.is_some() {
         return;
     }
     let Some(next) = state.queue.pop_front() else {
@@ -572,7 +625,17 @@ fn maybe_start_next_turn(
 
     state.status_active = false;
     let chat_id = next.chat_id;
-    state.active_turn = Some(TelegramActiveTurn {
+    state.active_turn = Some(new_turn(chat_id));
+
+    actions.push(TelegramAction::DispatchToAgent(TelegramDispatch {
+        agent_id: agent_id.to_string(),
+        text: next.text,
+        media: next.media,
+    }));
+}
+
+fn new_turn(chat_id: i64) -> TelegramActiveTurn {
+    TelegramActiveTurn {
         chat_id,
         accumulated: String::new(),
         latest_complete: None,
@@ -580,13 +643,13 @@ fn maybe_start_next_turn(
         last_typing_at: None,
         sent_update_ids: HashSet::new(),
         file_snapshots: HashMap::new(),
-    });
+    }
+}
 
-    actions.push(TelegramAction::DispatchToAgent(TelegramDispatch {
-        agent_id: agent_id.to_string(),
-        text: next.text,
-        media: next.media,
-    }));
+fn resolve_mirror_chat_id(state: &TelegramAgentState) -> Option<i64> {
+    state
+        .last_seen_chat_id
+        .or_else(|| state.allowed_chat_ids.last().copied())
 }
 
 fn maybe_enqueue_typing(state: &mut TelegramAgentState, actions: &mut Vec<TelegramAction>) {
@@ -951,7 +1014,7 @@ fn format_codex_item_started_update(
                 .unwrap_or("MCP tool");
             Some(format!("Using {}...", tool_name))
         }
-        "todo_list" => Some("Updating todos...".to_string()),
+        "todo_list" => format_todo_checklist_message(item, "Checklist"),
         _ => Some(item_type.to_string()),
     }
 }
@@ -1005,7 +1068,14 @@ fn format_codex_item_updated_update(
         "agent_message" => {
             let direct_text = json_get_first_str(
                 item,
-                &["text", "message", "content", "summary", "reasoning", "delta"],
+                &[
+                    "text",
+                    "message",
+                    "content",
+                    "summary",
+                    "reasoning",
+                    "delta",
+                ],
             )
             .or_else(|| {
                 event
@@ -1031,7 +1101,12 @@ fn format_codex_item_updated_update(
                 })?;
 
             let item_id = get_codex_item_id(item).unwrap_or_else(|| "reasoning".to_string());
-            format_progress_update(summary, turn, "Update: ", &format!("codex-update:{}", item_id))
+            format_progress_update(
+                summary,
+                turn,
+                "Update: ",
+                &format!("codex-update:{}", item_id),
+            )
         }
         "todo_list" => {
             let item_id = get_codex_item_id(item).unwrap_or_else(|| "todo_list".to_string());
@@ -1039,7 +1114,8 @@ fn format_codex_item_updated_update(
             if !turn.sent_update_ids.insert(key) {
                 return None;
             }
-            Some("Updating todos...".to_string())
+            format_todo_checklist_message(item, "Checklist update")
+                .or_else(|| Some("Updating todos...".to_string()))
         }
         "file_change" => {
             let changes = get_codex_file_changes(item);
@@ -1076,6 +1152,17 @@ fn format_codex_item_completed_update(
         return None;
     }
 
+    if item_type == "reasoning" {
+        let summary = json_get_first_str(item, &["text", "summary", "reasoning", "message"])?;
+        let key = get_codex_item_id(item)
+            .map(|id| format!("codex-complete:{}", id))
+            .unwrap_or_else(|| format!("codex-complete:reasoning:{}", stable_hash(summary)));
+        if !turn.sent_update_ids.insert(key) {
+            return None;
+        }
+        return Some(format!("Update: {}", truncate_text(summary, 320)));
+    }
+
     if item_type == "todo_list" {
         let key = get_codex_item_id(item)
             .map(|id| format!("codex-complete:{}", id))
@@ -1083,7 +1170,8 @@ fn format_codex_item_completed_update(
         if !turn.sent_update_ids.insert(key) {
             return None;
         }
-        return Some("Todos updated.".to_string());
+        return format_todo_checklist_message(item, "Checklist updated")
+            .or_else(|| Some("Todos updated.".to_string()));
     }
 
     if item_type != "file_change" {
@@ -1460,6 +1548,84 @@ fn short_path(path: &str) -> String {
         return path.to_string();
     }
     format!(".../{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
+}
+
+fn extract_todo_entries(item: &serde_json::Value) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    let mut stacks: Vec<&serde_json::Value> = vec![item];
+    if let Some(nested) = item.get("todo_list") {
+        stacks.push(nested);
+    }
+
+    for container in stacks {
+        let arrays = [
+            "todos",
+            "items",
+            "tasks",
+            "entries",
+            "checklist",
+            "checklist_tasks",
+            "checklistTasks",
+        ];
+        for key in arrays {
+            let Some(values) = container.get(key).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for value in values {
+                if let Some(text) = json_get_first_str(
+                    value,
+                    &["content", "text", "title", "task", "label", "name"],
+                ) {
+                    let status = json_get_first_str(
+                        value,
+                        &["status", "state", "checked", "done", "completed"],
+                    )
+                    .unwrap_or("pending")
+                    .to_ascii_lowercase();
+                    let clean = text.trim();
+                    if clean.is_empty() {
+                        continue;
+                    }
+                    entries.push((clean.to_string(), status));
+                }
+            }
+        }
+    }
+
+    entries
+}
+
+fn todo_status_mark(status: &str) -> &'static str {
+    match status {
+        "done" | "completed" | "true" => "[x]",
+        "in_progress" | "in-progress" | "active" | "running" => "[-]",
+        _ => "[ ]",
+    }
+}
+
+fn format_todo_checklist_message(item: &serde_json::Value, heading: &str) -> Option<String> {
+    let entries = extract_todo_entries(item);
+    if entries.is_empty() {
+        return None;
+    }
+
+    let done_count = entries
+        .iter()
+        .filter(|(_, status)| matches!(status.as_str(), "done" | "completed" | "true"))
+        .count();
+    let mut lines = Vec::new();
+    lines.push(format!("{} ({}/{})", heading, done_count, entries.len()));
+    for (text, status) in entries.iter().take(24) {
+        lines.push(format!(
+            "{} {}",
+            todo_status_mark(status),
+            truncate_text(text, 220)
+        ));
+    }
+    if entries.len() > 24 {
+        lines.push(format!("... and {} more", entries.len() - 24));
+    }
+    Some(lines.join("\n"))
 }
 
 fn language_from_path(path: &str) -> String {
@@ -2095,4 +2261,221 @@ struct TelegramVoice {
 #[derive(Debug, Deserialize)]
 struct TelegramFile {
     file_path: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::{AgentOutput, AgentStatus, AgentStatusChange, OutputStream};
+
+    fn make_turn() -> TelegramActiveTurn {
+        TelegramActiveTurn {
+            chat_id: 1,
+            accumulated: String::new(),
+            latest_complete: None,
+            pending_progress_text: String::new(),
+            last_typing_at: None,
+            sent_update_ids: HashSet::new(),
+            file_snapshots: HashMap::new(),
+        }
+    }
+
+    fn make_manager_with_state(agent_id: &str, state: TelegramAgentState) -> TelegramManager {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut agents = HashMap::new();
+        agents.insert(agent_id.to_string(), state);
+        let persistence_path = std::env::temp_dir().join(format!(
+            "virtual-agency-telegram-bindings-test-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        TelegramManager {
+            inbound_tx: tx,
+            persistence_path,
+            agents,
+        }
+    }
+
+    fn make_enabled_state(chat_id: i64, send_updates: bool) -> TelegramAgentState {
+        TelegramAgentState {
+            config: TelegramBindingConfig {
+                enabled: true,
+                bot_token: "token".to_string(),
+                allowed_handle: "alice".to_string(),
+                send_typing: true,
+                send_updates,
+            },
+            polling: false,
+            connected: true,
+            status_active: false,
+            last_error: None,
+            last_update_id: None,
+            last_seen_chat_id: Some(chat_id),
+            allowed_chat_ids: vec![chat_id],
+            queue: VecDeque::new(),
+            active_turn: None,
+            passive_turn: None,
+            worker_stop: None,
+        }
+    }
+
+    #[test]
+    fn codex_reasoning_completed_emits_incremental_update() {
+        let mut turn = make_turn();
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "item_0",
+                "type": "reasoning",
+                "text": "Build and backend syntax checks both pass."
+            }
+        })
+        .to_string();
+
+        let updates = collect_incremental_updates(&raw, &mut turn);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0],
+            "Update: Build and backend syntax checks both pass."
+        );
+    }
+
+    #[test]
+    fn codex_reasoning_completed_is_deduped() {
+        let mut turn = make_turn();
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "item_0",
+                "type": "reasoning",
+                "text": "Progress update"
+            }
+        })
+        .to_string();
+
+        let first = collect_incremental_updates(&raw, &mut turn);
+        let second = collect_incremental_updates(&raw, &mut turn);
+
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn mirrors_non_telegram_turn_updates_and_final_message() {
+        let agent_id = "agent-1";
+        let state = make_enabled_state(42, true);
+        let mut manager = make_manager_with_state(agent_id, state);
+
+        let reasoning_event = crate::BroadcastMessage::AgentOutput(AgentOutput {
+            agent_id: agent_id.to_string(),
+            stream: OutputStream::Stdout,
+            data: serde_json::json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "item_0",
+                    "type": "reasoning",
+                    "text": "Working through the fix."
+                }
+            })
+            .to_string(),
+        });
+        let update_actions = manager.handle_broadcast(&reasoning_event);
+        assert!(
+            update_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    TelegramAction::SendMessage { chat_id, text, .. }
+                        if *chat_id == 42 && text.starts_with("Update: ")
+                )
+            }),
+            "expected mirrored incremental update"
+        );
+
+        let final_item_event = crate::BroadcastMessage::AgentOutput(AgentOutput {
+            agent_id: agent_id.to_string(),
+            stream: OutputStream::Stdout,
+            data: serde_json::json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "item_1",
+                    "type": "agent_message",
+                    "text": "All done."
+                }
+            })
+            .to_string(),
+        });
+        let _ = manager.handle_broadcast(&final_item_event);
+
+        let idle_event = crate::BroadcastMessage::AgentStatus(AgentStatusChange {
+            agent_id: agent_id.to_string(),
+            status: AgentStatus::Idle,
+        });
+        let final_actions = manager.handle_broadcast(&idle_event);
+        assert!(
+            final_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    TelegramAction::SendMessage { chat_id, text, .. }
+                        if *chat_id == 42 && text == "All done."
+                )
+            }),
+            "expected mirrored final response"
+        );
+    }
+
+    #[test]
+    fn inbound_telegram_is_queued_while_passive_turn_is_active() {
+        let agent_id = "agent-1";
+        let state = make_enabled_state(42, true);
+        let mut manager = make_manager_with_state(agent_id, state);
+
+        // Start a passive mirrored turn from non-Telegram output.
+        let reasoning_event = crate::BroadcastMessage::AgentOutput(AgentOutput {
+            agent_id: agent_id.to_string(),
+            stream: OutputStream::Stdout,
+            data: serde_json::json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "item_0",
+                    "type": "reasoning",
+                    "text": "Busy with web turn"
+                }
+            })
+            .to_string(),
+        });
+        let _ = manager.handle_broadcast(&reasoning_event);
+
+        let actions = manager.handle_inbound(TelegramInboundMessage {
+            agent_id: agent_id.to_string(),
+            update_id: 1,
+            chat_id: 42,
+            from_handle: Some("alice".to_string()),
+            text: "telegram follow-up".to_string(),
+            media: Vec::new(),
+        });
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, TelegramAction::DispatchToAgent(_))),
+            "should queue while passive turn is active"
+        );
+    }
+
+    #[test]
+    fn todo_list_is_rendered_as_checklist_message() {
+        let item = serde_json::json!({
+            "type": "todo_list",
+            "todos": [
+                { "content": "Ship backend patch", "status": "completed" },
+                { "content": "Update Telegram integration", "status": "in_progress" },
+                { "content": "Write tests", "status": "pending" }
+            ]
+        });
+
+        let text = format_todo_checklist_message(&item, "Checklist update")
+            .expect("expected checklist output");
+        assert!(text.contains("Checklist update (1/3)"));
+        assert!(text.contains("[x] Ship backend patch"));
+        assert!(text.contains("[-] Update Telegram integration"));
+        assert!(text.contains("[ ] Write tests"));
+    }
 }
