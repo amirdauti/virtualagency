@@ -80,6 +80,10 @@ const CODEX_AUTH_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(process.env.CODEX_AUTH_TIMEOUT_MS || "900000", 10) || 900_000,
 );
+const HOSTED_RUNTIME_TIMEOUT_MS = Math.max(
+  2_000,
+  Number.parseInt(process.env.HOSTED_RUNTIME_TIMEOUT_MS || "12000", 10) || 12_000,
+);
 
 function nowIso() {
   return new Date().toISOString();
@@ -140,6 +144,31 @@ function truncateText(value, max = 320) {
 function stripAnsi(value) {
   if (typeof value !== "string") return "";
   return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = HOSTED_RUNTIME_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const timeoutErr = new Error(`hosted_runtime_timeout:${timeoutMs}`);
+      timeoutErr.statusCode = 504;
+      throw timeoutErr;
+    }
+    const networkErr = new Error(
+      `hosted_runtime_network_error:${truncateText(err?.message || String(err), 280)}`,
+    );
+    networkErr.statusCode = 502;
+    throw networkErr;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function extractCodexVerificationUri(text) {
@@ -244,7 +273,7 @@ async function hostedRuntimeRequest(server, method, suffix, body) {
     headers["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(targetUrl, {
+  const response = await fetchWithTimeout(targetUrl, {
     method,
     headers,
     body: hasBody ? JSON.stringify(body || {}) : undefined,
@@ -1517,7 +1546,7 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     }
 
     const hasBody = !["GET", "HEAD"].includes(req.method.toUpperCase());
-    const upstreamResponse = await fetch(targetUrl, {
+    const upstreamResponse = await fetchWithTimeout(targetUrl, {
       method: req.method,
       headers,
       body: hasBody ? JSON.stringify(req.body || {}) : undefined,
@@ -1543,6 +1572,11 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     }
     if (message === "server_deleted") {
       return res.status(404).json({ error: "server_deleted" });
+    }
+    if (typeof err?.statusCode === "number" && err.statusCode === 504) {
+      return res
+        .status(504)
+        .json({ error: "hosting_runtime_timeout", message: "Hosted server request timed out" });
     }
     console.error("[hosting] proxy error:", err);
     return res.status(502).json({ error: "hosting_proxy_failed", message });

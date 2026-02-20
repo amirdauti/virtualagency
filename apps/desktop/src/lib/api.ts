@@ -25,11 +25,29 @@ let resolvingServerUrl: Promise<string> | null = null;
 let lastServerResolveFailureAt = 0;
 
 let hostedAuthTokenProvider: (() => Promise<string | null>) | null = null;
+let hostedAuthProviderResolvers: Array<() => void> = [];
 
 export function setHostedAuthTokenProvider(
   provider: (() => Promise<string | null>) | null,
 ) {
   hostedAuthTokenProvider = provider;
+  if (provider) {
+    const resolvers = hostedAuthProviderResolvers;
+    hostedAuthProviderResolvers = [];
+    for (const resolve of resolvers) resolve();
+  }
+}
+
+async function waitForHostedAuthProvider(timeoutMs = 12000): Promise<boolean> {
+  if (hostedAuthTokenProvider) return true;
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(resolve, timeoutMs);
+    hostedAuthProviderResolvers.push(() => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+  return Boolean(hostedAuthTokenProvider);
 }
 
 function getBillingApiBaseUrl(): string {
@@ -40,6 +58,9 @@ function getBillingApiBaseUrl(): string {
 }
 
 async function getHostedAuthToken(): Promise<string> {
+  if (!hostedAuthTokenProvider) {
+    await waitForHostedAuthProvider();
+  }
   if (!hostedAuthTokenProvider) {
     throw new Error("missing_hosted_auth_provider");
   }
