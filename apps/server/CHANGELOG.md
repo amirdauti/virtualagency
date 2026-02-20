@@ -1,3 +1,9 @@
+## [1.3.2](https://github.com/amirdauti/virtualagency/compare/v1.3.1...v1.3.2) (2026-02-20)
+
+### Bug Fixes
+
+* **server:** mirror web progress to telegram and speed up voice transcribe ([ed3bdae](https://github.com/amirdauti/virtualagency/commit/ed3bdaec712ec1b1282f829fc96f9c7e4fd70580))
+
 ## [1.3.1](https://github.com/amirdauti/virtualagency/compare/v1.3.0...v1.3.1) (2026-02-19)
 
 ### Bug Fixes
