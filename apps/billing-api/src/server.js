@@ -84,6 +84,17 @@ const HOSTED_RUNTIME_TIMEOUT_MS = Math.max(
   2_000,
   Number.parseInt(process.env.HOSTED_RUNTIME_TIMEOUT_MS || "12000", 10) || 12_000,
 );
+const HETZNER_ACTION_POLL_INTERVAL_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.HETZNER_ACTION_POLL_INTERVAL_MS || "5000", 10) || 5_000,
+);
+const HETZNER_ACTION_TIMEOUT_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.HETZNER_ACTION_TIMEOUT_MS || "900000", 10) || 900_000,
+);
+const HOSTED_REBUILD_BACKUP_ENABLED = !/^(0|false|off|no)$/i.test(
+  (process.env.HOSTED_REBUILD_BACKUP_ENABLED || "true").trim(),
+);
 
 function nowIso() {
   return new Date().toISOString();
@@ -124,6 +135,18 @@ function sanitizeCodexAuthForClient(auth) {
     userCode: auth.userCode || null,
     lastMessage: auth.lastMessage || null,
     lastError: auth.lastError || null,
+  };
+}
+
+function sanitizeRebuildBackupForClient(backup) {
+  if (!backup || typeof backup !== "object") return null;
+  return {
+    snapshotId: backup.snapshotId || null,
+    description: backup.description || null,
+    createdAt: backup.createdAt || null,
+    sourceServerId: backup.sourceServerId || null,
+    sourceServerName: backup.sourceServerName || null,
+    hetznerActionId: backup.hetznerActionId || null,
   };
 }
 
@@ -639,6 +662,7 @@ function sanitizeServerForClient(server) {
     createdAt: server.createdAt || null,
     updatedAt: server.updatedAt || null,
     lastError: server.lastError || null,
+    lastRebuildBackup: sanitizeRebuildBackupForClient(server.lastRebuildBackup),
     pairingCode: server.pairingCode || null,
     pairingExpiresAt: server.pairingExpiresAt || null,
     codexAuth: sanitizeCodexAuthForClient(server.codexAuth),
@@ -762,6 +786,74 @@ async function hetznerRequest(method, pathname, body) {
   }
 
   return payload;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractHetznerImageId(payload) {
+  const direct = payload?.image?.id;
+  if (direct) return String(direct);
+  const resources = Array.isArray(payload?.action?.resources) ? payload.action.resources : [];
+  const imageRef = resources.find((resource) => resource?.type === "image" && resource?.id);
+  return imageRef?.id ? String(imageRef.id) : null;
+}
+
+async function waitForHetznerAction(actionId) {
+  const startedAt = Date.now();
+  const normalizedId = String(actionId);
+  while (true) {
+    const payload = await hetznerRequest("GET", `/actions/${normalizedId}`);
+    const action = payload?.action || {};
+    const status = String(action.status || "unknown").toLowerCase();
+    if (status === "success") return payload;
+    if (status === "error") {
+      const detail = action?.error?.message || "unknown_error";
+      throw new Error(`hetzner_action_failed:${normalizedId}:${detail}`);
+    }
+    if (Date.now() - startedAt >= HETZNER_ACTION_TIMEOUT_MS) {
+      throw new Error(`hetzner_action_timeout:${normalizedId}`);
+    }
+    await sleep(HETZNER_ACTION_POLL_INTERVAL_MS);
+  }
+}
+
+async function createHostedRebuildBackup(userId, server) {
+  const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const sourceServerId = String(server.id);
+  const sourceServerName = server.name || null;
+  const description = truncateText(
+    `virtualagency rebuild backup ${sourceServerName || sourceServerId} ${timestamp}`,
+    250,
+  );
+
+  const snapshotPayload = await hetznerRequest("POST", `/servers/${sourceServerId}/actions/create_image`, {
+    type: "snapshot",
+    description,
+    labels: {
+      managed_by: "virtualagency",
+      clerk_user_id: userId,
+      va_backup_reason: "rebuild",
+      va_source_server_id: sourceServerId,
+    },
+  });
+
+  const actionId = snapshotPayload?.action?.id ? String(snapshotPayload.action.id) : null;
+  const completedPayload = actionId ? await waitForHetznerAction(actionId) : snapshotPayload;
+  const snapshotId = extractHetznerImageId(completedPayload) || extractHetznerImageId(snapshotPayload);
+  if (!snapshotId) {
+    throw new Error("hetzner_snapshot_id_missing");
+  }
+
+  return {
+    snapshotId,
+    description,
+    createdAt: nowIso(),
+    sourceServerId,
+    sourceServerName,
+    hetznerActionId: actionId,
+  };
 }
 
 function safeJsonParse(value) {
@@ -994,11 +1086,33 @@ async function hostedServerAction(userId, action) {
 
   if (action === "rebuild") {
     stopCodexAuthSession(userId, "server_rebuild");
+    let rebuildBackup = null;
+    if (HOSTED_REBUILD_BACKUP_ENABLED) {
+      rebuildBackup = await createHostedRebuildBackup(userId, server);
+      console.log(
+        `[hosting] rebuild backup snapshot created for ${userId}: snapshot=${rebuildBackup.snapshotId}`,
+      );
+    }
+
     await hetznerRequest("DELETE", `/servers/${server.id}`);
     userState.server = null;
     userState.updatedAt = nowIso();
     await queueHostedStatePersist();
-    return createHostedServerForUser(userId);
+    const nextServer = await createHostedServerForUser(userId);
+
+    if (!rebuildBackup) {
+      return nextServer;
+    }
+
+    const refreshedState = await getHostedUserState(userId);
+    if (!refreshedState.server) {
+      return nextServer;
+    }
+    refreshedState.server.lastRebuildBackup = rebuildBackup;
+    refreshedState.server.updatedAt = nowIso();
+    refreshedState.updatedAt = refreshedState.server.updatedAt;
+    await queueHostedStatePersist();
+    return sanitizeServerForClient(refreshedState.server);
   }
 
   if (action === "destroy") {
