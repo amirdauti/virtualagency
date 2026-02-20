@@ -6,6 +6,7 @@ import {
   loadWorkspace,
   WorkspaceData,
   SavedAgent,
+  ServerAgentInfo,
   createAgent,
   isTauri,
   listAgentDetails,
@@ -104,6 +105,28 @@ function resolveSavedRuntime(saved: SavedAgent): AgentRuntime {
   return getAgentRuntime(saved.id);
 }
 
+function serverToAgent(server: ServerAgentInfo, index: number): Agent {
+  return {
+    id: server.id,
+    name: server.name,
+    status: toClientStatus(server.status),
+    position: {
+      x: (index % 5) * 2 - 4,
+      y: 0,
+      z: Math.floor(index / 5) * 2 - 2,
+    },
+    workingDirectory: server.working_dir,
+    createdAt: new Date().toISOString(),
+    model: server.model,
+    thinkingEnabled: server.thinking_enabled,
+    mcpServers: coerceMcpServers(server.mcp_servers),
+    cliType: server.cli_type === "codex" ? "codex" : "claude",
+    specialty: server.specialty === "roblox_builder" ? "roblox_builder" : "normal",
+    sessionId: server.session_id || undefined,
+    runtime: server.runtime === "hosted" ? "hosted" : "local",
+  };
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   isLoading: false,
   lastSaved: null,
@@ -175,29 +198,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         try {
           const serverAgents = await listAgentDetails({ includeHosted: true });
           for (let index = 0; index < serverAgents.length; index++) {
-            const a = serverAgents[index];
-            const runtime = a.runtime === "hosted" ? "hosted" : "local";
-            agentStore.addAgent({
-              id: a.id,
-              name: a.name,
-              status: toClientStatus(a.status),
-              position: {
-                x: (index % 5) * 2 - 4,
-                y: 0,
-                z: Math.floor(index / 5) * 2 - 2,
-              },
-              workingDirectory: a.working_dir,
-              createdAt: new Date().toISOString(),
-              model: a.model,
-              thinkingEnabled: a.thinking_enabled,
-              mcpServers: coerceMcpServers(a.mcp_servers),
-              cliType: a.cli_type === "codex" ? "codex" : "claude",
-              specialty: a.specialty === "roblox_builder" ? "roblox_builder" : "normal",
-              sessionId: a.session_id || undefined,
-              runtime,
-            });
-            setAgentRuntime(a.id, runtime);
-            nextRuntimeMap[a.id] = runtime;
+            const agent = serverToAgent(serverAgents[index], index);
+            const runtime = agent.runtime || "local";
+            agentStore.addAgent(agent);
+            setAgentRuntime(agent.id, runtime);
+            nextRuntimeMap[agent.id] = runtime;
           }
         } catch (err) {
           console.warn("[workspace] Failed to load agents from server snapshot:", err);
@@ -210,7 +215,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           const serverAgents = await listAgentDetails({ includeHosted: true });
           const byId = new Map(serverAgents.map((a) => [a.id, a]));
           const currentAgents = useAgentStore.getState().agents;
-          for (const agent of currentAgents) {
+          const knownIds = new Set(currentAgents.map((agent) => agent.id));
+          let nextIndex = currentAgents.length;
+
+          // Agents can be created outside the current browser session (e.g. Telegram/other VA clients).
+          // Merge anything missing into the local store so refresh always reflects the live server set.
+          for (const server of serverAgents) {
+            if (knownIds.has(server.id)) continue;
+            const added = serverToAgent(server, nextIndex++);
+            const runtime = added.runtime || "local";
+            agentStore.addAgent(added);
+            setAgentRuntime(added.id, runtime);
+            nextRuntimeMap[added.id] = runtime;
+            knownIds.add(added.id);
+          }
+
+          const mergedAgents = useAgentStore.getState().agents;
+          for (const agent of mergedAgents) {
             const server = byId.get(agent.id);
             if (!server) continue;
             const nextStatus = toClientStatus(server.status);
