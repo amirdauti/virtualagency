@@ -832,6 +832,46 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 SERVICE_EOF
 
+cat > /usr/local/bin/virtualagency-watchdog.sh << 'WATCHDOG_EOF'
+#!/bin/bash
+set -euo pipefail
+
+HEALTH_URL="http://127.0.0.1:${HOSTED_SERVER_PORT}/api/health"
+
+if ! timeout 8s curl -fsS "$HEALTH_URL" >/dev/null; then
+  logger -t virtualagency-watchdog "health check failed; restarting virtualagency-server"
+  systemctl restart virtualagency-server
+fi
+WATCHDOG_EOF
+
+chmod 755 /usr/local/bin/virtualagency-watchdog.sh
+
+cat > /etc/systemd/system/virtualagency-watchdog.service << 'WATCHDOG_SERVICE_EOF'
+[Unit]
+Description=Virtual Agency Hosted Runtime Watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/virtualagency-watchdog.sh
+WATCHDOG_SERVICE_EOF
+
+cat > /etc/systemd/system/virtualagency-watchdog.timer << 'WATCHDOG_TIMER_EOF'
+[Unit]
+Description=Run Virtual Agency Hosted Runtime Watchdog
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=45s
+Unit=virtualagency-watchdog.service
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+WATCHDOG_TIMER_EOF
+
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
@@ -842,6 +882,8 @@ ufw --force enable
 systemctl daemon-reload
 systemctl enable virtualagency-server
 systemctl restart virtualagency-server
+systemctl enable virtualagency-watchdog.timer
+systemctl start virtualagency-watchdog.timer
 
 SSH_PUB=$(cat /home/va/.ssh/id_ed25519.pub | tr -d '\n')
 
