@@ -1661,6 +1661,8 @@ async function syncHostedServerStatus(userId) {
       server.status = remoteStatus;
     }
 
+    // Clear stale transient errors once we can successfully talk to Hetzner again.
+    server.lastError = null;
     server.updatedAt = nowIso();
     userState.updatedAt = server.updatedAt;
     await queueHostedStatePersist();
