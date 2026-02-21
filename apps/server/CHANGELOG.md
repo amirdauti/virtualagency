@@ -1,3 +1,20 @@
+## [1.4.0](https://github.com/amirdauti/virtualagency/compare/v1.3.2...v1.4.0) (2026-02-21)
+
+### Features
+
+* **hosting:** add VPS watchdog timer to auto-restart VA runtime ([fd8d258](https://github.com/amirdauti/virtualagency/commit/fd8d2585f7ee9291fba26bd35e3fb837905768c8))
+* **hosting:** make rebuild in-place via npm update and service restart ([bcf4478](https://github.com/amirdauti/virtualagency/commit/bcf44782c207e8f5a04e3a3a41b75d3a005b03dd))
+* **hosting:** snapshot VPS before rebuild to prevent data loss ([bbd8846](https://github.com/amirdauti/virtualagency/commit/bbd88462fa7724b58c32d84a15a8d305623d98bb))
+
+### Bug Fixes
+
+* **desktop:** preserve hosted agent runtime after refresh ([c7c31c7](https://github.com/amirdauti/virtualagency/commit/c7c31c7a232706e35ba653837de6003b17b384f7))
+* **hosting:** harden hosted auth bootstrap and runtime proxy timeouts ([ca3754d](https://github.com/amirdauti/virtualagency/commit/ca3754dbcb3d975651443fca2caa8c17a77ba840))
+* **hosting:** make codex device code extraction more robust ([665970c](https://github.com/amirdauti/virtualagency/commit/665970c5830cb541fdedc8b7391632fde3c57014))
+* **hosting:** scan all codex code candidates in auth output ([f3b2016](https://github.com/amirdauti/virtualagency/commit/f3b20166d3f259380c033010cbfcb9152d7657e1))
+* **web:** eliminate hosted auth provider race on app bootstrap ([e929650](https://github.com/amirdauti/virtualagency/commit/e92965089c103d484048c78c6ff8116b154bfe93))
+* **web:** merge externally created hosted agents on workspace sync ([724c051](https://github.com/amirdauti/virtualagency/commit/724c051a9cdbba10029c1dfc4d1a29ef051b1d11))
+
 ## [1.3.2](https://github.com/amirdauti/virtualagency/compare/v1.3.1...v1.3.2) (2026-02-20)
 
 ### Bug Fixes
