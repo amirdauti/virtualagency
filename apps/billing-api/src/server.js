@@ -3,6 +3,8 @@ import Stripe from "stripe";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   clerkClient,
   ClerkExpressRequireAuth,
@@ -40,6 +42,29 @@ const HOSTED_STATE_FILE =
 const VA_SERVER_NPM_PACKAGE =
   process.env.VA_SERVER_NPM_PACKAGE || "@virtualagency/server";
 const VA_SERVER_NPM_VERSION = process.env.VA_SERVER_NPM_VERSION || "latest";
+const HOSTED_AUTO_UPDATE_ENABLED = !["0", "false", "off", "no"].includes(
+  String(process.env.HOSTED_AUTO_UPDATE_ENABLED || "1").trim().toLowerCase(),
+);
+const HOSTED_AUTO_UPDATE_INTERVAL_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_INTERVAL_MS || "120000", 10) || 120_000,
+);
+const HOSTED_AUTO_UPDATE_CONCURRENCY = Math.max(
+  1,
+  Math.min(
+    6,
+    Number.parseInt(process.env.HOSTED_AUTO_UPDATE_CONCURRENCY || "2", 10) || 2,
+  ),
+);
+const HOSTED_AUTO_UPDATE_RETRY_DELAY_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_RETRY_DELAY_MS || "1800000", 10) || 1_800_000,
+);
+const NPM_VIEW_TIMEOUT_MS = Math.max(
+  5_000,
+  Number.parseInt(process.env.NPM_VIEW_TIMEOUT_MS || "15000", 10) || 15_000,
+);
+const execFileAsync = promisify(execFile);
 
 const stripe = STRIPE_SECRET_KEY
   ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
@@ -68,8 +93,22 @@ const requireAuth = hasClerk
 const HETZNER_API_BASE = "https://api.hetzner.cloud/v1";
 
 let hostedStateLoaded = false;
-let hostedState = { users: {} };
+let hostedState = {
+  users: {},
+  rollout: {
+    lastObservedPackageVersion: null,
+    lastRolloutTargetVersion: null,
+    lastRolledOutPackageVersion: null,
+    lastRolloutStartedAt: null,
+    lastRolloutCompletedAt: null,
+    lastRolloutReason: null,
+    lastRolloutSummary: null,
+    lastRolloutError: null,
+  },
+};
 let hostedStateWriteQueue = Promise.resolve();
+let hostedAutoUpdateTimer = null;
+let hostedAutoUpdateInFlight = null;
 const codexAuthSessions = new Map();
 const CODEX_AUTH_ACTIVE_STATUSES = new Set(["starting", "awaiting_user", "authorizing"]);
 const CODEX_AUTH_POLL_INTERVAL_MS = Math.max(
@@ -655,10 +694,78 @@ function sanitizeServerForClient(server) {
     createdAt: server.createdAt || null,
     updatedAt: server.updatedAt || null,
     lastError: server.lastError || null,
+    packageVersion: server.packageVersion || null,
+    packageVersionUpdatedAt: server.packageVersionUpdatedAt || null,
+    lastAutoUpdateAttemptAt: server.lastAutoUpdateAttemptAt || null,
+    lastAutoUpdateError: server.lastAutoUpdateError || null,
     pairingCode: server.pairingCode || null,
     pairingExpiresAt: server.pairingExpiresAt || null,
     codexAuth: sanitizeCodexAuthForClient(server.codexAuth),
   };
+}
+
+function normalizeHostedRolloutState(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    lastObservedPackageVersion:
+      typeof source.lastObservedPackageVersion === "string"
+        ? source.lastObservedPackageVersion
+        : null,
+    lastRolloutTargetVersion:
+      typeof source.lastRolloutTargetVersion === "string"
+        ? source.lastRolloutTargetVersion
+        : null,
+    lastRolledOutPackageVersion:
+      typeof source.lastRolledOutPackageVersion === "string"
+        ? source.lastRolledOutPackageVersion
+        : null,
+    lastRolloutStartedAt:
+      typeof source.lastRolloutStartedAt === "string" ? source.lastRolloutStartedAt : null,
+    lastRolloutCompletedAt:
+      typeof source.lastRolloutCompletedAt === "string"
+        ? source.lastRolloutCompletedAt
+        : null,
+    lastRolloutReason:
+      typeof source.lastRolloutReason === "string" ? source.lastRolloutReason : null,
+    lastRolloutSummary: source.lastRolloutSummary || null,
+    lastRolloutError: typeof source.lastRolloutError === "string" ? source.lastRolloutError : null,
+  };
+}
+
+function normalizeHostedServerState(server) {
+  if (!server || typeof server !== "object") return server;
+  return {
+    ...server,
+    packageVersion:
+      typeof server.packageVersion === "string" && server.packageVersion.trim()
+        ? server.packageVersion.trim()
+        : null,
+    packageVersionUpdatedAt:
+      typeof server.packageVersionUpdatedAt === "string"
+        ? server.packageVersionUpdatedAt
+        : null,
+    lastAutoUpdateAttemptAt:
+      typeof server.lastAutoUpdateAttemptAt === "string"
+        ? server.lastAutoUpdateAttemptAt
+        : null,
+    lastAutoUpdateError:
+      typeof server.lastAutoUpdateError === "string" ? server.lastAutoUpdateError : null,
+    codexAuth: sanitizeCodexAuthForClient(server.codexAuth),
+  };
+}
+
+function normalizeHostedUsersState(users) {
+  if (!users || typeof users !== "object") return {};
+  const normalized = {};
+  for (const [userId, userState] of Object.entries(users)) {
+    if (!userState || typeof userState !== "object") continue;
+    normalized[userId] = {
+      ...userState,
+      updatedAt: typeof userState.updatedAt === "string" ? userState.updatedAt : nowIso(),
+      server: normalizeHostedServerState(userState.server || null),
+    };
+  }
+  return normalized;
 }
 
 async function ensureHostedStateLoaded() {
@@ -668,7 +775,8 @@ async function ensureHostedStateLoaded() {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
       hostedState = {
-        users: parsed.users && typeof parsed.users === "object" ? parsed.users : {},
+        users: normalizeHostedUsersState(parsed.users),
+        rollout: normalizeHostedRolloutState(parsed.rollout),
       };
     }
   } catch (err) {
@@ -704,6 +812,15 @@ async function getHostedUserState(userId) {
     };
   }
   return hostedState.users[userId];
+}
+
+function getHostedRolloutState() {
+  if (!hostedState.rollout || typeof hostedState.rollout !== "object") {
+    hostedState.rollout = normalizeHostedRolloutState(null);
+  } else {
+    hostedState.rollout = normalizeHostedRolloutState(hostedState.rollout);
+  }
+  return hostedState.rollout;
 }
 
 function slugifyUserId(userId) {
@@ -788,10 +905,10 @@ function shellSingleQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
-async function runHostedInPlaceRebuild(server) {
+async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VERSION) {
   const terminalId = `hosted-rebuild-${randomToken(6)}`;
   const marker = `__VA_REBUILD_DONE_${randomToken(4)}__`;
-  const packageSpec = `${VA_SERVER_NPM_PACKAGE}@${VA_SERVER_NPM_VERSION}`;
+  const packageSpec = `${VA_SERVER_NPM_PACKAGE}@${packageVersion}`;
   const quotedPackageSpec = shellSingleQuote(packageSpec);
   const markerRegex = new RegExp(`${marker}:(\\d+)`);
 
@@ -800,7 +917,7 @@ async function runHostedInPlaceRebuild(server) {
   const command = [
     `PKG=${quotedPackageSpec}`,
     "if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi",
-    "($SUDO npm update -g \"$PKG\" || $SUDO npm install -g \"$PKG\" || npm update -g \"$PKG\" || npm install -g \"$PKG\")",
+    "($SUDO /usr/local/bin/virtualagency-upgrade.sh \"$PKG\" || $SUDO npm install -g \"$PKG\" || npm install -g \"$PKG\")",
     "STATUS=$?",
     `echo '${marker}:'\"$STATUS\"`,
     "sleep 1",
@@ -894,9 +1011,268 @@ async function runHostedInPlaceRebuild(server) {
   }
 
   if (exitCode !== 0) {
-    const tail = truncateText(stripAnsi(outputTail).replace(/\s+/g, " ").trim(), 320);
+    const compact = stripAnsi(outputTail).replace(/\s+/g, " ").trim();
+    const tail = compact.length > 320 ? `...${compact.slice(-320)}` : compact;
     throw new Error(`hosted_in_place_rebuild_failed:exit_${exitCode}:${tail || "no_output"}`);
   }
+}
+
+function parseNpmViewVersionOutput(stdout) {
+  const raw = String(stdout || "").trim();
+  if (!raw) return null;
+  const parsed = safeJsonParse(raw);
+  if (typeof parsed === "string" && parsed.trim()) return parsed.trim();
+  if (Array.isArray(parsed)) {
+    const first = parsed.find((value) => typeof value === "string" && value.trim());
+    if (typeof first === "string") return first.trim();
+  }
+  const unquoted = raw.replace(/^"+|"+$/g, "").trim();
+  return unquoted || null;
+}
+
+async function fetchLatestPublishedServerPackageVersion() {
+  const { stdout } = await execFileAsync(
+    "npm",
+    ["view", VA_SERVER_NPM_PACKAGE, "version", "--json"],
+    { timeout: NPM_VIEW_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+  );
+  const version = parseNpmViewVersionOutput(stdout);
+  if (!version) {
+    throw new Error(`npm_view_empty_version:${VA_SERVER_NPM_PACKAGE}`);
+  }
+  return version;
+}
+
+async function resolveDesiredHostedPackageTarget({ allowLatestFallback = false } = {}) {
+  if (VA_SERVER_NPM_VERSION !== "latest") {
+    return {
+      packageSpecifier: VA_SERVER_NPM_VERSION,
+      trackedVersion: VA_SERVER_NPM_VERSION,
+    };
+  }
+
+  try {
+    const latestVersion = await fetchLatestPublishedServerPackageVersion();
+    return { packageSpecifier: latestVersion, trackedVersion: latestVersion };
+  } catch (err) {
+    if (allowLatestFallback) {
+      console.warn(
+        "[hosting] failed to resolve latest npm version; falling back to npm tag latest:",
+        err?.message || err,
+      );
+      return { packageSpecifier: "latest", trackedVersion: null };
+    }
+    throw err;
+  }
+}
+
+function isHostedServerAutoUpdateCandidate(server) {
+  if (!server || !server.runtimeBaseUrl) return false;
+  const status = String(server.status || "").toLowerCase();
+  if (!status) return false;
+  if (["deleted", "stopped", "stopping", "provisioning", "starting"].includes(status)) {
+    return false;
+  }
+  return true;
+}
+
+async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersion, reason) {
+  const userState = await getHostedUserState(userId);
+  const server = userState.server;
+  if (!server) throw new Error("server_not_provisioned");
+  const statusBeforeUpdate = server.status || "ready";
+
+  stopCodexAuthSession(userId, `auto_update:${reason}`);
+  server.lastAutoUpdateAttemptAt = nowIso();
+  server.lastAutoUpdateError = null;
+  server.status = "working";
+  server.updatedAt = nowIso();
+  userState.updatedAt = server.updatedAt;
+  await queueHostedStatePersist();
+
+  try {
+    await runHostedInPlaceRebuild(server, packageSpecifier);
+    if (trackedVersion) {
+      server.packageVersion = trackedVersion;
+      server.packageVersionUpdatedAt = nowIso();
+    } else {
+      server.packageVersion = null;
+      server.packageVersionUpdatedAt = nowIso();
+    }
+    server.lastError = null;
+    server.lastAutoUpdateError = null;
+    server.updatedAt = nowIso();
+    userState.updatedAt = server.updatedAt;
+    await queueHostedStatePersist();
+
+    await sleep(1_500);
+    await syncHostedServerStatus(userId);
+    return { userId, ok: true };
+  } catch (err) {
+    server.status =
+      statusBeforeUpdate && statusBeforeUpdate !== "working" ? statusBeforeUpdate : "ready";
+    server.lastAutoUpdateError = truncateText(err?.message || String(err), 500);
+    server.lastError = truncateText(err?.message || String(err), 500);
+    server.updatedAt = nowIso();
+    userState.updatedAt = server.updatedAt;
+    await queueHostedStatePersist();
+    try {
+      await syncHostedServerStatus(userId);
+    } catch {
+      // keep prior status when sync is unavailable
+    }
+    throw err;
+  }
+}
+
+async function runHostedAutoUpdateRollout({ force = false, reason = "interval" } = {}) {
+  await ensureHostedStateLoaded();
+  const rolloutState = getHostedRolloutState();
+
+  const target = await resolveDesiredHostedPackageTarget({ allowLatestFallback: false });
+  rolloutState.lastObservedPackageVersion = target.trackedVersion;
+  rolloutState.lastRolloutTargetVersion = target.trackedVersion;
+  rolloutState.lastRolloutReason = reason;
+  rolloutState.lastRolloutStartedAt = nowIso();
+  rolloutState.lastRolloutCompletedAt = null;
+  rolloutState.lastRolloutError = null;
+
+  const candidates = [];
+  let totalServers = 0;
+  let upToDate = 0;
+  let skipped = 0;
+
+  for (const [userId, userState] of Object.entries(hostedState.users || {})) {
+    const server = userState?.server || null;
+    if (!server || server.status === "deleted") continue;
+    totalServers += 1;
+
+    if (!isHostedServerAutoUpdateCandidate(server)) {
+      skipped += 1;
+      continue;
+    }
+
+    if (
+      !force &&
+      server.lastAutoUpdateError &&
+      typeof server.lastAutoUpdateAttemptAt === "string"
+    ) {
+      const lastAttempt = Date.parse(server.lastAutoUpdateAttemptAt);
+      if (Number.isFinite(lastAttempt)) {
+        const ageMs = Date.now() - lastAttempt;
+        if (ageMs >= 0 && ageMs < HOSTED_AUTO_UPDATE_RETRY_DELAY_MS) {
+          skipped += 1;
+          continue;
+        }
+      }
+    }
+
+    if (!force && server.packageVersion && server.packageVersion === target.trackedVersion) {
+      upToDate += 1;
+      continue;
+    }
+
+    candidates.push(userId);
+  }
+
+  const failures = [];
+  let updated = 0;
+
+  if (candidates.length > 0) {
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(HOSTED_AUTO_UPDATE_CONCURRENCY, candidates.length) },
+      async () => {
+        while (true) {
+          const index = cursor++;
+          if (index >= candidates.length) break;
+          const userId = candidates[index];
+          try {
+            await rebuildHostedServerForUser(
+              userId,
+              target.packageSpecifier,
+              target.trackedVersion,
+              reason,
+            );
+            updated += 1;
+          } catch (err) {
+            failures.push({
+              userId,
+              error: truncateText(err?.message || String(err), 320),
+            });
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+  }
+
+  rolloutState.lastRolloutCompletedAt = nowIso();
+  const summary = {
+    reason,
+    targetVersion: target.trackedVersion,
+    totalServers,
+    candidates: candidates.length,
+    updated,
+    upToDate,
+    skipped,
+    failed: failures.length,
+    failures,
+  };
+  rolloutState.lastRolloutSummary = summary;
+  if (failures.length === 0 && target.trackedVersion) {
+    rolloutState.lastRolledOutPackageVersion = target.trackedVersion;
+  } else if (failures.length > 0) {
+    rolloutState.lastRolloutError = `failed_updates:${failures.length}`;
+  }
+  await queueHostedStatePersist();
+  return summary;
+}
+
+async function triggerHostedAutoUpdateRollout(options = {}) {
+  if (hostedAutoUpdateInFlight) {
+    return hostedAutoUpdateInFlight;
+  }
+
+  hostedAutoUpdateInFlight = (async () => {
+    try {
+      return await runHostedAutoUpdateRollout(options);
+    } catch (err) {
+      const rolloutState = getHostedRolloutState();
+      rolloutState.lastRolloutCompletedAt = nowIso();
+      rolloutState.lastRolloutError = truncateText(err?.message || String(err), 500);
+      await queueHostedStatePersist();
+      throw err;
+    } finally {
+      hostedAutoUpdateInFlight = null;
+    }
+  })();
+
+  return hostedAutoUpdateInFlight;
+}
+
+function startHostedAutoUpdateScheduler() {
+  if (!HOSTED_AUTO_UPDATE_ENABLED) return;
+  if (hostedAutoUpdateTimer) return;
+
+  const tick = async () => {
+    hostedAutoUpdateTimer = null;
+    try {
+      const summary = await triggerHostedAutoUpdateRollout({ reason: "interval" });
+      if (summary?.updated > 0 || summary?.failed > 0) {
+        console.log("[hosting] auto-update rollout:", summary);
+      }
+    } catch (err) {
+      console.error("[hosting] auto-update rollout failed:", err?.message || err);
+    } finally {
+      hostedAutoUpdateTimer = setTimeout(tick, HOSTED_AUTO_UPDATE_INTERVAL_MS);
+    }
+  };
+
+  hostedAutoUpdateTimer = setTimeout(tick, 20_000);
+  console.log(
+    `[hosting] auto-update scheduler enabled (interval=${HOSTED_AUTO_UPDATE_INTERVAL_MS}ms, concurrency=${HOSTED_AUTO_UPDATE_CONCURRENCY}, retryDelay=${HOSTED_AUTO_UPDATE_RETRY_DELAY_MS}ms)`,
+  );
 }
 
 function safeJsonParse(value) {
@@ -934,6 +1310,33 @@ mkdir -p /etc/virtualagency
 chown -R va:va /opt/virtualagency
 
 npm install -g ${escapedPackage} @openai/codex @anthropic-ai/claude-code
+
+cat > /usr/local/bin/virtualagency-upgrade.sh << 'UPGRADE_EOF'
+#!/bin/bash
+set -euo pipefail
+
+PKG="$1"
+if [ -z "$PKG" ]; then
+  PKG="${escapedPackage}"
+fi
+case "$PKG" in
+  @virtualagency/server@*|@virtualagency/server)
+    ;;
+  *)
+    echo "Refusing unexpected package: $PKG" >&2
+    exit 2
+    ;;
+esac
+
+npm install -g "$PKG"
+systemctl restart virtualagency-server
+UPGRADE_EOF
+
+chmod 755 /usr/local/bin/virtualagency-upgrade.sh
+cat > /etc/sudoers.d/virtualagency-upgrade << 'SUDOERS_EOF'
+va ALL=(root) NOPASSWD: /usr/local/bin/virtualagency-upgrade.sh *
+SUDOERS_EOF
+chmod 440 /etc/sudoers.d/virtualagency-upgrade
 
 if [ ! -f /home/va/.ssh/id_ed25519 ]; then
   su - va -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "virtualagency-${userId}"'
@@ -1075,6 +1478,10 @@ async function createHostedServerForUser(userId) {
     pairingCode,
     pairingExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     codexAuth: defaultCodexAuthState(),
+    packageVersion: VA_SERVER_NPM_VERSION === "latest" ? null : VA_SERVER_NPM_VERSION,
+    packageVersionUpdatedAt: VA_SERVER_NPM_VERSION === "latest" ? null : now,
+    lastAutoUpdateAttemptAt: null,
+    lastAutoUpdateError: null,
     createdAt: now,
     updatedAt: now,
     lastError: null,
@@ -1128,6 +1535,7 @@ async function hostedServerAction(userId, action) {
   }
 
   if (action === "rebuild") {
+    const target = await resolveDesiredHostedPackageTarget({ allowLatestFallback: true });
     stopCodexAuthSession(userId, "server_rebuild");
     server.status = "working";
     server.updatedAt = nowIso();
@@ -1135,7 +1543,13 @@ async function hostedServerAction(userId, action) {
     await queueHostedStatePersist();
 
     try {
-      await runHostedInPlaceRebuild(server);
+      await runHostedInPlaceRebuild(server, target.packageSpecifier);
+      server.packageVersion = target.trackedVersion;
+      server.packageVersionUpdatedAt = nowIso();
+      server.lastError = null;
+      server.updatedAt = nowIso();
+      userState.updatedAt = server.updatedAt;
+      await queueHostedStatePersist();
       await sleep(1_500);
 
       const synced = await syncHostedServerStatus(userId);
@@ -1229,6 +1643,11 @@ function ensureHostedEnabled() {
     err.statusCode = 503;
     throw err;
   }
+}
+
+function hasValidControlPlaneToken(req) {
+  if (!HOSTED_CONTROL_PLANE_TOKEN) return true;
+  return req.headers["x-control-plane-token"] === HOSTED_CONTROL_PLANE_TOKEN;
 }
 
 // Stripe webhook must use raw body (must come before json() for this route)
@@ -1669,11 +2088,51 @@ app.get("/api/hosting/server/codex-auth/status", requireAuth, async (req, res) =
   return res.json({ codexAuth });
 });
 
+app.get("/api/hosting/internal/rollout-status", async (req, res) => {
+  if (!hasValidControlPlaneToken(req)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
+  await ensureHostedStateLoaded();
+  const rollout = getHostedRolloutState();
+  return res.json({
+    rollout,
+    inFlight: Boolean(hostedAutoUpdateInFlight),
+    config: {
+      enabled: HOSTED_AUTO_UPDATE_ENABLED,
+      intervalMs: HOSTED_AUTO_UPDATE_INTERVAL_MS,
+      concurrency: HOSTED_AUTO_UPDATE_CONCURRENCY,
+      retryDelayMs: HOSTED_AUTO_UPDATE_RETRY_DELAY_MS,
+      package: VA_SERVER_NPM_PACKAGE,
+      packageVersion: VA_SERVER_NPM_VERSION,
+    },
+  });
+});
+
+app.post("/api/hosting/internal/rollout-update", async (req, res) => {
+  if (!hasValidControlPlaneToken(req)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
+  const force = req.body?.force === true;
+  const reason =
+    typeof req.body?.reason === "string" && req.body.reason.trim()
+      ? truncateText(req.body.reason.trim(), 60)
+      : "manual_internal";
+
+  try {
+    const summary = await triggerHostedAutoUpdateRollout({ force, reason });
+    return res.json({ ok: true, summary });
+  } catch (err) {
+    return res.status(500).json({
+      error: "rollout_failed",
+      message: truncateText(err?.message || String(err), 320),
+    });
+  }
+});
+
 app.post("/api/hosting/internal/bootstrap-report", async (req, res) => {
-  if (
-    HOSTED_CONTROL_PLANE_TOKEN &&
-    req.headers["x-control-plane-token"] !== HOSTED_CONTROL_PLANE_TOKEN
-  ) {
+  if (!hasValidControlPlaneToken(req)) {
     return res.status(403).json({ error: "forbidden" });
   }
 
@@ -1832,4 +2291,13 @@ app.listen(PORT, "127.0.0.1", () => {
     console.warn(`[billing] missing env: ${missing.join(", ")}`);
   }
   console.log(`[billing] listening on http://127.0.0.1:${PORT}`);
+  if (HOSTED_AUTO_UPDATE_ENABLED) {
+    void ensureHostedStateLoaded()
+      .then(() => startHostedAutoUpdateScheduler())
+      .catch((err) =>
+        console.error("[hosting] failed initializing auto-update scheduler:", err),
+      );
+  } else {
+    console.log("[hosting] auto-update scheduler disabled");
+  }
 });
