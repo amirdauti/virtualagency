@@ -139,6 +139,10 @@ const HOSTED_REBUILD_COMMAND_TIMEOUT_MS = Math.max(
   30_000,
   Number.parseInt(process.env.HOSTED_REBUILD_COMMAND_TIMEOUT_MS || "600000", 10) || 600_000,
 );
+const HOSTED_SSH_KEY_APPLY_TIMEOUT_MS = Math.max(
+  10_000,
+  Number.parseInt(process.env.HOSTED_SSH_KEY_APPLY_TIMEOUT_MS || "60000", 10) || 60_000,
+);
 
 function nowIso() {
   return new Date().toISOString();
@@ -903,6 +907,126 @@ function sleep(ms) {
 
 function shellSingleQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function isLikelySshPublicKey(value) {
+  const text = String(value || "").trim();
+  if (text.length < 40 || text.length > 8192) return false;
+  return /^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,3}(?: .*)?$/.test(
+    text,
+  );
+}
+
+async function addHostedAuthorizedKey(server, publicKey) {
+  const key = String(publicKey || "").trim();
+  if (!isLikelySshPublicKey(key)) {
+    throw new Error("invalid_ssh_public_key");
+  }
+
+  const terminalId = `hosted-sshkey-${randomToken(6)}`;
+  const marker = `__VA_SSH_KEY_DONE_${randomToken(4)}__`;
+  const markerRegex = new RegExp(`${marker}:(\\d+)`);
+  const quotedKey = shellSingleQuote(key);
+  const command = [
+    `KEY=${quotedKey}`,
+    "mkdir -p \"$HOME/.ssh\"",
+    "chmod 700 \"$HOME/.ssh\"",
+    "touch \"$HOME/.ssh/authorized_keys\"",
+    "chmod 600 \"$HOME/.ssh/authorized_keys\"",
+    "grep -qxF \"$KEY\" \"$HOME/.ssh/authorized_keys\" || echo \"$KEY\" >> \"$HOME/.ssh/authorized_keys\"",
+    "STATUS=$?",
+    `echo '${marker}:'\"$STATUS\"`,
+  ].join("; ");
+
+  let since = 0;
+  let outputTail = "";
+  let sawCompletion = false;
+  let exitCode = null;
+  let lastPollError = null;
+
+  try {
+    const snapshot = await hostedRuntimeRequest(server, "GET", "/api/events?since=0");
+    since = Number.isFinite(snapshot?.latest_seq) ? Number(snapshot.latest_seq) : 0;
+
+    await hostedRuntimeRequest(server, "POST", "/api/terminals", {
+      id: terminalId,
+      working_dir: "/home/va",
+      cols: 120,
+      rows: 30,
+    });
+    await hostedRuntimeRequest(
+      server,
+      "POST",
+      `/api/terminals/${encodeURIComponent(terminalId)}/input`,
+      { data: `${command}\n` },
+    );
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < HOSTED_SSH_KEY_APPLY_TIMEOUT_MS) {
+      await sleep(HOSTED_REBUILD_COMMAND_POLL_INTERVAL_MS);
+
+      let payload;
+      try {
+        payload = await hostedRuntimeRequest(
+          server,
+          "GET",
+          `/api/events?since=${encodeURIComponent(String(since))}`,
+        );
+        lastPollError = null;
+      } catch (err) {
+        lastPollError = err;
+        continue;
+      }
+
+      const latestSeq = Number(payload?.latest_seq);
+      if (Number.isFinite(latestSeq) && latestSeq > since) {
+        since = latestSeq;
+      }
+
+      const events = Array.isArray(payload?.events) ? payload.events : [];
+      for (const event of events) {
+        if (event?.type !== "terminal-output") continue;
+        if (event?.terminal_id !== terminalId) continue;
+        const chunk = String(event?.data || "");
+        if (!chunk) continue;
+
+        outputTail = `${outputTail}${chunk}`;
+        if (outputTail.length > 8_000) {
+          outputTail = outputTail.slice(-8_000);
+        }
+
+        const match = outputTail.match(markerRegex);
+        if (match) {
+          sawCompletion = true;
+          exitCode = Number.parseInt(match[1], 10);
+          break;
+        }
+      }
+
+      if (sawCompletion) break;
+    }
+  } finally {
+    try {
+      await hostedRuntimeRequest(
+        server,
+        "DELETE",
+        `/api/terminals/${encodeURIComponent(terminalId)}`,
+      );
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+
+  if (!sawCompletion || !Number.isFinite(exitCode)) {
+    const detail = lastPollError?.message || "timed_out_waiting_for_ssh_key_apply_marker";
+    throw new Error(`hosted_ssh_key_apply_timeout:${detail}`);
+  }
+
+  if (exitCode !== 0) {
+    const compact = stripAnsi(outputTail).replace(/\s+/g, " ").trim();
+    const tail = compact.length > 320 ? `...${compact.slice(-320)}` : compact;
+    throw new Error(`hosted_ssh_key_apply_failed:exit_${exitCode}:${tail || "no_output"}`);
+  }
 }
 
 async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VERSION) {
@@ -2049,6 +2173,38 @@ app.get("/api/hosting/server/ssh-public-key", requireAuth, async (req, res) => {
   });
 });
 
+app.post("/api/hosting/server/ssh-authorized-key", requireAuth, async (req, res) => {
+  const userId = req.auth?.userId;
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  const publicKey =
+    typeof req.body?.publicKey === "string" ? req.body.publicKey.trim() : "";
+  if (!isLikelySshPublicKey(publicKey)) {
+    return res.status(400).json({ error: "invalid_ssh_public_key" });
+  }
+
+  try {
+    const server = await ensureHostedServerAccess(userId);
+    await addHostedAuthorizedKey(server, publicKey);
+    return res.json({ ok: true });
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (message === "server_not_provisioned") {
+      return res.status(404).json({ error: "server_not_provisioned" });
+    }
+    if (message === "server_deleted") {
+      return res.status(404).json({ error: "server_deleted" });
+    }
+    if (message === "server_not_ready") {
+      return res.status(409).json({ error: "server_not_ready" });
+    }
+    return res.status(500).json({
+      error: "ssh_authorized_key_apply_failed",
+      message: truncateText(message, 320),
+    });
+  }
+});
+
 app.post("/api/hosting/server/codex-auth/start", requireAuth, async (req, res) => {
   const userId = req.auth?.userId;
   if (!userId) return res.status(401).json({ error: "unauthorized" });
@@ -2127,6 +2283,44 @@ app.post("/api/hosting/internal/rollout-update", async (req, res) => {
     return res.status(500).json({
       error: "rollout_failed",
       message: truncateText(err?.message || String(err), 320),
+    });
+  }
+});
+
+app.post("/api/hosting/internal/set-ssh-key", async (req, res) => {
+  if (!hasValidControlPlaneToken(req)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
+  const userId = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
+  const publicKey =
+    typeof req.body?.publicKey === "string" ? req.body.publicKey.trim() : "";
+
+  if (!userId) {
+    return res.status(400).json({ error: "missing_user_id" });
+  }
+  if (!isLikelySshPublicKey(publicKey)) {
+    return res.status(400).json({ error: "invalid_ssh_public_key" });
+  }
+
+  try {
+    const server = await ensureHostedServerAccess(userId);
+    await addHostedAuthorizedKey(server, publicKey);
+    return res.json({ ok: true });
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (message === "server_not_provisioned") {
+      return res.status(404).json({ error: "server_not_provisioned" });
+    }
+    if (message === "server_deleted") {
+      return res.status(404).json({ error: "server_deleted" });
+    }
+    if (message === "server_not_ready") {
+      return res.status(409).json({ error: "server_not_ready" });
+    }
+    return res.status(500).json({
+      error: "set_ssh_key_failed",
+      message: truncateText(message, 320),
     });
   }
 });
