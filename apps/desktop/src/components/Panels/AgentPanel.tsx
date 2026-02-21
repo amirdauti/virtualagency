@@ -250,13 +250,19 @@ export function AgentPanel({
   const setAgentId = useFileExplorerStore((state) => state.setAgentId);
   const loadFileTree = useFileExplorerStore((state) => state.loadFileTree);
   const currentAgentId = useFileExplorerStore((state) => state.agentId);
+  const isHostedRootWorkspace =
+    agent.runtime === "hosted" && agent.workingDirectory.trim() === "/";
 
   useEffect(() => {
     if (activeTab === "files" && currentAgentId !== agent.id) {
       setAgentId(agent.id);
-      loadFileTree();
+      // For hosted "/" agents, avoid eager recursive tree fetch on tab open.
+      // Users can still load files manually with Refresh.
+      if (!isHostedRootWorkspace) {
+        loadFileTree();
+      }
     }
-  }, [activeTab, agent.id, currentAgentId, setAgentId, loadFileTree]);
+  }, [activeTab, agent.id, currentAgentId, isHostedRootWorkspace, setAgentId, loadFileTree]);
 
   // Close menu when clicking outside
   useEffect(() => {

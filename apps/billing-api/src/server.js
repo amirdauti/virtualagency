@@ -1738,40 +1738,11 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
 
     const hasBody = !["GET", "HEAD"].includes(req.method.toUpperCase());
     const methodUpper = req.method.toUpperCase();
-    const fileTreeMatch = suffix.match(/^\/api\/files\/tree\/([^/?#]+)/);
-
-    // Guardrail: a hosted agent with working_dir "/" triggers an extremely expensive full-disk
-    // recursive file-tree walk that can stall the runtime (and break terminals/events).
-    // Detect and block this request with a clear error so clients can recreate/fix the agent.
-    if (methodUpper === "GET" && fileTreeMatch) {
-      const agentId = decodeURIComponent(fileTreeMatch[1]);
-      try {
-        const probe = await fetchWithTimeout(
-          `${server.runtimeBaseUrl}/api/agents`,
-          { method: "GET", headers },
-          8_000,
-        );
-        const text = await probe.text();
-        const parsed = safeJsonParse(text);
-        if (Array.isArray(parsed)) {
-          const hit = parsed.find((agent) => agent?.id === agentId);
-          if (hit?.working_dir === "/" || hit?.working_dir === "") {
-            return res.status(409).json({
-              error: "hosted_invalid_working_dir",
-              message:
-                'Hosted agent working directory is "/". Update/recreate the agent with a project path (for example /opt/virtualagency/workspace).',
-            });
-          }
-        }
-      } catch {
-        // best-effort guard only
-      }
-    }
 
     let upstreamBody = req.body || {};
     if (methodUpper === "POST" && suffix === "/api/agents") {
       const requestedDir = String(req.body?.working_dir || "").trim();
-      if (requestedDir === "/" || requestedDir === "") {
+      if (requestedDir === "") {
         upstreamBody = {
           ...(req.body || {}),
           working_dir: "/opt/virtualagency/workspace",

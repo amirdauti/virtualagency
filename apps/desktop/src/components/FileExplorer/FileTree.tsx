@@ -371,7 +371,7 @@ export const FileTree: React.FC = () => {
     return (
       <div className="h-full flex flex-col bg-[#1e1e1e]">
         <div className="flex items-center justify-center h-full">
-          <p className="text-[#969696] text-[13px]">No files to display</p>
+          <p className="text-[#969696] text-[13px]">No files loaded yet. Click Refresh.</p>
         </div>
       </div>
     );
