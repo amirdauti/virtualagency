@@ -1032,6 +1032,7 @@ async function addHostedAuthorizedKey(server, publicKey) {
 async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VERSION) {
   const terminalId = `hosted-rebuild-${randomToken(6)}`;
   const marker = `__VA_REBUILD_DONE_${randomToken(4)}__`;
+  const permissionMarker = "__VA_REBUILD_PERM__:missing_sudo_upgrade_privilege";
   const packageSpec = `${VA_SERVER_NPM_PACKAGE}@${packageVersion}`;
   const quotedPackageSpec = shellSingleQuote(packageSpec);
   const markerRegex = new RegExp(`${marker}:(\\d+)`);
@@ -1040,12 +1041,28 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
   // even though the service restart momentarily interrupts hosted API requests.
   const command = [
     `PKG=${quotedPackageSpec}`,
-    "if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi",
-    "($SUDO /usr/local/bin/virtualagency-upgrade.sh \"$PKG\" || $SUDO npm install -g \"$PKG\" || npm install -g \"$PKG\")",
-    "STATUS=$?",
+    "STATUS=0",
+    "CAN_SUDO=0",
+    "INSTALL_DONE=0",
+    "if command -v sudo >/dev/null 2>&1; then",
+    "  if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
+    "    sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
+    "  else",
+    "    sudo -n npm install -g \"$PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
+    "  fi",
+    "fi",
+    "if [ \"$INSTALL_DONE\" -eq 0 ]; then",
+    "  PREFIX=$(npm config get prefix 2>/dev/null || true)",
+    "  if [ -n \"$PREFIX\" ] && [ -w \"$PREFIX\" ]; then",
+    "    npm install -g \"$PKG\" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?",
+    "  else",
+    "    STATUS=243",
+    "    echo '" + permissionMarker + " prefix='\"${PREFIX:-unknown}\"",
+    "  fi",
+    "fi",
     `echo '${marker}:'\"$STATUS\"`,
     "sleep 1",
-    "if [ \"$STATUS\" -eq 0 ]; then ($SUDO systemctl restart virtualagency-server || pkill -f '^virtual-agency-server( |$)' || true); fi",
+    "if [ \"$STATUS\" -eq 0 ]; then ( ( [ \"$CAN_SUDO\" -eq 1 ] && sudo -n systemctl restart virtualagency-server ) || pkill -f '^virtual-agency-server( |$)' || true ); fi",
   ].join("; ");
 
   let since = 0;
@@ -1136,6 +1153,11 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
 
   if (exitCode !== 0) {
     const compact = stripAnsi(outputTail).replace(/\s+/g, " ").trim();
+    if (compact.includes(permissionMarker)) {
+      throw new Error(
+        "hosted_in_place_rebuild_failed:missing_sudo_upgrade_privilege:run_one_time_root_repair",
+      );
+    }
     const tail = compact.length > 320 ? `...${compact.slice(-320)}` : compact;
     throw new Error(`hosted_in_place_rebuild_failed:exit_${exitCode}:${tail || "no_output"}`);
   }
