@@ -1,3 +1,14 @@
+## [1.5.0](https://github.com/amirdauti/virtualagency/compare/v1.4.0...v1.5.0) (2026-02-22)
+
+### Features
+
+* **server:** add agent-tools scheduled tasks and server-side automation runner ([b069cc6](https://github.com/amirdauti/virtualagency/commit/b069cc62ab08368a08fb5f3a3e507a9ae060014e))
+
+### Bug Fixes
+
+* **hosting:** clear stale hosted server error after successful sync ([f8e3e5f](https://github.com/amirdauti/virtualagency/commit/f8e3e5fc01f4bd1384fdbf005a45ac113fc322cf))
+* **hosting:** handle in-place rebuild sudo permission failures ([e356793](https://github.com/amirdauti/virtualagency/commit/e35679331bd284252a3845b8660b09c8e89454f7))
+
 ## [1.4.0](https://github.com/amirdauti/virtualagency/compare/v1.3.2...v1.4.0) (2026-02-21)
 
 ### Features
