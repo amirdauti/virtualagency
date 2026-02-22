@@ -32,7 +32,10 @@ use tokio::time::{Duration as TokioDuration, Instant as TokioInstant};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use agents::{AgentManager, AgentOutput, AgentSpecialty, AgentStatus, AgentStatusChange, CliType};
+use agents::{
+    AgentAutomation, AgentManager, AgentOutput, AgentSpecialty, AgentStatus, AgentStatusChange,
+    CliType,
+};
 use pty::{TerminalManager, TerminalOutput};
 use telegram::{
     TelegramAction, TelegramBindingConfigInput, TelegramBindingStatus, TelegramDispatch,
@@ -317,6 +320,43 @@ async fn main() {
         }
     });
 
+    let scheduled_automation_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(TokioDuration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            let now_ms = now_unix_ms();
+
+            let due_runs = {
+                let mut manager = scheduled_automation_state.agent_manager.write().await;
+                manager.collect_due_automation_runs(now_ms)
+            };
+
+            if due_runs.is_empty() {
+                continue;
+            }
+
+            for run in due_runs {
+                let message = build_scheduled_task_message(
+                    &run.automation_id,
+                    &run.task_description,
+                    run.scheduled_at_ms,
+                    &run.prompt,
+                );
+                let manager = scheduled_automation_state.agent_manager.read().await;
+                if let Err(err) = manager.send_message(&run.agent_id, &message, &[]) {
+                    tracing::warn!(
+                        "[automations] failed sending scheduled task to agent {}: {}",
+                        run.agent_id,
+                        err
+                    );
+                }
+            }
+        }
+    });
+
     // Build router with CORS and Private Network Access support
     let cors = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
@@ -374,6 +414,18 @@ async fn main() {
         .route(
             "/api/agent-tools/:source_agent_id/publish-app",
             post(agent_tools_publish_app),
+        )
+        .route(
+            "/api/agent-tools/:source_agent_id/scheduled-tasks",
+            get(agent_tools_list_scheduled_tasks),
+        )
+        .route(
+            "/api/agent-tools/:source_agent_id/set-scheduled-task",
+            post(agent_tools_set_scheduled_task),
+        )
+        .route(
+            "/api/agent-tools/:source_agent_id/delete-scheduled-task",
+            post(agent_tools_delete_scheduled_task),
         )
         .route("/api/events", get(get_events))
         .route("/api/terminals", get(list_terminals).post(create_terminal))
@@ -1321,6 +1373,28 @@ fn default_delegation_timeout_seconds() -> u64 {
     240
 }
 
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn build_scheduled_task_message(
+    automation_id: &str,
+    task_description: &str,
+    scheduled_at_ms: u64,
+    prompt: &str,
+) -> String {
+    format!(
+        "[SCHEDULED_TASK]\nautomation_id: {}\nscheduled_at_unix_ms: {}\ntask_description: {}\n\nThis prompt was triggered by an automation schedule. Complete the task now and report findings clearly.\n\n{}",
+        automation_id,
+        scheduled_at_ms,
+        task_description,
+        prompt
+    )
+}
+
 fn build_delegation_message(source_agent_id: &str, message: &str) -> String {
     format!(
         "[Delegated task from agent {}]\n{}\n\nWhen done, respond with a concise summary of what you completed.",
@@ -1661,6 +1735,207 @@ async fn agent_tools_set_telegram(
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok(Json(status.into()))
+}
+
+#[derive(Deserialize)]
+struct AgentToolsListScheduledTasksQuery {
+    target_agent_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentToolsListScheduledTasksResponse {
+    ok: bool,
+    source_agent_id: String,
+    target_agent_id: String,
+    automations: Vec<AgentAutomation>,
+}
+
+async fn agent_tools_list_scheduled_tasks(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AgentToolsListScheduledTasksQuery>,
+) -> Result<Json<AgentToolsListScheduledTasksResponse>, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+
+    let target_agent_id = query
+        .target_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&source_agent_id)
+        .to_string();
+
+    let manager = state.agent_manager.read().await;
+    if !manager.has_agent(&source_agent_id) {
+        return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
+    }
+
+    let automations = manager
+        .list_agent_automations(&target_agent_id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    Ok(Json(AgentToolsListScheduledTasksResponse {
+        ok: true,
+        source_agent_id,
+        target_agent_id,
+        automations,
+    }))
+}
+
+#[derive(Deserialize)]
+struct AgentToolsSetScheduledTaskRequest {
+    target_agent_id: Option<String>,
+    task_description: String,
+    prompt: String,
+    interval_minutes: u32,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    automation_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentToolsSetScheduledTaskResponse {
+    ok: bool,
+    source_agent_id: String,
+    target_agent_id: String,
+    automation: AgentAutomation,
+}
+
+async fn agent_tools_set_scheduled_task(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AgentToolsSetScheduledTaskRequest>,
+) -> Result<Json<AgentToolsSetScheduledTaskResponse>, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+
+    let target_agent_id = req
+        .target_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&source_agent_id)
+        .to_string();
+    let task_description = req.task_description.trim().to_string();
+    let prompt = req.prompt.trim().to_string();
+
+    if task_description.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "task_description cannot be empty".to_string(),
+        ));
+    }
+    if prompt.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "prompt cannot be empty".to_string()));
+    }
+    if req.interval_minutes == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "interval_minutes must be >= 1".to_string(),
+        ));
+    }
+    if req.interval_minutes > 43_200 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "interval_minutes must be <= 43200".to_string(),
+        ));
+    }
+
+    let now_ms = now_unix_ms();
+    let interval_ms = (req.interval_minutes as u64)
+        .saturating_mul(60_000)
+        .max(60_000);
+    let automation_id = req
+        .automation_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| format!("automation-{}", uuid::Uuid::new_v4()));
+
+    let automation = AgentAutomation {
+        id: automation_id,
+        task_description,
+        prompt,
+        interval_minutes: req.interval_minutes,
+        enabled: req.enabled.unwrap_or(true),
+        created_at_ms: now_ms,
+        last_run_at_ms: None,
+        next_run_at_ms: now_ms.saturating_add(interval_ms),
+    };
+
+    let mut manager = state.agent_manager.write().await;
+    if !manager.has_agent(&source_agent_id) {
+        return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
+    }
+    let saved = manager
+        .upsert_agent_automation(&target_agent_id, automation)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    Ok(Json(AgentToolsSetScheduledTaskResponse {
+        ok: true,
+        source_agent_id,
+        target_agent_id,
+        automation: saved,
+    }))
+}
+
+#[derive(Deserialize)]
+struct AgentToolsDeleteScheduledTaskRequest {
+    target_agent_id: Option<String>,
+    automation_id: String,
+}
+
+#[derive(Serialize)]
+struct AgentToolsDeleteScheduledTaskResponse {
+    ok: bool,
+    source_agent_id: String,
+    target_agent_id: String,
+    automation_id: String,
+    deleted: bool,
+}
+
+async fn agent_tools_delete_scheduled_task(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AgentToolsDeleteScheduledTaskRequest>,
+) -> Result<Json<AgentToolsDeleteScheduledTaskResponse>, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+
+    let target_agent_id = req
+        .target_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&source_agent_id)
+        .to_string();
+    let automation_id = req.automation_id.trim().to_string();
+
+    if automation_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "automation_id cannot be empty".to_string(),
+        ));
+    }
+
+    let mut manager = state.agent_manager.write().await;
+    if !manager.has_agent(&source_agent_id) {
+        return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
+    }
+    let deleted = manager
+        .delete_agent_automation(&target_agent_id, &automation_id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    Ok(Json(AgentToolsDeleteScheduledTaskResponse {
+        ok: true,
+        source_agent_id,
+        target_agent_id,
+        automation_id,
+        deleted,
+    }))
 }
 
 #[derive(Deserialize)]

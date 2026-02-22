@@ -496,9 +496,33 @@ pub struct AgentProcess {
     event_tx: mpsc::UnboundedSender<BroadcastMessage>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAutomation {
+    pub id: String,
+    pub task_description: String,
+    pub prompt: String,
+    pub interval_minutes: u32,
+    pub enabled: bool,
+    pub created_at_ms: u64,
+    pub last_run_at_ms: Option<u64>,
+    pub next_run_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueAutomationRun {
+    pub agent_id: String,
+    pub automation_id: String,
+    pub task_description: String,
+    pub prompt: String,
+    pub scheduled_at_ms: u64,
+}
+
 impl AgentProcess {
     fn maybe_attach_control_plane_hint(&self, message: &str) -> String {
         if self.control_api_base_url.is_none() || self.control_api_token.is_none() {
+            return message.to_string();
+        }
+        if message.contains("[SCHEDULED_TASK]") {
             return message.to_string();
         }
 
@@ -508,6 +532,10 @@ impl AgentProcess {
             "new agent",
             "spawn agent",
             "delegate",
+            "schedule",
+            "scheduled",
+            "automation",
+            "recurring",
             "project manager",
             "project management",
             "other agent",
@@ -522,7 +550,7 @@ impl AgentProcess {
         }
 
         format!(
-            "{}\n\n[Virtual Agency Control Plane]\nUse bash + curl for orchestration:\n- List agents: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/agents\n- Create agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/create-agent\n- Delegate one task and wait for completion (default): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/message-agent\n- Delegate to many agents (parallel supported): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delegate-many\n- Set Telegram on another agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-telegram\n- Publish a local app port and get a share URL: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/publish-app\nInclude header: x-va-agent-token: $VA_CONTROL_TOKEN.\nFor create-agent, collect from user first: cli_type (claude/codex), name, and working_dir.\nFor publish-app, collect target_agent_id and local_port first.\nBefore replying to the end user, wait for delegated tasks to complete and include what was done.\n",
+            "{}\n\n[Virtual Agency Control Plane]\nUse bash + curl for orchestration:\n- List agents: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/agents\n- Create agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/create-agent\n- Delegate one task and wait for completion (default): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/message-agent\n- Delegate to many agents (parallel supported): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delegate-many\n- Set Telegram on another agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-telegram\n- Publish a local app port and get a share URL: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/publish-app\n- List scheduled tasks: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/scheduled-tasks?target_agent_id=<agent_id>\n- Create/update scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-scheduled-task\n- Delete scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delete-scheduled-task\nInclude header: x-va-agent-token: $VA_CONTROL_TOKEN.\nFor create-agent, collect from user first: cli_type (claude/codex), name, and working_dir.\nFor publish-app, collect target_agent_id and local_port first.\nFor set-scheduled-task, collect target_agent_id, task_description, prompt, and interval_minutes first.\nBefore replying to the end user, wait for delegated tasks to complete and include what was done.\n",
             message
         )
     }
@@ -1193,6 +1221,7 @@ impl Drop for AgentProcess {
 
 pub struct AgentManager {
     agents: HashMap<String, AgentProcess>,
+    automations: HashMap<String, Vec<AgentAutomation>>,
     control_api_base_url: Option<String>,
     control_api_token: Option<String>,
     event_tx: mpsc::UnboundedSender<BroadcastMessage>,
@@ -1202,6 +1231,7 @@ impl AgentManager {
     pub fn new(event_tx: mpsc::UnboundedSender<BroadcastMessage>) -> Self {
         Self {
             agents: HashMap::new(),
+            automations: HashMap::new(),
             control_api_base_url: None,
             control_api_token: None,
             event_tx,
@@ -1266,6 +1296,7 @@ impl AgentManager {
 
     pub fn kill_agent(&mut self, id: &str) -> Result<(), String> {
         if let Some(mut agent) = self.agents.remove(id) {
+            self.automations.remove(id);
             agent.kill()
         } else {
             Err(format!("Agent not found: {}", id))
@@ -1376,5 +1407,88 @@ impl AgentManager {
 
     pub fn has_agent(&self, id: &str) -> bool {
         self.agents.contains_key(id)
+    }
+
+    pub fn list_agent_automations(&self, id: &str) -> Result<Vec<AgentAutomation>, String> {
+        if !self.agents.contains_key(id) {
+            return Err(format!("Agent not found: {}", id));
+        }
+        Ok(self.automations.get(id).cloned().unwrap_or_default())
+    }
+
+    pub fn upsert_agent_automation(
+        &mut self,
+        id: &str,
+        automation: AgentAutomation,
+    ) -> Result<AgentAutomation, String> {
+        if !self.agents.contains_key(id) {
+            return Err(format!("Agent not found: {}", id));
+        }
+
+        let entries = self.automations.entry(id.to_string()).or_default();
+        if let Some(existing) = entries.iter_mut().find(|entry| entry.id == automation.id) {
+            *existing = automation.clone();
+        } else {
+            entries.push(automation.clone());
+        }
+        Ok(automation)
+    }
+
+    pub fn delete_agent_automation(&mut self, id: &str, automation_id: &str) -> Result<bool, String> {
+        if !self.agents.contains_key(id) {
+            return Err(format!("Agent not found: {}", id));
+        }
+
+        let Some(entries) = self.automations.get_mut(id) else {
+            return Ok(false);
+        };
+        let previous_len = entries.len();
+        entries.retain(|entry| entry.id != automation_id);
+        Ok(entries.len() != previous_len)
+    }
+
+    pub fn collect_due_automation_runs(&mut self, now_ms: u64) -> Vec<DueAutomationRun> {
+        let mut due = Vec::new();
+        let agent_ids: Vec<String> = self.automations.keys().cloned().collect();
+
+        for agent_id in agent_ids {
+            let is_idle = self
+                .agents
+                .get(&agent_id)
+                .map(|agent| matches!(agent.get_status(), AgentStatus::Idle))
+                .unwrap_or(false);
+            if !is_idle {
+                continue;
+            }
+
+            let Some(entries) = self.automations.get_mut(&agent_id) else {
+                continue;
+            };
+
+            for automation in entries.iter_mut() {
+                if !automation.enabled || automation.interval_minutes == 0 {
+                    continue;
+                }
+                if automation.next_run_at_ms > now_ms {
+                    continue;
+                }
+
+                let interval_ms = (automation.interval_minutes as u64)
+                    .saturating_mul(60_000)
+                    .max(60_000);
+                automation.last_run_at_ms = Some(now_ms);
+                automation.next_run_at_ms = now_ms.saturating_add(interval_ms);
+
+                due.push(DueAutomationRun {
+                    agent_id: agent_id.clone(),
+                    automation_id: automation.id.clone(),
+                    task_description: automation.task_description.clone(),
+                    prompt: automation.prompt.clone(),
+                    scheduled_at_ms: now_ms,
+                });
+            }
+        }
+
+        due
     }
 }
