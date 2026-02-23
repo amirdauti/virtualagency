@@ -131,6 +131,8 @@ const HOSTED_FILE_TREE_TIMEOUT_MS = Math.max(
   10_000,
   Number.parseInt(process.env.HOSTED_FILE_TREE_TIMEOUT_MS || "120000", 10) || 120_000,
 );
+const HOSTING_PROXY_JSON_LIMIT =
+  (process.env.HOSTING_PROXY_JSON_LIMIT || "50mb").trim() || "50mb";
 const HOSTED_REBUILD_COMMAND_POLL_INTERVAL_MS = Math.max(
   500,
   Number.parseInt(process.env.HOSTED_REBUILD_COMMAND_POLL_INTERVAL_MS || "1500", 10) || 1_500,
@@ -1947,7 +1949,7 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
   res.json({ received: true });
 });
 
-app.use(express.json({ limit: "6mb" }));
+app.use(express.json({ limit: HOSTING_PROXY_JSON_LIMIT }));
 
 app.get("/api/billing/me", requireAuth, async (req, res) => {
   const userId = req.auth?.userId;
@@ -2481,6 +2483,13 @@ app.use((err, _req, res, _next) => {
   const status = err?.status || err?.statusCode;
   const message = String(err?.message || "").toLowerCase();
 
+  if (status === 413 || err?.type === "entity.too.large") {
+    return res.status(413).json({
+      error: "payload_too_large",
+      message:
+        "Request payload is too large. Reduce attachment size or increase HOSTING_PROXY_JSON_LIMIT.",
+    });
+  }
   if (status === 401 || message.includes("unauthenticated") || message.includes("signed out")) {
     return res.status(401).json({ error: "unauthorized" });
   }

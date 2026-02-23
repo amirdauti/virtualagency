@@ -2123,7 +2123,7 @@ async fn send_telegram_text_request(
     let mut body = serde_json::json!({
         "chat_id": chat_id,
         "text": text,
-        "disable_web_page_preview": true,
+        "disable_web_page_preview": false,
     });
     if let Some(mode) = parse_mode {
         body["parse_mode"] = serde_json::Value::String(mode.to_string());
