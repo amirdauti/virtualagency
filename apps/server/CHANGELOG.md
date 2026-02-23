@@ -1,3 +1,9 @@
+## [1.5.1](https://github.com/amirdauti/virtualagency/compare/v1.5.0...v1.5.1) (2026-02-23)
+
+### Bug Fixes
+
+* **server:** persist hosted agents across restarts ([775047b](https://github.com/amirdauti/virtualagency/commit/775047b2139b3f962acb2e9260100fd3d1f144fd))
+
 ## [1.5.0](https://github.com/amirdauti/virtualagency/compare/v1.4.0...v1.5.0) (2026-02-22)
 
 ### Features
