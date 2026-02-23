@@ -898,7 +898,12 @@ async function blobUrlToBase64(blobUrl: string): Promise<{ base64: string; mimeT
   });
 }
 
-export async function sendMessage(id: string, message: string, images?: string[]): Promise<void> {
+export async function sendMessage(
+  id: string,
+  message: string,
+  images?: string[],
+  clientMessageId?: string
+): Promise<void> {
   if (isTauri()) {
     return tauriInvoke("send_message", { id, message, images: images || [] });
   } else {
@@ -923,7 +928,11 @@ export async function sendMessage(id: string, message: string, images?: string[]
     const runtime = getAgentRuntime(id);
     await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ message, images: imageData }),
+      body: JSON.stringify({
+        message,
+        images: imageData,
+        client_message_id: clientMessageId,
+      }),
     });
   }
 }

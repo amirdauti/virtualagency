@@ -123,6 +123,17 @@ pub struct AgentStatusChange {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserMessageEvent {
+    pub agent_id: String,
+    pub message_id: String,
+    pub content: String,
+    #[serde(default)]
+    pub images: Vec<String>,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Idle,
@@ -1370,7 +1381,8 @@ impl AgentManager {
                     if item.automations.is_empty() {
                         self.automations.remove(&id);
                     } else {
-                        self.automations.insert(id.clone(), item.automations.clone());
+                        self.automations
+                            .insert(id.clone(), item.automations.clone());
                     }
                     restored_ids.push(id);
                 }
@@ -1392,9 +1404,30 @@ impl AgentManager {
         }
     }
 
-    pub fn send_message(&self, id: &str, message: &str, images: &[String]) -> Result<(), String> {
+    pub fn send_message(
+        &self,
+        id: &str,
+        message: &str,
+        images: &[String],
+        message_id: Option<&str>,
+        source: Option<&str>,
+    ) -> Result<(), String> {
         if let Some(agent) = self.agents.get(id) {
-            agent.send_message(message, images)
+            agent.send_message(message, images)?;
+
+            let _ = self
+                .event_tx
+                .send(BroadcastMessage::UserMessage(UserMessageEvent {
+                    agent_id: id.to_string(),
+                    message_id: message_id
+                        .map(str::to_string)
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    content: message.to_string(),
+                    images: images.to_vec(),
+                    source: source.unwrap_or("api").to_string(),
+                }));
+
+            Ok(())
         } else {
             Err(format!("Agent not found: {}", id))
         }
@@ -1523,7 +1556,11 @@ impl AgentManager {
         Ok(automation)
     }
 
-    pub fn delete_agent_automation(&mut self, id: &str, automation_id: &str) -> Result<bool, String> {
+    pub fn delete_agent_automation(
+        &mut self,
+        id: &str,
+        automation_id: &str,
+    ) -> Result<bool, String> {
         if !self.agents.contains_key(id) {
             return Err(format!("Agent not found: {}", id));
         }

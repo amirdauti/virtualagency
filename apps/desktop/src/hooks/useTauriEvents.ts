@@ -12,8 +12,17 @@ export interface AgentStatusChange {
   status: "idle" | "thinking" | "working" | "error" | "exited";
 }
 
+export interface AgentUserMessage {
+  agent_id: string;
+  message_id: string;
+  content: string;
+  images?: string[];
+  source?: string;
+}
+
 type OutputCallback = (output: AgentOutput) => void;
 type StatusCallback = (status: AgentStatusChange) => void;
+type UserMessageCallback = (message: AgentUserMessage) => void;
 
 /**
  * Singleton event manager that works in both Tauri and browser modes.
@@ -23,6 +32,7 @@ type StatusCallback = (status: AgentStatusChange) => void;
 class EventManager {
   private outputSubscribers = new Set<OutputCallback>();
   private statusSubscribers = new Set<StatusCallback>();
+  private userMessageSubscribers = new Set<UserMessageCallback>();
   private listenerInitialized = false;
 
   subscribeToOutput(callback: OutputCallback): () => void {
@@ -40,6 +50,15 @@ class EventManager {
 
     return () => {
       this.statusSubscribers.delete(callback);
+    };
+  }
+
+  subscribeToUserMessages(callback: UserMessageCallback): () => void {
+    this.userMessageSubscribers.add(callback);
+    this.ensureListener();
+
+    return () => {
+      this.userMessageSubscribers.delete(callback);
     };
   }
 
@@ -73,6 +92,16 @@ class EventManager {
               callback(event.payload);
             } catch (err) {
               console.error("Error in status subscriber:", err);
+            }
+          });
+        });
+
+        listen<AgentUserMessage>("user-message", (event) => {
+          this.userMessageSubscribers.forEach((callback) => {
+            try {
+              callback(event.payload);
+            } catch (err) {
+              console.error("Error in user-message subscriber:", err);
             }
           });
         });
@@ -111,6 +140,21 @@ class EventManager {
               callback(status);
             } catch (err) {
               console.error("Error in status subscriber:", err);
+            }
+          });
+        } else if (message.type === "user-message") {
+          const userMessage: AgentUserMessage = {
+            agent_id: message.agent_id,
+            message_id: message.message_id,
+            content: message.content,
+            images: Array.isArray(message.images) ? message.images : [],
+            source: typeof message.source === "string" ? message.source : undefined,
+          };
+          this.userMessageSubscribers.forEach((callback) => {
+            try {
+              callback(userMessage);
+            } catch (err) {
+              console.error("Error in user-message subscriber:", err);
             }
           });
         }
@@ -166,4 +210,20 @@ export function useAgentStatusListener(
     const unsubscribe = eventManager.subscribeToStatus(stableCallback);
     return unsubscribe;
   }, []); // Empty deps - subscribe once, use ref for latest callback
+}
+
+export function useAgentUserMessageListener(
+  callback: (message: AgentUserMessage) => void
+) {
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
+
+  useEffect(() => {
+    const stableCallback = (message: AgentUserMessage) => {
+      callbackRef.current(message);
+    };
+
+    const unsubscribe = eventManager.subscribeToUserMessages(stableCallback);
+    return unsubscribe;
+  }, []);
 }

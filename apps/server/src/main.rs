@@ -34,7 +34,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use agents::{
     AgentAutomation, AgentManager, AgentOutput, AgentSpecialty, AgentStatus, AgentStatusChange,
-    CliType, PersistedAgent,
+    CliType, PersistedAgent, UserMessageEvent,
 };
 use pty::{TerminalManager, TerminalOutput};
 use telegram::{
@@ -143,6 +143,8 @@ enum BroadcastMessage {
     AgentOutput(AgentOutput),
     #[serde(rename = "agent-status")]
     AgentStatus(AgentStatusChange),
+    #[serde(rename = "user-message")]
+    UserMessage(UserMessageEvent),
     #[serde(rename = "terminal-output")]
     TerminalOutput(TerminalOutput),
 }
@@ -221,8 +223,13 @@ fn load_persisted_agents(path: &FsPath) -> Result<Vec<PersistedAgent>, String> {
         return Ok(Vec::new());
     }
 
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed reading persisted agents at {}: {}", path.display(), e))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "failed reading persisted agents at {}: {}",
+            path.display(),
+            e
+        )
+    })?;
 
     if raw.trim().is_empty() {
         return Ok(Vec::new());
@@ -309,7 +316,10 @@ async fn restore_agents_state(state: &SharedState) {
         for agent_id in &restored_ids {
             telegram.ensure_binding_running(agent_id);
         }
-        tracing::info!("[agents] restored {} agent(s) from disk", restored_ids.len());
+        tracing::info!(
+            "[agents] restored {} agent(s) from disk",
+            restored_ids.len()
+        );
     }
 
     for err in &restore_errors {
@@ -376,7 +386,11 @@ async fn main() {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| workspace_dir.join(".virtual-agency").join("agents-state.json"));
+        .unwrap_or_else(|| {
+            workspace_dir
+                .join(".virtual-agency")
+                .join("agents-state.json")
+        });
     let telegram_bindings_path = workspace_dir
         .join(".virtual-agency")
         .join("telegram-bindings.json");
@@ -470,7 +484,9 @@ async fn main() {
                     &run.prompt,
                 );
                 let manager = scheduled_automation_state.agent_manager.read().await;
-                if let Err(err) = manager.send_message(&run.agent_id, &message, &[]) {
+                if let Err(err) =
+                    manager.send_message(&run.agent_id, &message, &[], None, Some("automation"))
+                {
                     tracing::warn!(
                         "[automations] failed sending scheduled task to agent {}: {}",
                         run.agent_id,
@@ -1094,7 +1110,10 @@ async fn update_agent_settings(
         Ok(_) => {
             drop(manager);
             if let Err(err) = persist_agents_state(&state).await {
-                tracing::warn!("[agents] persist failed after update_agent_settings: {}", err);
+                tracing::warn!(
+                    "[agents] persist failed after update_agent_settings: {}",
+                    err
+                );
             }
             tracing::info!("[update_agent_settings] Successfully updated agent: {}", id);
             Ok(StatusCode::OK)
@@ -1228,6 +1247,8 @@ struct SendMessageRequest {
     message: String,
     #[serde(default)]
     images: Vec<ImageData>,
+    #[serde(default)]
+    client_message_id: Option<String>,
 }
 
 async fn send_message(
@@ -1261,7 +1282,13 @@ async fn send_message(
         }
     }
 
-    match manager.send_message(&id, &req.message, &image_paths) {
+    match manager.send_message(
+        &id,
+        &req.message,
+        &image_paths,
+        req.client_message_id.as_deref(),
+        Some("api"),
+    ) {
         Ok(_) => {
             tracing::info!("[send_message] Successfully sent message to agent: {}", id);
             Ok(StatusCode::ACCEPTED)
@@ -1451,7 +1478,10 @@ async fn agent_tools_create_agent(
     }
 
     if let Err(err) = persist_agents_state(&state).await {
-        tracing::warn!("[agents] persist failed after agent_tools_create_agent: {}", err);
+        tracing::warn!(
+            "[agents] persist failed after agent_tools_create_agent: {}",
+            err
+        );
     }
 
     Ok(Json(AgentInfo {
@@ -1717,7 +1747,13 @@ async fn delegate_to_single_agent(
     let since_seq = state.events.read().await.latest_seq();
     let bridged_message = build_delegation_message(&source_agent_id, &task.message);
     manager
-        .send_message(&task.target_agent_id, &bridged_message, &[])
+        .send_message(
+            &task.target_agent_id,
+            &bridged_message,
+            &[],
+            None,
+            Some("delegate"),
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     drop(manager);
 
@@ -1986,7 +2022,10 @@ async fn agent_tools_set_scheduled_task(
         ));
     }
     if prompt.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "prompt cannot be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "prompt cannot be empty".to_string(),
+        ));
     }
     if req.interval_minutes == 0 {
         return Err((
@@ -2092,7 +2131,10 @@ async fn agent_tools_delete_scheduled_task(
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
     drop(manager);
     if let Err(err) = persist_agents_state(&state).await {
-        tracing::warn!("[agents] persist failed after delete_scheduled_task: {}", err);
+        tracing::warn!(
+            "[agents] persist failed after delete_scheduled_task: {}",
+            err
+        );
     }
 
     Ok(Json(AgentToolsDeleteScheduledTaskResponse {
@@ -2969,7 +3011,13 @@ async fn dispatch_telegram_turn(
     let (message, image_paths) = build_telegram_dispatch_payload(&dispatch).await?;
 
     let manager = state.agent_manager.read().await;
-    manager.send_message(&dispatch.agent_id, &message, &image_paths)
+    manager.send_message(
+        &dispatch.agent_id,
+        &message,
+        &image_paths,
+        None,
+        Some("telegram"),
+    )
 }
 
 async fn execute_telegram_actions(state: SharedState, initial_actions: Vec<TelegramAction>) {

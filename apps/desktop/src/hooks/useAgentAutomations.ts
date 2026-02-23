@@ -28,6 +28,13 @@ function buildAutomationMessage(automation: AgentAutomation): string {
   ].join("\n");
 }
 
+function createAutomationMessageId(agentId: string, automationId: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${agentId}-automation-${automationId}-${crypto.randomUUID()}`;
+  }
+  return `${agentId}-automation-${automationId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function updateAutomation(
   agentId: string,
   automationId: string,
@@ -77,14 +84,17 @@ export function useAgentAutomations() {
           void (async () => {
             try {
               const message = buildAutomationMessage(automation);
+              const messageId = createAutomationMessageId(agent.id, automation.id);
 
               useChatStore.getState().addUserMessage(
                 agent.id,
                 `[Automation] ${automation.taskDescription}`,
+                undefined,
+                messageId,
               );
               useAgentStore.getState().updateAgent(agent.id, { status: "thinking" });
 
-              await sendMessage(agent.id, message);
+              await sendMessage(agent.id, message, undefined, messageId);
 
               updateAutomation(agent.id, automation.id, (current) => ({
                 ...current,

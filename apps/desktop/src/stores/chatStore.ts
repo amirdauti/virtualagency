@@ -42,7 +42,12 @@ interface ChatState {
   messages: ChatMessage[];
   activities: Record<string, string>; // agentId -> current activity
   draftMessages: Record<string, string>; // agentId -> draft message text
-  addUserMessage: (agentId: string, content: string, images?: string[]) => void;
+  addUserMessage: (
+    agentId: string,
+    content: string,
+    images?: string[],
+    messageId?: string
+  ) => void;
   addAssistantMessage: (agentId: string, content: string) => void;
   appendToLastAssistantMessage: (agentId: string, content: string) => void;
   replaceLastAssistantMessage: (agentId: string, content: string) => void;
@@ -204,18 +209,24 @@ export const useChatStore = create<ChatState>()(
       activities: {},
       draftMessages: {},
 
-      addUserMessage: (agentId, content, images) => {
+      addUserMessage: (agentId, content, images, messageId) => {
+        const id = messageId || `${agentId}-user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const message: ChatMessage = {
-          id: `${agentId}-user-${Date.now()}`,
+          id,
           agentId,
           role: "user",
           content,
           timestamp: Date.now(),
           images,
         };
-        set((state) => ({
-          messages: [...state.messages, message],
-        }));
+        set((state) => {
+          if (state.messages.some((existing) => existing.id === id)) {
+            return state;
+          }
+          return {
+            messages: [...state.messages, message],
+          };
+        });
       },
 
       addAssistantMessage: (agentId, content) => {

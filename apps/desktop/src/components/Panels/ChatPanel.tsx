@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, KeyboardEvent, ClipboardEvent, ChangeEvent, useEffect } from "react";
-import { sendMessage, stopAgent, isTauri, updateAgentSettings, ClaudeModel, CodexModel, ReasoningEffort } from "../../lib/api";
+import { createAgent, sendMessage, stopAgent, isTauri, updateAgentSettings, ClaudeModel, CodexModel, ReasoningEffort } from "../../lib/api";
 import { useChatStore } from "../../stores/chatStore";
 import { useAgentStore } from "../../stores/agentStore";
 import { useChatUIStore, DraftImageAttachment } from "../../stores/chatUIStore";
@@ -80,6 +80,13 @@ function buildScheduledMessage(taskDescription: string, prompt: string, automati
   ].join("\n");
 }
 
+function createClientMessageId(agentId: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${agentId}-user-${crypto.randomUUID()}`;
+  }
+  return `${agentId}-user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function ChatPanel({ agentId }: ChatPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const addUserMessage = useChatStore((state) => state.addUserMessage);
@@ -111,6 +118,11 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const [runningAutomationId, setRunningAutomationId] = useState<string | null>(null);
 
   const automations = agent?.automations ?? [];
+
+  const isAgentNotFoundError = useCallback((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err || "");
+    return /agent not found/i.test(message);
+  }, []);
 
   // Sync with agent state when it changes
   useEffect(() => {
@@ -222,9 +234,10 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
     try {
       const message = buildScheduledMessage(automation.taskDescription, automation.prompt, automation.id);
-      addUserMessage(agentId, `[Automation] ${automation.taskDescription}`);
+      const clientMessageId = createClientMessageId(agentId);
+      addUserMessage(agentId, `[Automation] ${automation.taskDescription}`, undefined, clientMessageId);
       updateAgent(agentId, { status: "thinking" });
-      await sendMessage(agentId, message);
+      await sendMessage(agentId, message, undefined, clientMessageId);
 
       updateAgent(agentId, {
         automations: automations.map((entry) =>
@@ -460,8 +473,16 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     // Set agent to thinking state immediately for visual feedback
     updateAgent(agentId, { status: "thinking" });
 
-    // Add user message to chat history immediately with images
-    addUserMessage(agentId, messageContent, imagePaths.length > 0 ? imagePaths : undefined);
+    const clientMessageId = createClientMessageId(agentId);
+
+    // Add user message to chat history immediately with images.
+    // Server echo (browser mode) uses the same message id, so it de-dupes cleanly.
+    addUserMessage(
+      agentId,
+      messageContent,
+      imagePaths.length > 0 ? imagePaths : undefined,
+      clientMessageId
+    );
     setInput("");
     clearDraft(agentId); // Clear the draft after sending
 
@@ -472,9 +493,29 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
     try {
       console.log("[ChatPanel] Sending message:", { agentId, outgoingMessage, imagePaths, promptKind });
-      await sendMessage(agentId, outgoingMessage, imagePaths);
+      await sendMessage(agentId, outgoingMessage, imagePaths, clientMessageId);
       console.log("[ChatPanel] Message sent successfully");
     } catch (err) {
+      if (!isTauri() && agent && isAgentNotFoundError(err)) {
+        try {
+          console.warn("[ChatPanel] Agent missing on server, attempting recreate + retry:", agentId);
+          await createAgent(agent.id, agent.workingDirectory, {
+            model: agent.model,
+            thinkingEnabled: agent.thinkingEnabled,
+            reasoningEffort: agent.reasoningEffort,
+            mcpServers: agent.mcpServers,
+            sessionId: agent.sessionId,
+            cliType: agent.cliType,
+            specialty: agent.specialty,
+            runtime: agent.runtime || "local",
+          });
+          await sendMessage(agentId, outgoingMessage, imagePaths, clientMessageId);
+          console.log("[ChatPanel] Message sent successfully after agent recreate");
+          return;
+        } catch (recreateErr) {
+          console.error("[ChatPanel] Agent recreate + retry failed:", recreateErr);
+        }
+      }
       console.error("[ChatPanel] Failed to send message:", err);
       // Reset agent status on error since the backend won't emit status events
       updateAgent(agentId, { status: "error" });
@@ -490,6 +531,8 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     updateAgent,
     clearDraft,
     clearDraftImages,
+    agent,
+    isAgentNotFoundError,
     promptKind,
     scheduledTaskDescription,
   ]);

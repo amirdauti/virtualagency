@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { useAgentOutputListener } from "./useTauriEvents";
+import { useAgentOutputListener, useAgentUserMessageListener } from "./useTauriEvents";
 import { useChatStore, ChatMessage } from "../stores/chatStore";
 import { useAgentStore } from "../stores/agentStore";
 import { fetchAgentApi } from "../lib/api";
@@ -26,6 +26,7 @@ const MAX_FILE_CACHE_CHARS = 200_000;
  * - item.started / item.updated / item.completed (e.g. agent_message, command_execution, file_change)
  */
 export function useChatMessages() {
+  const addUserMessage = useChatStore((state) => state.addUserMessage);
   const addAssistantMessage = useChatStore((state) => state.addAssistantMessage);
   const appendToLastAssistantMessage = useChatStore(
     (state) => state.appendToLastAssistantMessage
@@ -552,6 +553,30 @@ export function useChatMessages() {
   );
 
   useAgentOutputListener(handleOutput);
+
+  useAgentUserMessageListener(
+    useCallback(
+      (message) => {
+        // Browser mode can receive local filesystem temp paths (e.g. /tmp/..)
+        // that are not web-accessible, so keep only directly displayable URLs.
+        const safeImages = Array.isArray(message.images)
+          ? message.images.filter((value) =>
+              value.startsWith("blob:") ||
+              value.startsWith("data:") ||
+              /^https?:\/\//.test(value)
+            )
+          : undefined;
+
+        addUserMessage(
+          message.agent_id,
+          message.content,
+          safeImages && safeImages.length > 0 ? safeImages : undefined,
+          message.message_id
+        );
+      },
+      [addUserMessage]
+    )
+  );
 }
 
 /**
