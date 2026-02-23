@@ -1475,7 +1475,6 @@ case "$PKG" in
 esac
 
 npm install -g "$PKG"
-systemctl restart virtualagency-server
 UPGRADE_EOF
 
 chmod 755 /usr/local/bin/virtualagency-upgrade.sh
