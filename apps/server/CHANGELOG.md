@@ -1,3 +1,9 @@
+## [1.5.2](https://github.com/amirdauti/virtualagency/compare/v1.5.1...v1.5.2) (2026-02-23)
+
+### Bug Fixes
+
+* **chat:** persist and replay user messages across refresh ([08e3e3f](https://github.com/amirdauti/virtualagency/commit/08e3e3ffce963aed42a833ce00ff005140b0af00))
+
 ## [1.5.1](https://github.com/amirdauti/virtualagency/compare/v1.5.0...v1.5.1) (2026-02-23)
 
 ### Bug Fixes
