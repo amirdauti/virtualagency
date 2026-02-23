@@ -508,6 +508,37 @@ pub struct AgentAutomation {
     pub next_run_at_ms: u64,
 }
 
+fn default_persisted_reasoning_effort() -> String {
+    "medium".to_string()
+}
+
+fn default_persisted_model() -> String {
+    "sonnet".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedAgent {
+    pub id: String,
+    pub name: String,
+    pub working_dir: String,
+    #[serde(default = "default_persisted_model")]
+    pub model: String,
+    #[serde(default)]
+    pub thinking_enabled: bool,
+    #[serde(default = "default_persisted_reasoning_effort")]
+    pub reasoning_effort: String,
+    #[serde(default)]
+    pub specialty: AgentSpecialty,
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub cli_type: CliType,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub automations: Vec<AgentAutomation>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DueAutomationRun {
     pub agent_id: String,
@@ -1292,6 +1323,64 @@ impl AgentManager {
         )?;
         self.agents.insert(id.clone(), agent);
         Ok(id)
+    }
+
+    pub fn snapshot_persisted_agents(&self) -> Vec<PersistedAgent> {
+        self.agents
+            .iter()
+            .map(|(id, agent)| PersistedAgent {
+                id: id.clone(),
+                name: agent.name.clone(),
+                working_dir: agent.working_dir.clone(),
+                model: agent.model.clone(),
+                thinking_enabled: agent.thinking_enabled,
+                reasoning_effort: agent.reasoning_effort.clone(),
+                specialty: agent.specialty.clone(),
+                mcp_servers: agent.mcp_servers.clone(),
+                cli_type: agent.cli_type.clone(),
+                session_id: agent.get_session_id(),
+                automations: self.automations.get(id).cloned().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    pub fn restore_persisted_agents(
+        &mut self,
+        persisted: Vec<PersistedAgent>,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut restored_ids = Vec::new();
+        let mut errors = Vec::new();
+
+        for item in persisted {
+            let create_result = self.create_agent(
+                Some(&item.id),
+                &item.name,
+                &item.working_dir,
+                &item.model,
+                item.thinking_enabled,
+                &item.reasoning_effort,
+                item.specialty.clone(),
+                item.mcp_servers.clone(),
+                item.cli_type.clone(),
+                item.session_id.clone(),
+            );
+
+            match create_result {
+                Ok(id) => {
+                    if item.automations.is_empty() {
+                        self.automations.remove(&id);
+                    } else {
+                        self.automations.insert(id.clone(), item.automations.clone());
+                    }
+                    restored_ids.push(id);
+                }
+                Err(err) => {
+                    errors.push(format!("{}: {}", item.id, err));
+                }
+            }
+        }
+
+        (restored_ids, errors)
     }
 
     pub fn kill_agent(&mut self, id: &str) -> Result<(), String> {

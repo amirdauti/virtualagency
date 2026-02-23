@@ -34,7 +34,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use agents::{
     AgentAutomation, AgentManager, AgentOutput, AgentSpecialty, AgentStatus, AgentStatusChange,
-    CliType,
+    CliType, PersistedAgent,
 };
 use pty::{TerminalManager, TerminalOutput};
 use telegram::{
@@ -44,6 +44,7 @@ use telegram::{
 
 type SharedState = Arc<AppState>;
 static WHISPER_INSTALL_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+const AGENTS_STATE_VERSION: u32 = 1;
 
 // Middleware to add Private Network Access headers for browser security
 async fn private_network_access_middleware(
@@ -118,6 +119,7 @@ struct AppState {
     events: RwLock<EventStore>,
     published_apps: RwLock<HashMap<String, PublishedApp>>,
     workspace_dir: PathBuf,
+    agents_persistence_path: PathBuf,
     agent_tools_token: String,
     hosted_proxy_token: Option<String>,
     public_base_url: Option<String>,
@@ -207,6 +209,121 @@ impl EventStore {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedAgentsFile {
+    version: u32,
+    #[serde(default)]
+    agents: Vec<PersistedAgent>,
+}
+
+fn load_persisted_agents(path: &FsPath) -> Result<Vec<PersistedAgent>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed reading persisted agents at {}: {}", path.display(), e))?;
+
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<PersistedAgentsFile>(&raw) {
+        if parsed.version == AGENTS_STATE_VERSION {
+            return Ok(parsed.agents);
+        }
+        tracing::warn!(
+            "[agents] ignoring persisted state at {} due to version mismatch: {} != {}",
+            path.display(),
+            parsed.version,
+            AGENTS_STATE_VERSION
+        );
+        return Ok(Vec::new());
+    }
+
+    // Backward-compatible fallback for an array-only payload.
+    serde_json::from_str::<Vec<PersistedAgent>>(&raw).map_err(|e| {
+        format!(
+            "failed parsing persisted agents at {}: {}",
+            path.display(),
+            e
+        )
+    })
+}
+
+fn write_persisted_agents(path: &FsPath, agents: Vec<PersistedAgent>) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed creating {}: {}", parent.display(), e))?;
+    }
+
+    let payload = PersistedAgentsFile {
+        version: AGENTS_STATE_VERSION,
+        agents,
+    };
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| format!("failed serializing agents state: {}", e))?;
+
+    let tmp_path = path.with_extension(format!("json.tmp.{}", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp_path, json)
+        .map_err(|e| format!("failed writing {}: {}", tmp_path.display(), e))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        format!(
+            "failed renaming {} to {}: {}",
+            tmp_path.display(),
+            path.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+async fn persist_agents_state(state: &SharedState) -> Result<(), String> {
+    let snapshot = {
+        let manager = state.agent_manager.read().await;
+        manager.snapshot_persisted_agents()
+    };
+    write_persisted_agents(&state.agents_persistence_path, snapshot)
+}
+
+async fn restore_agents_state(state: &SharedState) {
+    let persisted = match load_persisted_agents(&state.agents_persistence_path) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!("[agents] failed loading persisted state: {}", err);
+            return;
+        }
+    };
+
+    if persisted.is_empty() {
+        return;
+    }
+
+    let (restored_ids, restore_errors) = {
+        let mut manager = state.agent_manager.write().await;
+        manager.restore_persisted_agents(persisted)
+    };
+
+    if !restored_ids.is_empty() {
+        let mut telegram = state.telegram_manager.write().await;
+        for agent_id in &restored_ids {
+            telegram.ensure_binding_running(agent_id);
+        }
+        tracing::info!("[agents] restored {} agent(s) from disk", restored_ids.len());
+    }
+
+    for err in &restore_errors {
+        tracing::warn!("[agents] restore skipped: {}", err);
+    }
+
+    if !restore_errors.is_empty() {
+        // Rewrite state without invalid entries so failed restores don't repeat forever.
+        if let Err(err) = persist_agents_state(state).await {
+            tracing::warn!("[agents] failed rewriting persisted state: {}", err);
+        }
+    }
+}
+
 /// Incoming WebSocket messages from clients
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -254,6 +371,12 @@ async fn main() {
         .ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty());
+    let agents_persistence_path = std::env::var("VA_AGENTS_STATE_PATH")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_dir.join(".virtual-agency").join("agents-state.json"));
     let telegram_bindings_path = workspace_dir
         .join(".virtual-agency")
         .join("telegram-bindings.json");
@@ -269,6 +392,7 @@ async fn main() {
         events: RwLock::new(EventStore::new(5000)),
         published_apps: RwLock::new(HashMap::new()),
         workspace_dir,
+        agents_persistence_path,
         agent_tools_token,
         hosted_proxy_token,
         public_base_url,
@@ -353,6 +477,19 @@ async fn main() {
                         err
                     );
                 }
+            }
+        }
+    });
+
+    // Persist agent state periodically so session ids and automation schedules survive restarts.
+    let agents_persist_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(TokioDuration::from_secs(15));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(err) = persist_agents_state(&agents_persist_state).await {
+                tracing::warn!("[agents] periodic persist failed: {}", err);
             }
         }
     });
@@ -530,6 +667,11 @@ async fn main() {
             format!("http://127.0.0.1:{}", port),
             state.agent_tools_token.clone(),
         );
+    }
+
+    restore_agents_state(&state).await;
+    if let Err(err) = persist_agents_state(&state).await {
+        tracing::warn!("[agents] initial persist failed: {}", err);
     }
 
     axum::serve(listener, app).await.unwrap();
@@ -832,6 +974,10 @@ async fn create_agent(
                 telegram.ensure_binding_running(&id);
             }
 
+            if let Err(err) = persist_agents_state(&state).await {
+                tracing::warn!("[agents] persist failed after create_agent: {}", err);
+            }
+
             Ok(Json(AgentInfo {
                 id,
                 name: req.name,
@@ -908,6 +1054,10 @@ async fn kill_agent(
             drop(manager);
             let mut telegram = state.telegram_manager.write().await;
             telegram.clear_for_agent(&id);
+            drop(telegram);
+            if let Err(err) = persist_agents_state(&state).await {
+                tracing::warn!("[agents] persist failed after kill_agent: {}", err);
+            }
             Ok(StatusCode::NO_CONTENT)
         }
         Err(e) => Err((StatusCode::NOT_FOUND, e)),
@@ -942,6 +1092,10 @@ async fn update_agent_settings(
         req.mcp_servers,
     ) {
         Ok(_) => {
+            drop(manager);
+            if let Err(err) = persist_agents_state(&state).await {
+                tracing::warn!("[agents] persist failed after update_agent_settings: {}", err);
+            }
             tracing::info!("[update_agent_settings] Successfully updated agent: {}", id);
             Ok(StatusCode::OK)
         }
@@ -1294,6 +1448,10 @@ async fn agent_tools_create_agent(
     {
         let mut telegram = state.telegram_manager.write().await;
         telegram.ensure_binding_running(&created_id);
+    }
+
+    if let Err(err) = persist_agents_state(&state).await {
+        tracing::warn!("[agents] persist failed after agent_tools_create_agent: {}", err);
     }
 
     Ok(Json(AgentInfo {
@@ -1873,6 +2031,10 @@ async fn agent_tools_set_scheduled_task(
     let saved = manager
         .upsert_agent_automation(&target_agent_id, automation)
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    drop(manager);
+    if let Err(err) = persist_agents_state(&state).await {
+        tracing::warn!("[agents] persist failed after set_scheduled_task: {}", err);
+    }
 
     Ok(Json(AgentToolsSetScheduledTaskResponse {
         ok: true,
@@ -1928,6 +2090,10 @@ async fn agent_tools_delete_scheduled_task(
     let deleted = manager
         .delete_agent_automation(&target_agent_id, &automation_id)
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    drop(manager);
+    if let Err(err) = persist_agents_state(&state).await {
+        tracing::warn!("[agents] persist failed after delete_scheduled_task: {}", err);
+    }
 
     Ok(Json(AgentToolsDeleteScheduledTaskResponse {
         ok: true,
