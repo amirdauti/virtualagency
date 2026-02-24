@@ -1,3 +1,9 @@
+## [1.6.1](https://github.com/amirdauti/virtualagency/compare/v1.6.0...v1.6.1) (2026-02-24)
+
+### Bug Fixes
+
+* **server:** add versioned health response and rollout ssh fallback ([4b1ad3c](https://github.com/amirdauti/virtualagency/commit/4b1ad3c812be7893b9d0488a4474382530a1ce65))
+
 ## [1.6.0](https://github.com/amirdauti/virtualagency/compare/v1.5.2...v1.6.0) (2026-02-24)
 
 ### Features
