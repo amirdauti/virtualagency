@@ -991,6 +991,73 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
   }
 }
 
+async function runHostedVaSshUpgrade(server, packageSpecifier) {
+  const host = String(server?.ipAddress || "").trim();
+  if (!host) {
+    throw new Error("hosted_va_ssh_upgrade_missing_ip");
+  }
+
+  const tempDir = await fs.mkdtemp("/tmp/va-rollout-");
+  const keyPath = path.join(tempDir, "id_ed25519");
+  try {
+    await execFileAsync(
+      "ssh-keygen",
+      ["-q", "-t", "ed25519", "-f", keyPath, "-N", "", "-C", `va-rollout-${randomToken(6)}`],
+      { timeout: 15_000, maxBuffer: 1024 * 1024 },
+    );
+
+    const publicKey = String(await fs.readFile(`${keyPath}.pub`, "utf8")).trim();
+    if (!isLikelySshPublicKey(publicKey)) {
+      throw new Error("generated_invalid_public_key");
+    }
+
+    await addHostedAuthorizedKey(server, publicKey);
+
+    const remotePackage = `${VA_SERVER_NPM_PACKAGE}@${packageSpecifier}`;
+    const quotedPackage = shellSingleQuote(remotePackage);
+    const remoteCommand = [
+      "set -euo pipefail",
+      `PKG=${quotedPackage}`,
+      "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
+      "  sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$PKG\"",
+      "else",
+      "  sudo -n npm install -g \"$PKG\"",
+      "fi",
+      "( sudo -n systemctl restart virtualagency-server || pkill -f '^virtual-agency-server( |$)' || true )",
+    ].join("; ");
+
+    const sshArgs = [
+      "-i",
+      keyPath,
+      "-p",
+      String(HOSTED_AUTO_UPDATE_SSH_PORT),
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+      "-o",
+      `ConnectTimeout=${HOSTED_AUTO_UPDATE_SSH_CONNECT_TIMEOUT_SEC}`,
+      `va@${host}`,
+      remoteCommand,
+    ];
+
+    await execFileAsync("ssh", sshArgs, {
+      timeout: HOSTED_AUTO_UPDATE_SSH_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (err) {
+    const stdout = truncateText(stripAnsi(String(err?.stdout || "")).replace(/\s+/g, " ").trim(), 220);
+    const stderr = truncateText(stripAnsi(String(err?.stderr || "")).replace(/\s+/g, " ").trim(), 220);
+    const reason = truncateText(err?.message || String(err), 220);
+    const details = [reason, stderr, stdout].filter(Boolean).join(" | ");
+    throw new Error(`hosted_va_ssh_upgrade_failed:${details || "ssh_command_failed"}`);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 function isLikelySshPublicKey(value) {
   const text = String(value || "").trim();
   if (text.length < 40 || text.length > 8192) return false;
@@ -1331,7 +1398,23 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
       if (!shouldTrySshFallback) {
         throw err;
       }
-      await runHostedRootSshUpgrade(server, packageSpecifier);
+      try {
+        await runHostedVaSshUpgrade(server, packageSpecifier);
+      } catch (vaSshErr) {
+        if (HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED && HOSTED_AUTO_UPDATE_SSH_KEY_PATH) {
+          try {
+            await runHostedRootSshUpgrade(server, packageSpecifier);
+          } catch (rootSshErr) {
+            throw new Error(
+              `hosted_upgrade_fallback_failed:runtime=${truncateText(message, 180)} | va=${truncateText(vaSshErr?.message || String(vaSshErr), 180)} | root=${truncateText(rootSshErr?.message || String(rootSshErr), 180)}`,
+            );
+          }
+        } else {
+          throw new Error(
+            `hosted_upgrade_fallback_failed:runtime=${truncateText(message, 180)} | va=${truncateText(vaSshErr?.message || String(vaSshErr), 180)}`,
+          );
+        }
+      }
     }
     if (trackedVersion) {
       server.packageVersion = trackedVersion;
