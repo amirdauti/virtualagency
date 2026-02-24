@@ -728,6 +728,7 @@ async fn main() {
         .route("/api/files/write/:agent_id", post(write_file))
         .route("/api/ports/find", get(find_available_port))
         .route("/api/public/:slug", any(proxy_public_app_root))
+        .route("/api/public/:slug/", any(proxy_public_app_root))
         .route("/api/public/:slug/*rest", any(proxy_public_app))
         .route("/api/health", get(health_check))
         .route("/api/browse", get(browse_directory))
@@ -2525,7 +2526,7 @@ async fn agent_tools_publish_app(
     }
 
     let base_url = infer_public_base_url(state.clone(), &headers).await;
-    let proxy_path = format!("/api/public/{}/", desired_slug);
+    let proxy_path = format!("/api/public/{}", desired_slug);
     let share_url = format!("{}{}", base_url.trim_end_matches('/'), proxy_path);
     tracing::info!(
         "[publish] mapped slug='{}' source='{}' target='{}' local={}:{} prefix='{}' share_url='{}'",
