@@ -60,6 +60,28 @@ const HOSTED_AUTO_UPDATE_RETRY_DELAY_MS = Math.max(
   60_000,
   Number.parseInt(process.env.HOSTED_AUTO_UPDATE_RETRY_DELAY_MS || "1800000", 10) || 1_800_000,
 );
+const HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED = !["0", "false", "off", "no"].includes(
+  String(process.env.HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED || "1")
+    .trim()
+    .toLowerCase(),
+);
+const HOSTED_AUTO_UPDATE_SSH_USER =
+  String(process.env.HOSTED_AUTO_UPDATE_SSH_USER || "root").trim() || "root";
+const HOSTED_AUTO_UPDATE_SSH_KEY_PATH = String(
+  process.env.HOSTED_AUTO_UPDATE_SSH_KEY_PATH || "",
+).trim();
+const HOSTED_AUTO_UPDATE_SSH_PORT = Math.max(
+  1,
+  Math.min(65535, Number.parseInt(process.env.HOSTED_AUTO_UPDATE_SSH_PORT || "22", 10) || 22),
+);
+const HOSTED_AUTO_UPDATE_SSH_CONNECT_TIMEOUT_SEC = Math.max(
+  3,
+  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_SSH_CONNECT_TIMEOUT_SEC || "8", 10) || 8,
+);
+const HOSTED_AUTO_UPDATE_SSH_TIMEOUT_MS = Math.max(
+  10_000,
+  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_SSH_TIMEOUT_MS || "120000", 10) || 120_000,
+);
 const NPM_VIEW_TIMEOUT_MS = Math.max(
   5_000,
   Number.parseInt(process.env.NPM_VIEW_TIMEOUT_MS || "15000", 10) || 15_000,
@@ -911,6 +933,64 @@ function shellSingleQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
+async function runHostedRootSshUpgrade(server, packageSpecifier) {
+  if (!HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED) {
+    throw new Error("hosted_root_ssh_upgrade_disabled");
+  }
+
+  const host = String(server?.ipAddress || "").trim();
+  if (!host) {
+    throw new Error("hosted_root_ssh_upgrade_missing_ip");
+  }
+
+  if (!HOSTED_AUTO_UPDATE_SSH_KEY_PATH) {
+    throw new Error("hosted_root_ssh_upgrade_missing_key_path");
+  }
+
+  const remotePackage = `${VA_SERVER_NPM_PACKAGE}@${packageSpecifier}`;
+  const quotedPackage = shellSingleQuote(remotePackage);
+  const remoteCommand = [
+    "set -euo pipefail",
+    `PKG=${quotedPackage}`,
+    "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
+    "  /usr/local/bin/virtualagency-upgrade.sh \"$PKG\"",
+    "else",
+    "  npm install -g \"$PKG\"",
+    "fi",
+    "systemctl restart virtualagency-server",
+  ].join("; ");
+
+  const sshArgs = [
+    "-i",
+    HOSTED_AUTO_UPDATE_SSH_KEY_PATH,
+    "-p",
+    String(HOSTED_AUTO_UPDATE_SSH_PORT),
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    `ConnectTimeout=${HOSTED_AUTO_UPDATE_SSH_CONNECT_TIMEOUT_SEC}`,
+    `${HOSTED_AUTO_UPDATE_SSH_USER}@${host}`,
+    remoteCommand,
+  ];
+
+  try {
+    await execFileAsync("ssh", sshArgs, {
+      timeout: HOSTED_AUTO_UPDATE_SSH_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (err) {
+    const stdout = truncateText(stripAnsi(String(err?.stdout || "")).replace(/\s+/g, " ").trim(), 220);
+    const stderr = truncateText(stripAnsi(String(err?.stderr || "")).replace(/\s+/g, " ").trim(), 220);
+    const reason = truncateText(err?.message || String(err), 220);
+    const details = [reason, stderr, stdout].filter(Boolean).join(" | ");
+    throw new Error(`hosted_root_ssh_upgrade_failed:${details || "ssh_command_failed"}`);
+  }
+}
+
 function isLikelySshPublicKey(value) {
   const text = String(value || "").trim();
   if (text.length < 40 || text.length > 8192) return false;
@@ -1239,7 +1319,15 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
   await queueHostedStatePersist();
 
   try {
-    await runHostedInPlaceRebuild(server, packageSpecifier);
+    try {
+      await runHostedInPlaceRebuild(server, packageSpecifier);
+    } catch (err) {
+      const message = String(err?.message || "");
+      if (!message.includes("missing_sudo_upgrade_privilege")) {
+        throw err;
+      }
+      await runHostedRootSshUpgrade(server, packageSpecifier);
+    }
     if (trackedVersion) {
       server.packageVersion = trackedVersion;
       server.packageVersionUpdatedAt = nowIso();
@@ -1419,7 +1507,7 @@ function startHostedAutoUpdateScheduler() {
 
   hostedAutoUpdateTimer = setTimeout(tick, 20_000);
   console.log(
-    `[hosting] auto-update scheduler enabled (interval=${HOSTED_AUTO_UPDATE_INTERVAL_MS}ms, concurrency=${HOSTED_AUTO_UPDATE_CONCURRENCY}, retryDelay=${HOSTED_AUTO_UPDATE_RETRY_DELAY_MS}ms)`,
+    `[hosting] auto-update scheduler enabled (interval=${HOSTED_AUTO_UPDATE_INTERVAL_MS}ms, concurrency=${HOSTED_AUTO_UPDATE_CONCURRENCY}, retryDelay=${HOSTED_AUTO_UPDATE_RETRY_DELAY_MS}ms, sshFallback=${HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED ? "on" : "off"}, sshKey=${HOSTED_AUTO_UPDATE_SSH_KEY_PATH ? "configured" : "missing"})`,
   );
 }
 
@@ -2286,6 +2374,10 @@ app.get("/api/hosting/internal/rollout-status", async (req, res) => {
       retryDelayMs: HOSTED_AUTO_UPDATE_RETRY_DELAY_MS,
       package: VA_SERVER_NPM_PACKAGE,
       packageVersion: VA_SERVER_NPM_VERSION,
+      sshFallbackEnabled: HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED,
+      sshFallbackKeyConfigured: Boolean(HOSTED_AUTO_UPDATE_SSH_KEY_PATH),
+      sshFallbackUser: HOSTED_AUTO_UPDATE_SSH_USER,
+      sshFallbackPort: HOSTED_AUTO_UPDATE_SSH_PORT,
     },
   });
 });
@@ -2516,6 +2608,11 @@ app.listen(PORT, "127.0.0.1", () => {
   if (!STRIPE_HOSTED_PRICE_ID) missing.push("STRIPE_HOSTED_PRICE_ID");
   if (missing.length > 0) {
     console.warn(`[billing] missing env: ${missing.join(", ")}`);
+  }
+  if (HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED && !HOSTED_AUTO_UPDATE_SSH_KEY_PATH) {
+    console.warn(
+      "[hosting] HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED=1 but HOSTED_AUTO_UPDATE_SSH_KEY_PATH is not set; fallback upgrades will fail when sudo is unavailable.",
+    );
   }
   console.log(`[billing] listening on http://127.0.0.1:${PORT}`);
   if (HOSTED_AUTO_UPDATE_ENABLED) {

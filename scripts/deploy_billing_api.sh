@@ -56,6 +56,9 @@ if [ ! -f "$ENV_FILE" ]; then
 # - APP_URL=https://virtualagency.ai
 # - PORT=8787
 # - STRIPE_PRICE_ID=price_...
+# - HOSTED_AUTO_UPDATE_SSH_KEY_PATH=/root/.ssh/id_ed25519
+# - HOSTED_AUTO_UPDATE_SSH_USER=root
+# - HOSTED_AUTO_UPDATE_SSH_PORT=22
 
 APP_URL=https://virtualagency.ai
 PORT=8787

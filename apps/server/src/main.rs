@@ -865,7 +865,10 @@ async fn main() {
 }
 
 async fn health_check() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
 }
 
 #[derive(Deserialize)]
