@@ -929,6 +929,8 @@ export function LandingPage() {
           <div className="flex flex-wrap gap-x-6 gap-y-2">
             <a className="transition-colors hover:text-[var(--cyan)]" href="/app/">Open App</a>
             <a className="transition-colors hover:text-[var(--cyan)]" href="#install">Install</a>
+            <a className="transition-colors hover:text-[var(--cyan)]" href="/terms/">Terms</a>
+            <a className="transition-colors hover:text-[var(--cyan)]" href="/privacy/">Privacy</a>
             <a className="transition-colors hover:text-[var(--cyan)]" href="mailto:hello@virtualagency.ai">Contact</a>
           </div>
         </div>

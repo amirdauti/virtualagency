@@ -2409,6 +2409,7 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     const headers = {
       "Content-Type": "application/json",
       Accept: req.headers.accept || "application/json",
+      "x-va-user-id": userId,
     };
     if (server.proxyToken) {
       headers["x-va-hosted-token"] = server.proxyToken;

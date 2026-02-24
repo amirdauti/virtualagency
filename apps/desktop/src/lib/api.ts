@@ -972,6 +972,37 @@ export async function loadIntegrationsMarkdown(id: string): Promise<string> {
   }
 }
 
+export interface NangoConnectSessionResponse {
+  session_token: string;
+  integration_id: string;
+  nango_base_url: string;
+  expires_at?: string | null;
+  connect_link?: string | null;
+}
+
+export async function createNangoConnectSession(
+  id: string,
+  integrationId: string
+): Promise<NangoConnectSessionResponse> {
+  if (isTauri()) {
+    throw new Error("Nango connect flow is only available in browser/server mode.");
+  }
+
+  const runtime = getAgentRuntime(id);
+  return fetchApiForRuntime<NangoConnectSessionResponse>(
+    runtime,
+    "/api/integrations/nango/connect-session",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        integration_id: integrationId,
+        end_user_id: id,
+        end_user_display_name: id,
+      }),
+    }
+  );
+}
+
 export async function listAgents(options: RuntimeQueryOptions = {}): Promise<string[]> {
   if (isTauri()) {
     return tauriInvoke("list_agents");

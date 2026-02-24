@@ -125,6 +125,8 @@ struct AppState {
     agent_tools_token: String,
     hosted_proxy_token: Option<String>,
     public_base_url: Option<String>,
+    nango_secret_key: Option<String>,
+    nango_base_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -500,6 +502,15 @@ async fn main() {
         .ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty());
+    let nango_secret_key = std::env::var("NANGO_SECRET_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let nango_base_url = std::env::var("NANGO_BASE_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://api.nango.dev".to_string());
     let agents_persistence_path = std::env::var("VA_AGENTS_STATE_PATH")
         .ok()
         .map(|s| s.trim().to_string())
@@ -540,6 +551,8 @@ async fn main() {
         agent_tools_token,
         hosted_proxy_token,
         public_base_url,
+        nango_secret_key,
+        nango_base_url,
     });
 
     // Distributor: persists events to ring buffer and broadcasts to WS clients.
@@ -698,6 +711,18 @@ async fn main() {
             post(agent_tools_set_telegram),
         )
         .route(
+            "/api/agent-tools/:source_agent_id/nango-connect-session",
+            post(agent_tools_nango_connect_session),
+        )
+        .route(
+            "/api/agent-tools/:source_agent_id/nango-connections",
+            post(agent_tools_nango_connections),
+        )
+        .route(
+            "/api/agent-tools/:source_agent_id/nango-proxy",
+            post(agent_tools_nango_proxy),
+        )
+        .route(
             "/api/agent-tools/:source_agent_id/publish-app",
             post(agent_tools_publish_app),
         )
@@ -726,6 +751,10 @@ async fn main() {
         .route("/api/files/read/:agent_id", post(read_file))
         .route("/api/files/read_git/:agent_id", post(read_file_git))
         .route("/api/files/write/:agent_id", post(write_file))
+        .route(
+            "/api/integrations/nango/connect-session",
+            post(create_nango_connect_session),
+        )
         .route("/api/ports/find", get(find_available_port))
         .route("/api/public/:slug", any(proxy_public_app_root))
         .route("/api/public/:slug/", any(proxy_public_app_root))
@@ -1391,6 +1420,407 @@ struct SendMessageRequest {
     images: Vec<ImageData>,
     #[serde(default)]
     client_message_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NangoConnectSessionRequest {
+    integration_id: String,
+    end_user_id: String,
+    #[serde(default)]
+    end_user_email: Option<String>,
+    #[serde(default)]
+    end_user_display_name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NangoConnectSessionResponse {
+    session_token: String,
+    integration_id: String,
+    nango_base_url: String,
+    expires_at: Option<String>,
+    connect_link: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NangoCreateSessionPayload {
+    end_user: NangoCreateSessionEndUser,
+    allowed_integrations: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct NangoCreateSessionEndUser {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct NangoConnectionInfo {
+    connection_id: String,
+    integration_id: String,
+    end_user_id: Option<String>,
+    status: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AgentToolsNangoConnectSessionRequest {
+    #[serde(default)]
+    target_agent_id: Option<String>,
+    integration_id: String,
+}
+
+#[derive(Serialize)]
+struct AgentToolsNangoConnectSessionResponse {
+    ok: bool,
+    source_agent_id: String,
+    target_agent_id: String,
+    session: NangoConnectSessionResponse,
+}
+
+#[derive(Deserialize)]
+struct AgentToolsNangoConnectionsRequest {
+    #[serde(default)]
+    target_agent_id: Option<String>,
+    #[serde(default)]
+    integration_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentToolsNangoConnectionsResponse {
+    ok: bool,
+    source_agent_id: String,
+    target_agent_id: String,
+    integration_id: Option<String>,
+    total: usize,
+    connections: Vec<NangoConnectionInfo>,
+}
+
+#[derive(Deserialize)]
+struct AgentToolsNangoProxyRequest {
+    #[serde(default)]
+    target_agent_id: Option<String>,
+    integration_id: String,
+    endpoint: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    connection_id: Option<String>,
+    #[serde(default)]
+    query: Option<HashMap<String, String>>,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    body: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct AgentToolsNangoProxyResponse {
+    ok: bool,
+    source_agent_id: String,
+    target_agent_id: String,
+    integration_id: String,
+    connection_id: String,
+    method: String,
+    endpoint: String,
+    upstream_status: u16,
+    data: serde_json::Value,
+}
+
+fn nango_secret_key(state: &SharedState) -> Result<String, (StatusCode, String)> {
+    state
+        .nango_secret_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NANGO_SECRET_KEY is not configured on the server".to_string(),
+        ))
+}
+
+async fn create_nango_connect_session_internal(
+    state: SharedState,
+    integration_id: &str,
+    end_user_id: &str,
+    end_user_email: Option<&str>,
+    end_user_display_name: Option<&str>,
+) -> Result<NangoConnectSessionResponse, (StatusCode, String)> {
+    let secret_key = nango_secret_key(&state)?;
+
+    let integration_id = integration_id.trim();
+    if integration_id.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "integration_id is required".to_string()));
+    }
+
+    let end_user_id = end_user_id.trim();
+    if end_user_id.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "end_user_id is required".to_string()));
+    }
+
+    let payload = NangoCreateSessionPayload {
+        end_user: NangoCreateSessionEndUser {
+            id: end_user_id.to_string(),
+            email: end_user_email
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string()),
+            display_name: end_user_display_name
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string()),
+        },
+        allowed_integrations: vec![integration_id.to_string()],
+    };
+
+    let endpoint = format!("{}/connect/sessions", state.nango_base_url);
+    let client = reqwest::Client::new();
+    let upstream = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", secret_key))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed creating connect session: {}", e),
+            )
+        })?;
+
+    let upstream_status = upstream.status();
+    let upstream_body = upstream.text().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed reading Nango response: {}", e),
+        )
+    })?;
+
+    if !upstream_status.is_success() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "Nango connect session failed with status {}: {}",
+                upstream_status.as_u16(),
+                truncate_for_prompt(&upstream_body, 500)
+            ),
+        ));
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&upstream_body).map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Nango returned invalid JSON: {}", e),
+        )
+    })?;
+
+    let session_token = parsed
+        .pointer("/data/token")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or((
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "Nango response did not include data.token: {}",
+                truncate_for_prompt(&upstream_body, 500)
+            ),
+        ))?;
+
+    let expires_at = parsed
+        .pointer("/data/expires_at")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let connect_link = parsed
+        .pointer("/data/connect_link")
+        .and_then(|v| v.as_str())
+        .or_else(|| parsed.pointer("/data/link").and_then(|v| v.as_str()))
+        .map(|v| v.to_string());
+
+    Ok(NangoConnectSessionResponse {
+        session_token: session_token.to_string(),
+        integration_id: integration_id.to_string(),
+        nango_base_url: state.nango_base_url.clone(),
+        expires_at,
+        connect_link,
+    })
+}
+
+fn parse_nango_connections(value: &serde_json::Value) -> Vec<NangoConnectionInfo> {
+    let Some(items) = value
+        .pointer("/data")
+        .and_then(|v| v.as_array())
+        .or_else(|| value.pointer("/connections").and_then(|v| v.as_array()))
+        .or_else(|| value.as_array())
+    else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|item| {
+            let connection_id = item
+                .get("connection_id")
+                .and_then(|v| v.as_str())
+                .or_else(|| item.get("id").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|v| !v.is_empty())?
+                .to_string();
+
+            let integration_id = item
+                .get("provider_config_key")
+                .and_then(|v| v.as_str())
+                .or_else(|| item.get("integration_id").and_then(|v| v.as_str()))
+                .or_else(|| item.get("integration").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+
+            let end_user_id = item
+                .pointer("/end_user/id")
+                .and_then(|v| v.as_str())
+                .or_else(|| item.get("end_user_id").and_then(|v| v.as_str()))
+                .or_else(|| item.pointer("/metadata/end_user_id").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string());
+
+            let status = item
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+            let created_at = item
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+            let updated_at = item
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+
+            Some(NangoConnectionInfo {
+                connection_id,
+                integration_id,
+                end_user_id,
+                status,
+                created_at,
+                updated_at,
+            })
+        })
+        .collect()
+}
+
+async fn list_nango_connections_internal(
+    state: SharedState,
+) -> Result<Vec<NangoConnectionInfo>, (StatusCode, String)> {
+    let secret_key = nango_secret_key(&state)?;
+    let endpoint = format!("{}/connections", state.nango_base_url);
+    let client = reqwest::Client::new();
+    let upstream = client
+        .get(&endpoint)
+        .header("Authorization", format!("Bearer {}", secret_key))
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed listing Nango connections: {}", e),
+            )
+        })?;
+
+    let upstream_status = upstream.status();
+    let upstream_body = upstream.text().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed reading Nango connections response: {}", e),
+        )
+    })?;
+
+    if !upstream_status.is_success() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "Nango connections request failed with status {}: {}",
+                upstream_status.as_u16(),
+                truncate_for_prompt(&upstream_body, 500)
+            ),
+        ));
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&upstream_body).map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Nango returned invalid JSON for connections: {}", e),
+        )
+    })?;
+
+    Ok(parse_nango_connections(&parsed))
+}
+
+fn resolve_connection_for_agent(
+    connections: &[NangoConnectionInfo],
+    integration_id: &str,
+    target_agent_id: &str,
+) -> Option<String> {
+    let integration_id = integration_id.trim();
+    let target_agent_id = target_agent_id.trim();
+    if integration_id.is_empty() || target_agent_id.is_empty() {
+        return None;
+    }
+
+    connections
+        .iter()
+        .find(|c| {
+            c.integration_id.eq_ignore_ascii_case(integration_id)
+                && c
+                    .end_user_id
+                    .as_deref()
+                    .map(str::trim)
+                    .map(|id| {
+                        id == target_agent_id
+                            || id.ends_with(&format!(":{}", target_agent_id))
+                    })
+                    .unwrap_or(false)
+        })
+        .map(|c| c.connection_id.clone())
+}
+
+async fn create_nango_connect_session(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(req): Json<NangoConnectSessionRequest>,
+) -> Result<Json<NangoConnectSessionResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let scoped_end_user_id = headers
+        .get("x-va-user-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|user_id| format!("{}:{}", user_id, req.end_user_id.trim()))
+        .unwrap_or_else(|| req.end_user_id.trim().to_string());
+
+    let result = create_nango_connect_session_internal(
+        state.clone(),
+        &req.integration_id,
+        &scoped_end_user_id,
+        req.end_user_email.as_deref(),
+        req.end_user_display_name.as_deref(),
+    )
+    .await
+    .map_err(|(status, message)| {
+        (
+            status,
+            Json(serde_json::json!({
+                "error": "nango_connect_session_failed",
+                "message": message,
+            })),
+        )
+    })?;
+
+    Ok(Json(result))
 }
 
 async fn send_message(
@@ -2071,6 +2501,305 @@ async fn agent_tools_set_telegram(
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok(Json(status.into()))
+}
+
+async fn agent_tools_nango_connect_session(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AgentToolsNangoConnectSessionRequest>,
+) -> Result<Json<AgentToolsNangoConnectSessionResponse>, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+
+    let target_agent_id = req
+        .target_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&source_agent_id)
+        .to_string();
+    if target_agent_id != source_agent_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-agent nango access is not allowed".to_string(),
+        ));
+    }
+
+    {
+        let manager = state.agent_manager.read().await;
+        if !manager.has_agent(&source_agent_id) {
+            return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
+        }
+        if !manager.has_agent(&target_agent_id) {
+            return Err((StatusCode::NOT_FOUND, "target agent not found".to_string()));
+        }
+    }
+
+    let session = create_nango_connect_session_internal(
+        state.clone(),
+        &req.integration_id,
+        &target_agent_id,
+        None,
+        Some(&target_agent_id),
+    )
+    .await?;
+
+    Ok(Json(AgentToolsNangoConnectSessionResponse {
+        ok: true,
+        source_agent_id,
+        target_agent_id,
+        session,
+    }))
+}
+
+async fn agent_tools_nango_connections(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AgentToolsNangoConnectionsRequest>,
+) -> Result<Json<AgentToolsNangoConnectionsResponse>, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+
+    let target_agent_id = req
+        .target_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&source_agent_id)
+        .to_string();
+    if target_agent_id != source_agent_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-agent nango access is not allowed".to_string(),
+        ));
+    }
+    let integration_filter = req
+        .integration_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
+
+    {
+        let manager = state.agent_manager.read().await;
+        if !manager.has_agent(&source_agent_id) {
+            return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
+        }
+        if !manager.has_agent(&target_agent_id) {
+            return Err((StatusCode::NOT_FOUND, "target agent not found".to_string()));
+        }
+    }
+
+    let filtered = list_nango_connections_internal(state.clone())
+        .await?
+        .into_iter()
+        .filter(|connection| {
+            let matches_agent = connection
+                .end_user_id
+                .as_deref()
+                .map(str::trim)
+                .map(|id| id == target_agent_id.as_str())
+                .unwrap_or(false);
+            if !matches_agent {
+                return false;
+            }
+            if let Some(integration_id) = integration_filter.as_deref() {
+                return connection.integration_id.eq_ignore_ascii_case(integration_id);
+            }
+            true
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(AgentToolsNangoConnectionsResponse {
+        ok: true,
+        source_agent_id,
+        target_agent_id,
+        integration_id: integration_filter,
+        total: filtered.len(),
+        connections: filtered,
+    }))
+}
+
+async fn agent_tools_nango_proxy(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AgentToolsNangoProxyRequest>,
+) -> Result<Json<AgentToolsNangoProxyResponse>, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+
+    let target_agent_id = req
+        .target_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&source_agent_id)
+        .to_string();
+    if target_agent_id != source_agent_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-agent nango access is not allowed".to_string(),
+        ));
+    }
+    let integration_id = req.integration_id.trim().to_string();
+    if integration_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "integration_id cannot be empty".to_string(),
+        ));
+    }
+
+    {
+        let manager = state.agent_manager.read().await;
+        if !manager.has_agent(&source_agent_id) {
+            return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
+        }
+        if !manager.has_agent(&target_agent_id) {
+            return Err((StatusCode::NOT_FOUND, "target agent not found".to_string()));
+        }
+    }
+
+    let endpoint = req.endpoint.trim();
+    if endpoint.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "endpoint cannot be empty".to_string()));
+    }
+    let normalized_endpoint = if endpoint.starts_with('/') {
+        endpoint.to_string()
+    } else {
+        format!("/{}", endpoint)
+    };
+
+    let method_label = req
+        .method
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("GET")
+        .to_ascii_uppercase();
+    let method = reqwest::Method::from_bytes(method_label.as_bytes()).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid HTTP method: {}", method_label),
+        )
+    })?;
+
+    let available_connections = list_nango_connections_internal(state.clone()).await?;
+    let connection_id = if let Some(explicit) = req
+        .connection_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        let has_access = available_connections.iter().any(|c| {
+            c.connection_id == explicit
+                && c.integration_id.eq_ignore_ascii_case(&integration_id)
+                && c
+                    .end_user_id
+                    .as_deref()
+                    .map(str::trim)
+                    .map(|id| {
+                        id == target_agent_id
+                            || id.ends_with(&format!(":{}", target_agent_id))
+                    })
+                    .unwrap_or(false)
+        });
+        if !has_access {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "connection_id '{}' is not accessible for target agent '{}' and integration '{}'",
+                    explicit, target_agent_id, integration_id
+                ),
+            ));
+        }
+        explicit.to_string()
+    } else {
+        resolve_connection_for_agent(&available_connections, &integration_id, &target_agent_id)
+            .ok_or((
+            StatusCode::NOT_FOUND,
+            format!(
+                "no Nango connection found for target agent '{}' and integration '{}'",
+                target_agent_id, integration_id
+            ),
+            ))?
+    };
+
+    let mut proxy_url =
+        reqwest::Url::parse(&format!("{}/proxy{}", state.nango_base_url, normalized_endpoint))
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed building Nango proxy URL: {}", e),
+                )
+            })?;
+
+    if let Some(query) = &req.query {
+        let mut pairs = proxy_url.query_pairs_mut();
+        for (k, v) in query {
+            let key = k.trim();
+            if key.is_empty() {
+                continue;
+            }
+            pairs.append_pair(key, v);
+        }
+    }
+
+    let secret_key = nango_secret_key(&state)?;
+    let client = reqwest::Client::new();
+    let mut upstream_req = client
+        .request(method.clone(), proxy_url)
+        .header("Authorization", format!("Bearer {}", secret_key))
+        .header("Integration-Id", &integration_id)
+        .header("Connection-Id", &connection_id);
+
+    if let Some(extra_headers) = &req.headers {
+        for (key, value) in extra_headers {
+            let header_name = key.trim();
+            if header_name.is_empty() {
+                continue;
+            }
+            if header_name.eq_ignore_ascii_case("authorization")
+                || header_name.eq_ignore_ascii_case("integration-id")
+                || header_name.eq_ignore_ascii_case("connection-id")
+            {
+                continue;
+            }
+            upstream_req = upstream_req.header(header_name, value);
+        }
+    }
+
+    if let Some(body) = &req.body {
+        upstream_req = upstream_req.json(body);
+    }
+
+    let upstream = upstream_req.send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed sending Nango proxy request: {}", e),
+        )
+    })?;
+    let upstream_status = upstream.status().as_u16();
+    let upstream_body = upstream.text().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed reading Nango proxy response: {}", e),
+        )
+    })?;
+
+    let data = serde_json::from_str::<serde_json::Value>(&upstream_body)
+        .unwrap_or_else(|_| serde_json::Value::String(upstream_body));
+
+    Ok(Json(AgentToolsNangoProxyResponse {
+        ok: true,
+        source_agent_id,
+        target_agent_id,
+        integration_id,
+        connection_id,
+        method: method_label,
+        endpoint: normalized_endpoint,
+        upstream_status,
+        data,
+    }))
 }
 
 #[derive(Deserialize)]

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Save, Trash2 } from "lucide-react";
-import { loadIntegrationsMarkdown, saveIntegrationsMarkdown } from "../../lib/api";
+import {
+  createNangoConnectSession,
+  loadIntegrationsMarkdown,
+  saveIntegrationsMarkdown,
+} from "../../lib/api";
 
 interface IntegrationsPanelProps {
   agentId: string;
@@ -100,6 +104,7 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
   const [entries, setEntries] = useState<IntegrationEntry[]>([createEntry()]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [connectingGoogle, setConnectingGoogle] = useState(false);
   const [status, setStatus] = useState<string>("");
 
   useEffect(() => {
@@ -174,6 +179,33 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
     }
   }, [agentId, entries]);
 
+  const handleConnectGoogle = useCallback(async () => {
+    setConnectingGoogle(true);
+    setStatus("");
+
+    try {
+      const session = await createNangoConnectSession(agentId, "google");
+      if (!session.session_token) {
+        throw new Error("Missing Nango connect session token");
+      }
+
+      const connectUrl =
+        (session.connect_link && session.connect_link.trim()) ||
+        `https://app.nango.dev/connect/session?session_token=${encodeURIComponent(session.session_token)}`;
+      const popup = window.open(connectUrl, "_blank", "noopener,noreferrer");
+      if (!popup) {
+        throw new Error("Popup blocked by browser");
+      }
+      setStatus("Opened Nango connect flow for Google in a new window.");
+    } catch (err) {
+      console.error("[IntegrationsPanel] Failed to start Nango Google connect:", err);
+      const message = err instanceof Error ? err.message : "Unknown error";
+      setStatus(`Failed to start Google connect: ${message}`);
+    } finally {
+      setConnectingGoogle(false);
+    }
+  }, [agentId]);
+
   if (loading) {
     return (
       <div className="h-full w-full flex items-center justify-center text-sm text-[#969696]">
@@ -197,6 +229,17 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
         >
           <Plus className="w-4 h-4" />
           Add Integration
+        </button>
+        <button
+          onClick={handleConnectGoogle}
+          disabled={connectingGoogle}
+          className={`px-3 py-1.5 rounded text-[12px] font-medium border flex items-center gap-2 ${
+            connectingGoogle
+              ? "text-[#777] border-[#3c3c3c] bg-[#252526] cursor-not-allowed"
+              : "text-[#a5b4fc] border-[#36417e] bg-[#1f2448] hover:bg-[#272d5a]"
+          }`}
+        >
+          {connectingGoogle ? "Connecting Google..." : "Connect Google"}
         </button>
         <button
           onClick={handleSave}
