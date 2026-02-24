@@ -1323,7 +1323,12 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
       await runHostedInPlaceRebuild(server, packageSpecifier);
     } catch (err) {
       const message = String(err?.message || "");
-      if (!message.includes("missing_sudo_upgrade_privilege")) {
+      const shouldTrySshFallback =
+        HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED &&
+        (message.includes("missing_sudo_upgrade_privilege") ||
+          message.includes("hosted_in_place_rebuild_timeout") ||
+          message.includes("hosted_runtime_network_error"));
+      if (!shouldTrySshFallback) {
         throw err;
       }
       await runHostedRootSshUpgrade(server, packageSpecifier);
