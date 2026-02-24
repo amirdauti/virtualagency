@@ -1,3 +1,16 @@
+## [1.6.0](https://github.com/amirdauti/virtualagency/compare/v1.5.2...v1.6.0) (2026-02-24)
+
+### Features
+
+* **server:** add Nango OAuth flow with tenant-scoped agent access ([11b02a4](https://github.com/amirdauti/virtualagency/commit/11b02a4e6f12d99a2f6ca7ec19fc742383f9af30))
+
+### Bug Fixes
+
+* allow larger hosted image payloads and return explicit 413 ([653f995](https://github.com/amirdauti/virtualagency/commit/653f995a8908d416187c30902369a26327636ae7))
+* **billing-api:** avoid forcing hosted server restart in upgrade script ([69139ad](https://github.com/amirdauti/virtualagency/commit/69139ad7813277f61de29a4b6bc3484a299dd13f))
+* **server:** normalize publish share URLs without trailing slash ([03821a9](https://github.com/amirdauti/virtualagency/commit/03821a9888f1631c5fbed34ecc45f6be3e074c2e))
+* **server:** persist publish mappings and add public proxy diagnostics ([088bd55](https://github.com/amirdauti/virtualagency/commit/088bd557771d049079221b4d7ce21e31cb22905a))
+
 ## [1.5.2](https://github.com/amirdauti/virtualagency/compare/v1.5.1...v1.5.2) (2026-02-23)
 
 ### Bug Fixes
