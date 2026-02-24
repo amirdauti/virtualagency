@@ -6,6 +6,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HETZNER_HOST="${HETZNER_HOST:-root@virtualagency.ai}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/virtual-agency/billing-api}"
 PORT="${PORT:-8787}"
+PUBLIC_PROXY_PORT="${PUBLIC_PROXY_PORT:-1337}"
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/virtualagency}"
 SERVICE_NAME="${SERVICE_NAME:-virtualagency-billing-api}"
 ENV_FILE="${ENV_FILE:-/etc/virtualagency/billing-api.env}"
@@ -31,7 +32,7 @@ echo "=== Uploading to Hetzner ==="
 scp "$TMP_TGZ" "$HETZNER_HOST:/tmp/virtualagency-billing-api.tgz"
 
 echo "=== Installing on Hetzner ==="
-ssh "$HETZNER_HOST" "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' NGINX_SITE='$NGINX_SITE' SERVICE_NAME='$SERVICE_NAME' ENV_FILE='$ENV_FILE' bash -s" <<'REMOTE'
+ssh "$HETZNER_HOST" "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' PUBLIC_PROXY_PORT='$PUBLIC_PROXY_PORT' NGINX_SITE='$NGINX_SITE' SERVICE_NAME='$SERVICE_NAME' ENV_FILE='$ENV_FILE' bash -s" <<'REMOTE'
 set -euo pipefail
 
 mkdir -p "$REMOTE_DIR"
@@ -87,6 +88,7 @@ from pathlib import Path
 
 nginx_site = Path(os.environ["NGINX_SITE"])
 port = os.environ["PORT"]
+public_proxy_port = os.environ["PUBLIC_PROXY_PORT"]
 
 text = nginx_site.read_text()
 insertions = []
@@ -111,6 +113,20 @@ if "location /api/hosting/" not in text:
 
     location /api/hosting/ {{
         proxy_pass http://127.0.0.1:{port}/api/hosting/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }}
+"""
+    )
+
+if "location /api/public/" not in text:
+    insertions.append(
+        f"""
+
+    location /api/public/ {{
+        proxy_pass http://127.0.0.1:{public_proxy_port}/api/public/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;

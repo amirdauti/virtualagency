@@ -45,6 +45,7 @@ use telegram::{
 type SharedState = Arc<AppState>;
 static WHISPER_INSTALL_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 const AGENTS_STATE_VERSION: u32 = 1;
+const PUBLISHED_APPS_STATE_VERSION: u32 = 1;
 
 // Middleware to add Private Network Access headers for browser security
 async fn private_network_access_middleware(
@@ -120,12 +121,13 @@ struct AppState {
     published_apps: RwLock<HashMap<String, PublishedApp>>,
     workspace_dir: PathBuf,
     agents_persistence_path: PathBuf,
+    published_apps_persistence_path: PathBuf,
     agent_tools_token: String,
     hosted_proxy_token: Option<String>,
     public_base_url: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PublishedApp {
     slug: String,
     source_agent_id: String,
@@ -216,6 +218,13 @@ struct PersistedAgentsFile {
     version: u32,
     #[serde(default)]
     agents: Vec<PersistedAgent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedPublishedAppsFile {
+    version: u32,
+    #[serde(default)]
+    apps: Vec<PublishedApp>,
 }
 
 fn load_persisted_agents(path: &FsPath) -> Result<Vec<PersistedAgent>, String> {
@@ -334,6 +343,116 @@ async fn restore_agents_state(state: &SharedState) {
     }
 }
 
+fn load_persisted_published_apps(path: &FsPath) -> Result<Vec<PublishedApp>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let raw = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "failed reading persisted published apps at {}: {}",
+            path.display(),
+            e
+        )
+    })?;
+
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<PersistedPublishedAppsFile>(&raw) {
+        if parsed.version == PUBLISHED_APPS_STATE_VERSION {
+            return Ok(parsed.apps);
+        }
+        tracing::warn!(
+            "[publish] ignoring persisted state at {} due to version mismatch: {} != {}",
+            path.display(),
+            parsed.version,
+            PUBLISHED_APPS_STATE_VERSION
+        );
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str::<Vec<PublishedApp>>(&raw).map_err(|e| {
+        format!(
+            "failed parsing persisted published apps at {}: {}",
+            path.display(),
+            e
+        )
+    })
+}
+
+fn write_persisted_published_apps(path: &FsPath, apps: Vec<PublishedApp>) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed creating {}: {}", parent.display(), e))?;
+    }
+
+    let payload = PersistedPublishedAppsFile {
+        version: PUBLISHED_APPS_STATE_VERSION,
+        apps,
+    };
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| format!("failed serializing published apps state: {}", e))?;
+
+    let tmp_path = path.with_extension(format!("json.tmp.{}", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp_path, json)
+        .map_err(|e| format!("failed writing {}: {}", tmp_path.display(), e))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        format!(
+            "failed renaming {} to {}: {}",
+            tmp_path.display(),
+            path.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+async fn persist_published_apps_state(state: &SharedState) -> Result<(), String> {
+    let snapshot = {
+        let published = state.published_apps.read().await;
+        let mut apps = published.values().cloned().collect::<Vec<_>>();
+        apps.sort_by(|a, b| a.slug.cmp(&b.slug));
+        apps
+    };
+    write_persisted_published_apps(&state.published_apps_persistence_path, snapshot)
+}
+
+async fn restore_published_apps_state(state: &SharedState) {
+    let persisted = match load_persisted_published_apps(&state.published_apps_persistence_path) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!("[publish] failed loading persisted state: {}", err);
+            return;
+        }
+    };
+
+    if persisted.is_empty() {
+        return;
+    }
+
+    let mut restored = HashMap::new();
+    let mut dropped = 0usize;
+    for app in persisted {
+        if app.slug.trim().is_empty() {
+            dropped += 1;
+            continue;
+        }
+        restored.insert(app.slug.clone(), app);
+    }
+    let restored_count = restored.len();
+    {
+        let mut published = state.published_apps.write().await;
+        *published = restored;
+    }
+    tracing::info!(
+        "[publish] restored {} published app mapping(s) from disk (dropped={})",
+        restored_count,
+        dropped
+    );
+}
+
 /// Incoming WebSocket messages from clients
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -391,6 +510,16 @@ async fn main() {
                 .join(".virtual-agency")
                 .join("agents-state.json")
         });
+    let published_apps_persistence_path = std::env::var("VA_PUBLISHED_APPS_STATE_PATH")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            workspace_dir
+                .join(".virtual-agency")
+                .join("published-apps-state.json")
+        });
     let telegram_bindings_path = workspace_dir
         .join(".virtual-agency")
         .join("telegram-bindings.json");
@@ -407,6 +536,7 @@ async fn main() {
         published_apps: RwLock::new(HashMap::new()),
         workspace_dir,
         agents_persistence_path,
+        published_apps_persistence_path,
         agent_tools_token,
         hosted_proxy_token,
         public_base_url,
@@ -497,7 +627,7 @@ async fn main() {
         }
     });
 
-    // Persist agent state periodically so session ids and automation schedules survive restarts.
+    // Persist runtime state periodically so session ids and publish mappings survive restarts.
     let agents_persist_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(TokioDuration::from_secs(15));
@@ -506,6 +636,9 @@ async fn main() {
             interval.tick().await;
             if let Err(err) = persist_agents_state(&agents_persist_state).await {
                 tracing::warn!("[agents] periodic persist failed: {}", err);
+            }
+            if let Err(err) = persist_published_apps_state(&agents_persist_state).await {
+                tracing::warn!("[publish] periodic persist failed: {}", err);
             }
         }
     });
@@ -567,6 +700,10 @@ async fn main() {
         .route(
             "/api/agent-tools/:source_agent_id/publish-app",
             post(agent_tools_publish_app),
+        )
+        .route(
+            "/api/agent-tools/:source_agent_id/published-apps",
+            get(agent_tools_list_published_apps),
         )
         .route(
             "/api/agent-tools/:source_agent_id/scheduled-tasks",
@@ -686,8 +823,12 @@ async fn main() {
     }
 
     restore_agents_state(&state).await;
+    restore_published_apps_state(&state).await;
     if let Err(err) = persist_agents_state(&state).await {
         tracing::warn!("[agents] initial persist failed: {}", err);
+    }
+    if let Err(err) = persist_published_apps_state(&state).await {
+        tracing::warn!("[publish] initial persist failed: {}", err);
     }
 
     axum::serve(listener, app).await.unwrap();
@@ -2168,6 +2309,32 @@ struct AgentToolsPublishAppResponse {
     proxy_path: String,
 }
 
+#[derive(Deserialize)]
+struct AgentToolsListPublishedAppsQuery {
+    #[serde(default)]
+    slug: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentToolsPublishedAppEntry {
+    slug: String,
+    source_agent_id: String,
+    target_agent_id: String,
+    local_host: String,
+    local_port: u16,
+    path_prefix: String,
+    created_at: u64,
+    target_url: String,
+}
+
+#[derive(Serialize)]
+struct AgentToolsListPublishedAppsResponse {
+    ok: bool,
+    source_agent_id: String,
+    total: usize,
+    entries: Vec<AgentToolsPublishedAppEntry>,
+}
+
 fn sanitize_publish_slug(raw: &str) -> String {
     raw.trim()
         .to_ascii_lowercase()
@@ -2269,27 +2436,7 @@ async fn infer_public_base_url(state: SharedState, headers: &HeaderMap) -> Strin
         .filter(|v| !v.is_empty())
         .unwrap_or("http");
 
-    let host_lower = host.to_ascii_lowercase();
-    if !host_lower.starts_with("127.0.0.1")
-        && !host_lower.starts_with("localhost")
-        && !host_lower.starts_with("[::1]")
-    {
-        return format!("{}://{}", proto, host);
-    }
-
-    let port = host
-        .split(':')
-        .nth(1)
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(1337);
-
-    match reqwest::get("https://api.ipify.org").await {
-        Ok(resp) => match resp.text().await {
-            Ok(ip) if !ip.trim().is_empty() => format!("http://{}:{}", ip.trim(), port),
-            _ => format!("http://{}", host),
-        },
-        Err(_) => format!("http://{}", host),
-    }
+    format!("{}://{}", proto, host)
 }
 
 async fn agent_tools_publish_app(
@@ -2359,9 +2506,9 @@ async fn agent_tools_publish_app(
                 slug: desired_slug.clone(),
                 source_agent_id: source_agent_id.clone(),
                 target_agent_id: req.target_agent_id.clone(),
-                local_host,
+                local_host: local_host.clone(),
                 local_port: req.local_port,
-                path_prefix,
+                path_prefix: path_prefix.clone(),
                 created_at: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -2369,10 +2516,27 @@ async fn agent_tools_publish_app(
             },
         );
     }
+    if let Err(err) = persist_published_apps_state(&state).await {
+        tracing::warn!(
+            "[publish] failed persisting mapping for slug '{}': {}",
+            desired_slug,
+            err
+        );
+    }
 
     let base_url = infer_public_base_url(state.clone(), &headers).await;
     let proxy_path = format!("/api/public/{}/", desired_slug);
     let share_url = format!("{}{}", base_url.trim_end_matches('/'), proxy_path);
+    tracing::info!(
+        "[publish] mapped slug='{}' source='{}' target='{}' local={}:{} prefix='{}' share_url='{}'",
+        desired_slug,
+        source_agent_id,
+        req.target_agent_id,
+        local_host,
+        req.local_port,
+        path_prefix,
+        share_url
+    );
 
     Ok(Json(AgentToolsPublishAppResponse {
         ok: true,
@@ -2381,6 +2545,56 @@ async fn agent_tools_publish_app(
         slug: desired_slug,
         share_url,
         proxy_path,
+    }))
+}
+
+async fn agent_tools_list_published_apps(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AgentToolsListPublishedAppsQuery>,
+) -> Result<Json<AgentToolsListPublishedAppsResponse>, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+
+    {
+        let manager = state.agent_manager.read().await;
+        if !manager.has_agent(&source_agent_id) {
+            return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
+        }
+    }
+
+    let slug_filter = query.slug.as_deref().map(sanitize_publish_slug);
+    let entries = {
+        let published = state.published_apps.read().await;
+        let mut rows = published
+            .values()
+            .filter(|app| app.source_agent_id == source_agent_id)
+            .filter(|app| {
+                slug_filter
+                    .as_ref()
+                    .map(|value| app.slug == *value)
+                    .unwrap_or(true)
+            })
+            .map(|app| AgentToolsPublishedAppEntry {
+                slug: app.slug.clone(),
+                source_agent_id: app.source_agent_id.clone(),
+                target_agent_id: app.target_agent_id.clone(),
+                local_host: app.local_host.clone(),
+                local_port: app.local_port,
+                path_prefix: app.path_prefix.clone(),
+                created_at: app.created_at,
+                target_url: build_proxy_target_url(app, "", None),
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.slug.cmp(&b.slug));
+        rows
+    };
+
+    Ok(Json(AgentToolsListPublishedAppsResponse {
+        ok: true,
+        source_agent_id,
+        total: entries.len(),
+        entries,
     }))
 }
 
@@ -2417,14 +2631,30 @@ async fn proxy_public_app_impl(
 ) -> Result<(StatusCode, HeaderMap, Bytes), (StatusCode, String)> {
     let app = {
         let published = state.published_apps.read().await;
-        published
-            .get(&slug)
-            .cloned()
-            .ok_or_else(|| (StatusCode::NOT_FOUND, "published app not found".to_string()))?
+        match published.get(&slug) {
+            Some(app) => app.clone(),
+            None => {
+                let known_slugs = published.keys().take(20).cloned().collect::<Vec<_>>();
+                tracing::warn!(
+                    "[publish] slug not found: '{}' (known_count={}, sample={:?})",
+                    slug,
+                    published.len(),
+                    known_slugs
+                );
+                return Err((StatusCode::NOT_FOUND, "published app not found".to_string()));
+            }
+        }
     };
 
     let query = uri.0.query();
     let target_url = build_proxy_target_url(&app, &rest, query);
+    tracing::debug!(
+        "[publish] proxy resolve slug='{}' rest='{}' method='{}' target_url='{}'",
+        slug,
+        rest,
+        method,
+        target_url
+    );
 
     let client = reqwest::Client::new();
     let mut req_builder = client.request(
@@ -3351,4 +3581,64 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
     }
 
     tracing::debug!("WebSocket connection closed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_test_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "virtual-agency-server-{}-{}.json",
+            name,
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn published_apps_persistence_round_trip() {
+        let path = temp_test_path("published-apps");
+        let apps = vec![
+            PublishedApp {
+                slug: "demo-one".to_string(),
+                source_agent_id: "source-a".to_string(),
+                target_agent_id: "target-a".to_string(),
+                local_host: "127.0.0.1".to_string(),
+                local_port: 3000,
+                path_prefix: String::new(),
+                created_at: 1,
+            },
+            PublishedApp {
+                slug: "demo-two".to_string(),
+                source_agent_id: "source-b".to_string(),
+                target_agent_id: "target-b".to_string(),
+                local_host: "127.0.0.1".to_string(),
+                local_port: 5173,
+                path_prefix: "/app".to_string(),
+                created_at: 2,
+            },
+        ];
+
+        write_persisted_published_apps(&path, apps.clone()).expect("write should succeed");
+        let loaded = load_persisted_published_apps(&path).expect("load should succeed");
+        assert_eq!(loaded, apps);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn build_proxy_target_url_handles_prefix_rest_and_query() {
+        let app = PublishedApp {
+            slug: "demo".to_string(),
+            source_agent_id: "source-a".to_string(),
+            target_agent_id: "target-a".to_string(),
+            local_host: "127.0.0.1".to_string(),
+            local_port: 5173,
+            path_prefix: "/nested".to_string(),
+            created_at: 1,
+        };
+
+        let url = build_proxy_target_url(&app, "assets/main.js", Some("v=1"));
+        assert_eq!(url, "http://127.0.0.1:5173/nested/assets/main.js?v=1");
+    }
 }
