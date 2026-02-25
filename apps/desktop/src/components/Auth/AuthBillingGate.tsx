@@ -8,6 +8,8 @@ type BillingMe = {
   status: string | null;
   currentPeriodEnd: number | null;
   cancelAtPeriodEnd: boolean;
+  hostedServerActive?: boolean;
+  hostedServerStatus?: string | null;
 };
 
 async function fetchJson<T>(url: string, token: string): Promise<T> {
@@ -45,6 +47,7 @@ export function AuthBillingGate({ children }: { children: ReactNode }) {
   const [billing, setBilling] = useState<BillingMe | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasAccess = Boolean(billing?.active || billing?.hostedServerActive);
 
   // Clerk's `getToken` reference may not be stable across renders.
   // Store the latest function in a ref so our effects/callbacks don't re-run in a loop.
@@ -164,7 +167,7 @@ export function AuthBillingGate({ children }: { children: ReactNode }) {
           </div>
         )}
 
-        {!loading && !error && billing && !billing.active && (
+        {!loading && !error && billing && !hasAccess && (
           <div style={fullScreenCenterStyle}>
             <div style={{ width: 520, maxWidth: "92vw", color: "#fff" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -192,13 +195,13 @@ export function AuthBillingGate({ children }: { children: ReactNode }) {
                 </button>
               </div>
               <div style={{ marginTop: 14, fontSize: 12, opacity: 0.7 }}>
-                Status: {billing.status ?? "none"}
+                Status: {billing.status ?? "none"}{billing.hostedServerStatus ? ` · Hosted: ${billing.hostedServerStatus}` : ""}
               </div>
             </div>
           </div>
         )}
 
-        {!loading && !error && billing && billing.active && <>{children}</>}
+        {!loading && !error && billing && hasAccess && <>{children}</>}
       </SignedIn>
     </>
   );
