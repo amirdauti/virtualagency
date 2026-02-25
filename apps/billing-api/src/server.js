@@ -2704,6 +2704,14 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     return res.send(text);
   } catch (err) {
     const message = err?.message || String(err);
+    const suffix = req.originalUrl.replace(/^\/api\/hosting\/va/, "") || "/";
+    const suffixPath = suffix.split("?")[0] || "/";
+    if (suffixPath.startsWith("/api/files/read_git/")) {
+      console.warn(
+        `[hosting] read_git fallback from proxy exception for user=${userId} path=${suffixPath} reason=${truncateText(message, 220)}`,
+      );
+      return res.status(200).json({ content: "" });
+    }
     if (message === "server_not_ready") {
       return res.status(409).json({ error: "server_not_ready" });
     }
