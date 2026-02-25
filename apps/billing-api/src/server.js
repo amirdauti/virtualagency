@@ -39,6 +39,12 @@ const HOSTED_SERVER_PORT = Number.parseInt(
 const HOSTED_CONTROL_PLANE_TOKEN = process.env.HOSTED_CONTROL_PLANE_TOKEN || "";
 const HOSTED_STATE_FILE =
   process.env.HOSTED_STATE_FILE || "/var/lib/virtualagency/hosted-state.json";
+const HOSTED_NANGO_SECRET_KEY = String(
+  process.env.HOSTED_NANGO_SECRET_KEY || process.env.NANGO_SECRET_KEY || "",
+).trim();
+const HOSTED_NANGO_BASE_URL =
+  String(process.env.HOSTED_NANGO_BASE_URL || process.env.NANGO_BASE_URL || "https://api.nango.dev").trim() ||
+  "https://api.nango.dev";
 const VA_SERVER_NPM_PACKAGE =
   process.env.VA_SERVER_NPM_PACKAGE || "@virtualagency/server";
 const VA_SERVER_NPM_VERSION = process.env.VA_SERVER_NPM_VERSION || "latest";
@@ -995,7 +1001,7 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
     "  npm install -g \"$PKG\"",
     "fi",
     "systemctl restart virtualagency-server",
-  ].join("; ");
+  ].join("\n");
 
   const sshArgs = [
     "-i",
@@ -1061,7 +1067,7 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
       "  sudo -n npm install -g \"$PKG\"",
       "fi",
       "( sudo -n systemctl restart virtualagency-server || pkill -f '^virtual-agency-server( |$)' || true )",
-    ].join("; ");
+    ].join("\n");
 
     const sshArgs = [
       "-i",
@@ -1249,7 +1255,7 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
     `echo '${marker}:'\"$STATUS\"`,
     "sleep 1",
     "if [ \"$STATUS\" -eq 0 ]; then ( ( [ \"$CAN_SUDO\" -eq 1 ] && sudo -n systemctl restart virtualagency-server ) || pkill -f '^virtual-agency-server( |$)' || true ); fi",
-  ].join("; ");
+  ].join("\n");
 
   let since = 0;
   let outputTail = "";
@@ -1647,6 +1653,14 @@ function safeJsonParse(value) {
 function buildCloudInit({ bootstrapToken, proxyToken, userId }) {
   const escapedPackage = `${VA_SERVER_NPM_PACKAGE}@${VA_SERVER_NPM_VERSION}`;
   const callbackUrl = `${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/bootstrap-report`;
+  const nangoEnvLines = [];
+  if (HOSTED_NANGO_SECRET_KEY) {
+    nangoEnvLines.push(`NANGO_SECRET_KEY=${shellSingleQuote(HOSTED_NANGO_SECRET_KEY)}`);
+  }
+  if (HOSTED_NANGO_BASE_URL) {
+    nangoEnvLines.push(`NANGO_BASE_URL=${shellSingleQuote(HOSTED_NANGO_BASE_URL)}`);
+  }
+  const nangoEnvBlock = nangoEnvLines.length > 0 ? `${nangoEnvLines.join("\n")}\n` : "";
 
   return `#!/bin/bash
 set -euo pipefail
@@ -1707,7 +1721,7 @@ WORKSPACE_DIR=/opt/virtualagency/workspace
 VIRTUAL_AGENCY_PORT=${HOSTED_SERVER_PORT}
 VIRTUAL_AGENCY_BIND_HOST=0.0.0.0
 VA_HOSTED_PROXY_TOKEN=${proxyToken}
-ENV_EOF
+${nangoEnvBlock}ENV_EOF
 
 cat > /etc/systemd/system/virtualagency-server.service << 'SERVICE_EOF'
 [Unit]
@@ -2776,6 +2790,11 @@ app.listen(PORT, "127.0.0.1", () => {
   if (HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED && !HOSTED_AUTO_UPDATE_SSH_KEY_PATH) {
     console.warn(
       "[hosting] HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED=1 but HOSTED_AUTO_UPDATE_SSH_KEY_PATH is not set; fallback upgrades will fail when sudo is unavailable.",
+    );
+  }
+  if (!HOSTED_NANGO_SECRET_KEY) {
+    console.warn(
+      "[hosting] HOSTED_NANGO_SECRET_KEY/NANGO_SECRET_KEY is not set; hosted Nango connect sessions will fail until it is configured.",
     );
   }
   console.log(`[billing] listening on http://127.0.0.1:${PORT}`);
