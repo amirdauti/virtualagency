@@ -85,6 +85,52 @@ impl CliType {
 const ROBLOX_BUILDER_SYSTEM_PROMPT: &str =
     include_str!("../../../prompts/roblox_builder_system_prompt.txt");
 
+const CONTROL_PLANE_ORCHESTRATION_HINT: &str = r#"[Virtual Agency Control Plane]
+Use bash + curl for orchestration:
+- List agents: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/agents
+- Create agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/create-agent
+- Delegate one task and wait for completion (default): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/message-agent
+- Delegate to many agents (parallel supported): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delegate-many
+- Set Telegram on another agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-telegram
+- Publish a local app port and get a share URL: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/publish-app
+- List scheduled tasks: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/scheduled-tasks?target_agent_id=<agent_id>
+- Create/update scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-scheduled-task
+- Delete scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delete-scheduled-task
+Include header: x-va-agent-token: $VA_CONTROL_TOKEN.
+For create-agent, collect from user first: cli_type (claude/codex), name, and working_dir.
+For publish-app, collect target_agent_id and local_port first.
+For set-scheduled-task, collect target_agent_id, task_description, prompt, and interval_minutes first.
+Before replying to the end user, wait for delegated tasks to complete and include what was done."#;
+
+const CONTROL_PLANE_NANGO_HINT: &str = r#"[Virtual Agency Nango OAuth]
+Use bash + curl for Google integrations through Nango:
+- Create connect session:
+  POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/nango-connect-session
+  Body: {"integration_id":"google"}
+- List connections:
+  POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/nango-connections
+  Body: {"integration_id":"google"}
+- Proxy Google API calls:
+  POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/nango-proxy
+  Body: {"integration_id":"google","method":"GET","endpoint":"/gmail/v1/users/me/labels"}
+Include header: x-va-agent-token: $VA_CONTROL_TOKEN.
+
+Execution flow:
+1) Create connect session.
+2) Return session.connect_link (or fallback to app.nango.dev connect URL with session_token) and ask user to complete OAuth.
+3) List connections and confirm one exists for integration_id=google.
+4) Call nango-proxy for the requested action.
+
+Examples:
+- Gmail labels: endpoint "/gmail/v1/users/me/labels"
+- Drive files: endpoint "/drive/v3/files", query {"pageSize":"10","fields":"files(id,name,mimeType)"}
+- Create Doc: endpoint "/docs/v1/documents", method "POST", body {"title":"<title>"}
+
+Rules:
+- target_agent_id is optional but cannot differ from source agent id.
+- Before write operations (send email, create/update/delete docs/files), ask for explicit user confirmation.
+- If no connection is found, run the connect flow first instead of retrying proxy blindly."#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSpecialty {
@@ -587,14 +633,34 @@ impl AgentProcess {
         .iter()
         .any(|needle| lower.contains(needle));
 
-        if !wants_orchestration {
+        let wants_nango = [
+            "nango",
+            "oauth",
+            "google",
+            "gmail",
+            "drive",
+            "docs",
+            "sheets",
+            "calendar",
+            "email",
+            "inbox",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+
+        if !wants_orchestration && !wants_nango {
             return message.to_string();
         }
 
-        format!(
-            "{}\n\n[Virtual Agency Control Plane]\nUse bash + curl for orchestration:\n- List agents: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/agents\n- Create agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/create-agent\n- Delegate one task and wait for completion (default): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/message-agent\n- Delegate to many agents (parallel supported): POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delegate-many\n- Set Telegram on another agent: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-telegram\n- Publish a local app port and get a share URL: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/publish-app\n- List scheduled tasks: GET $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/scheduled-tasks?target_agent_id=<agent_id>\n- Create/update scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-scheduled-task\n- Delete scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delete-scheduled-task\nInclude header: x-va-agent-token: $VA_CONTROL_TOKEN.\nFor create-agent, collect from user first: cli_type (claude/codex), name, and working_dir.\nFor publish-app, collect target_agent_id and local_port first.\nFor set-scheduled-task, collect target_agent_id, task_description, prompt, and interval_minutes first.\nBefore replying to the end user, wait for delegated tasks to complete and include what was done.\n",
-            message
-        )
+        let mut hint_blocks: Vec<&str> = Vec::new();
+        if wants_orchestration {
+            hint_blocks.push(CONTROL_PLANE_ORCHESTRATION_HINT);
+        }
+        if wants_nango {
+            hint_blocks.push(CONTROL_PLANE_NANGO_HINT);
+        }
+
+        format!("{}\n\n{}\n", message, hint_blocks.join("\n\n"))
     }
 
     pub fn new(
