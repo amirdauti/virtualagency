@@ -8,6 +8,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { writeFile, mkdir, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { join, tempDir } from "@tauri-apps/api/path";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
 interface ChatPanelProps {
   agentId: string;
@@ -88,6 +89,8 @@ function createClientMessageId(agentId: string): string {
 }
 
 export function ChatPanel({ agentId }: ChatPanelProps) {
+  const isMobile = useIsMobile(900);
+  const isSmallPhone = useIsMobile(640);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const addUserMessage = useChatStore((state) => state.addUserMessage);
   const setDraft = useChatStore((state) => state.setDraft);
@@ -652,20 +655,41 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           flex: 1,
           minHeight: 0,
           height: "100%",
-          gap: 12,
-          padding: "16px 16px 20px 16px",
+          gap: isMobile ? 10 : 12,
+          padding: isMobile
+            ? "10px 12px calc(12px + env(safe-area-inset-bottom, 0px)) 12px"
+            : "16px 16px 20px 16px",
           width: "100%",
         }}
       >
       {/* Model and Thinking/Reasoning Controls */}
-      <div style={settingsBarStyle}>
-        <div style={settingGroupStyle}>
+      <div
+        style={{
+          ...settingsBarStyle,
+          flexWrap: "wrap",
+          alignItems: isMobile ? "stretch" : "center",
+          gap: isMobile ? 8 : 12,
+        }}
+      >
+        <div
+          style={{
+            ...settingGroupStyle,
+            height: isMobile ? "auto" : 28,
+            width: isMobile ? "100%" : "auto",
+            flexWrap: isMobile ? "wrap" : "nowrap",
+          }}
+        >
           <label style={settingLabelStyle}>Model:</label>
           <select
             value={selectedModel}
             onChange={(e) => handleModelChange(e.target.value)}
             disabled={sending}
-            style={selectStyle}
+            style={{
+              ...selectStyle,
+              height: isMobile ? 38 : 28,
+              width: isMobile ? "100%" : undefined,
+              fontSize: isMobile ? 13 : 12,
+            }}
           >
             {(isCodexAgent ? CODEX_MODEL_OPTIONS : CLAUDE_MODEL_OPTIONS).map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -676,13 +700,25 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         </div>
         {isCodexAgent ? (
           // Codex: Show reasoning effort selector
-          <div style={settingGroupStyle}>
+          <div
+            style={{
+              ...settingGroupStyle,
+              height: isMobile ? "auto" : 28,
+              width: isMobile ? "100%" : "auto",
+              flexWrap: isMobile ? "wrap" : "nowrap",
+            }}
+          >
             <label style={settingLabelStyle}>Reasoning:</label>
             <select
               value={reasoningEffort}
               onChange={(e) => handleReasoningEffortChange(e.target.value as ReasoningEffort)}
               disabled={sending}
-              style={selectStyle}
+              style={{
+                ...selectStyle,
+                height: isMobile ? 38 : 28,
+                width: isMobile ? "100%" : undefined,
+                fontSize: isMobile ? 13 : 12,
+              }}
             >
               {REASONING_EFFORT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -693,8 +729,14 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           </div>
         ) : (
           // Claude: Show thinking toggle
-          <div style={settingGroupStyle}>
-            <label style={checkboxLabelStyle}>
+          <div style={{ ...settingGroupStyle, width: isMobile ? "100%" : "auto", height: isMobile ? 38 : 28 }}>
+            <label
+              style={{
+                ...checkboxLabelStyle,
+                height: isMobile ? 38 : 28,
+                width: isMobile ? "100%" : undefined,
+              }}
+            >
               <input
                 type="checkbox"
                 checked={thinkingEnabled}
@@ -706,20 +748,32 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             </label>
           </div>
         )}
-        <div style={settingGroupStyle}>
+        <div
+          style={{
+            ...settingGroupStyle,
+            width: isMobile ? "100%" : "auto",
+            height: isMobile ? "auto" : 28,
+            flexWrap: isMobile ? "wrap" : "nowrap",
+          }}
+        >
           <label style={settingLabelStyle}>Prompt Type:</label>
           <select
             value={promptKind}
             onChange={(e) => setPromptKind(e.target.value as PromptKind)}
             disabled={sending}
-            style={selectStyle}
+            style={{
+              ...selectStyle,
+              height: isMobile ? 38 : 28,
+              width: isMobile ? "100%" : undefined,
+              fontSize: isMobile ? 13 : 12,
+            }}
           >
             <option value="one_off">One-off</option>
             <option value="scheduled">Scheduled Task</option>
           </select>
         </div>
         {promptKind === "scheduled" && (
-          <div style={{ ...settingGroupStyle, minWidth: 260, flex: 1 }}>
+          <div style={{ ...settingGroupStyle, minWidth: isMobile ? 0 : 260, flex: 1, width: isMobile ? "100%" : undefined }}>
             <input
               value={scheduledTaskDescription}
               onChange={(e) => setScheduledTaskDescription(e.target.value)}
@@ -728,6 +782,8 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               style={{
                 ...selectStyle,
                 width: "100%",
+                height: isMobile ? 38 : 28,
+                fontSize: isMobile ? 13 : 12,
                 cursor: "text",
                 fontFamily: "inherit",
               }}
@@ -737,14 +793,23 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       </div>
 
       {promptKind === "scheduled" && (
-        <div style={automationComposerStyle}>
-          <div style={automationComposerControlsStyle}>
+        <div
+          style={{
+            ...automationComposerStyle,
+            padding: isMobile ? "10px" : "8px 10px",
+          }}
+        >
+          <div style={{ ...automationComposerControlsStyle, gap: isMobile ? 10 : 8 }}>
             <label style={settingLabelStyle}>Run Every:</label>
             <select
               value={automationIntervalMinutes}
               onChange={(e) => setAutomationIntervalMinutes(Number(e.target.value))}
               disabled={sending}
-              style={selectStyle}
+              style={{
+                ...selectStyle,
+                height: isMobile ? 38 : 28,
+                fontSize: isMobile ? 13 : 12,
+              }}
             >
               {AUTOMATION_INTERVAL_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -755,7 +820,11 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             <button
               onClick={handleCreateAutomation}
               disabled={sending || (!input.trim() && !scheduledTaskDescription.trim())}
-              style={automationPrimaryButtonStyle}
+              style={{
+                ...automationPrimaryButtonStyle,
+                height: isMobile ? 38 : 28,
+                fontSize: isMobile ? 13 : 12,
+              }}
             >
               Save Automation
             </button>
@@ -764,7 +833,12 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       )}
 
       {automations.length > 0 && (
-        <div style={automationListStyle}>
+        <div
+          style={{
+            ...automationListStyle,
+            maxHeight: isMobile ? 200 : 220,
+          }}
+        >
           <div style={automationListHeaderStyle}>Automations</div>
           {automations.map((automation) => (
             <div key={automation.id} style={automationCardStyle}>
@@ -808,7 +882,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       )}
 
       {attachedImages.length > 0 && (
-        <div style={imagePreviewContainerStyle}>
+        <div style={{ ...imagePreviewContainerStyle, maxHeight: isMobile ? 112 : 96 }}>
           {attachedImages.map((img, index) => {
             // For browser mode (object URLs), use the path directly
             // For Tauri mode (file paths), use convertFileSrc
@@ -855,7 +929,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         display: "flex",
         alignItems: "flex-end",
         flex: 1,
-        minHeight: 0,
+        minHeight: isMobile ? 118 : 0,
         background: "#252526",
         border: "1px solid #3c3c3c",
         borderRadius: 8,
@@ -869,7 +943,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           onClick={handleImageSelect}
           disabled={sending}
           style={{
-            padding: "10px",
+            padding: isMobile ? "12px" : "10px",
             background: "transparent",
             border: "none",
             color: sending ? "#666" : "#969696",
@@ -879,6 +953,8 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             justifyContent: "center",
             flexShrink: 0,
             transition: "color 0.2s ease",
+            minWidth: isMobile ? 44 : undefined,
+            minHeight: isMobile ? 44 : undefined,
           }}
           title="Attach image (Ctrl+V to paste)"
           aria-label="Attach image"
@@ -911,18 +987,18 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="Ask me anything... (Shift+Enter for new line, Ctrl+V to paste images)"
+          placeholder={isSmallPhone ? "Ask anything… (Shift+Enter for newline)" : "Ask me anything... (Shift+Enter for new line, Ctrl+V to paste images)"}
           disabled={sending}
           rows={2}
           className="chat-textarea"
           style={{
             flex: 1,
-            padding: "12px 8px",
+            padding: isMobile ? "12px 10px" : "12px 8px",
             background: "transparent",
             border: "none",
             color: "#cccccc",
             fontFamily: "inherit",
-            fontSize: 13,
+            fontSize: isMobile ? 16 : 13,
             resize: "none",
             minHeight: 0,
             height: "100%",
@@ -936,17 +1012,17 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           <button
             onClick={handleStop}
             style={{
-              margin: "6px",
-              padding: "8px 16px",
+              margin: isMobile ? "8px" : "6px",
+              padding: isMobile ? "10px 14px" : "8px 16px",
               background: "#854d0e",
               border: "1px solid #a16207",
               borderRadius: 6,
               color: "#fef3c7",
               cursor: "pointer",
               fontWeight: 500,
-              fontSize: 13,
+              fontSize: isMobile ? 14 : 13,
               flexShrink: 0,
-              height: 32,
+              height: isMobile ? 40 : 32,
               transition: "all 0.2s ease",
               display: "flex",
               alignItems: "center",
@@ -967,17 +1043,17 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             onClick={handleSend}
             disabled={!canSend || sending}
             style={{
-              margin: "6px",
-              padding: "8px 16px",
+              margin: isMobile ? "8px" : "6px",
+              padding: isMobile ? "10px 14px" : "8px 16px",
               background: !canSend || sending ? "#2d2d2d" : "#007fd4",
               border: "1px solid " + (!canSend || sending ? "#3c3c3c" : "#0098ff"),
               borderRadius: 6,
               color: !canSend || sending ? "#666" : "white",
               cursor: !canSend || sending ? "not-allowed" : "pointer",
               fontWeight: 500,
-              fontSize: 13,
+              fontSize: isMobile ? 14 : 13,
               flexShrink: 0,
-              height: 32,
+              height: isMobile ? 40 : 32,
               transition: "all 0.2s ease",
               display: "flex",
               alignItems: "center",
@@ -995,7 +1071,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             }}
             aria-label="Send message"
           >
-            {sending ? "Sending..." : "Send"}
+            {sending ? (isSmallPhone ? "..." : "Sending...") : "Send"}
           </button>
         )}
       </div>

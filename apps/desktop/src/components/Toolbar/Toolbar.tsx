@@ -3,20 +3,37 @@ import { useAgentStore } from "../../stores/agentStore";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { SettingsPanel } from "../Settings/SettingsPanel";
 import { AccountControls } from "../Auth/AccountControls";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
 export function Toolbar() {
+  const isMobile = useIsMobile(900);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const agents = useAgentStore((state) => state.agents);
 
   return (
     <>
-      <div style={containerStyle}>
+      <div
+        style={{
+          ...containerStyle,
+          top: isMobile ? "calc(env(safe-area-inset-top, 0px) + 10px)" : 16,
+          left: isMobile ? 10 : 16,
+          right: isMobile ? 10 : undefined,
+          gap: isMobile ? 8 : 12,
+          flexWrap: isMobile ? "wrap" : "nowrap",
+          maxWidth: isMobile ? "calc(100vw - 20px)" : undefined,
+          zIndex: 35,
+        }}
+      >
         {/* Left side: Settings + Agent count */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 10 }}>
           <button
             onClick={() => setSettingsOpen(true)}
-            style={settingsButtonStyle}
+            style={{
+              ...settingsButtonStyle,
+              width: isMobile ? 36 : 38,
+              height: isMobile ? 36 : 38,
+            }}
             title="Settings"
             onMouseEnter={(e) => {
               e.currentTarget.style.background = "rgba(55, 55, 70, 0.95)";
@@ -34,7 +51,13 @@ export function Toolbar() {
           </button>
 
           {/* Agent count badge */}
-          <div style={agentCountStyle}>
+          <div
+            style={{
+              ...agentCountStyle,
+              padding: isMobile ? "7px 10px" : "8px 14px",
+              fontSize: isMobile ? 12 : 13,
+            }}
+          >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
               <circle cx="9" cy="7" r="4" />
@@ -48,7 +71,12 @@ export function Toolbar() {
         {/* Right side: Add Agent button */}
         <button
           onClick={() => setDialogOpen(true)}
-          style={addButtonStyle}
+          style={{
+            ...addButtonStyle,
+            padding: isMobile ? "7px 10px" : "8px 14px",
+            fontSize: isMobile ? 12 : 13,
+            minHeight: isMobile ? 36 : undefined,
+          }}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)";
             e.currentTarget.style.transform = "translateY(-1px)";

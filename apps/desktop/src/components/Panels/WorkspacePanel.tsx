@@ -1,6 +1,7 @@
 import { useAgentStore } from "../../stores/agentStore";
 import { killAgent } from "../../lib/api";
 import type { Agent } from "@virtual-agency/shared";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
 const STATUS_CONFIG = {
   working: { color: "#22c55e", label: "Active" },
@@ -10,6 +11,7 @@ const STATUS_CONFIG = {
 };
 
 export function WorkspacePanel() {
+  const isMobile = useIsMobile(900);
   const agents = useAgentStore((state) => state.agents);
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const selectAgent = useAgentStore((state) => state.selectAgent);
@@ -51,7 +53,17 @@ export function WorkspacePanel() {
 
   if (agents.length === 0) {
     return (
-      <div style={containerStyle}>
+      <div
+        style={{
+          ...containerStyle,
+          top: isMobile ? "calc(env(safe-area-inset-top, 0px) + 56px)" : 16,
+          right: isMobile ? 10 : 16,
+          left: isMobile ? 10 : undefined,
+          width: isMobile ? "auto" : 280,
+          maxHeight: isMobile ? "min(58vh, 420px)" : undefined,
+          zIndex: 34,
+        }}
+      >
         <div style={headerStyle}>
           <div style={headerTitleStyle}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "#3b82f6" }}>
@@ -82,7 +94,17 @@ export function WorkspacePanel() {
   }
 
   return (
-    <div style={containerStyle}>
+    <div
+      style={{
+        ...containerStyle,
+        top: isMobile ? "calc(env(safe-area-inset-top, 0px) + 56px)" : 16,
+        right: isMobile ? 10 : 16,
+        left: isMobile ? 10 : undefined,
+        width: isMobile ? "auto" : 280,
+        maxHeight: isMobile ? "min(58vh, 420px)" : undefined,
+        zIndex: 34,
+      }}
+    >
       <div style={headerStyle}>
         <div style={headerTitleStyle}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "#3b82f6" }}>
@@ -117,7 +139,7 @@ export function WorkspacePanel() {
         </button>
       </div>
 
-      <div style={listStyle}>
+      <div style={{ ...listStyle, maxHeight: isMobile ? "min(44vh, 320px)" : 350 }}>
         {agents.map((agent) => {
           const isSelected = selectedAgent?.id === agent.id;
           const statusConfig = STATUS_CONFIG[agent.status] || STATUS_CONFIG.idle;

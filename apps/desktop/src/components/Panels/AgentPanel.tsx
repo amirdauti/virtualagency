@@ -30,6 +30,7 @@ import { useTerminals } from "../../hooks/useTerminals";
 import { findAvailablePort } from "../../lib/api";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { useTerminalStore, type TabType } from "../../stores/terminalStore";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
 interface AgentPanelProps {
   agent: Agent;
@@ -78,6 +79,7 @@ const STATUS_CONFIG = {
 export function AgentPanel({
   agent,
 }: AgentPanelProps) {
+  const isMobile = useIsMobile(900);
   // Use global store for active tab (per-agent)
   const activeTab = useTerminalStore((state) => state.activeTabByAgent[agent.id] ?? "chat") as TabType;
   const setActiveTabStore = useTerminalStore((state) => state.setActiveTab);
@@ -106,6 +108,7 @@ export function AgentPanel({
       : DEFAULT_COMPOSER_HEIGHT;
   });
   const composerHeight = baseComposerHeight + composerExtraHeight;
+  const effectiveComposerHeight = isMobile ? Math.max(190, Math.min(320, 190 + composerExtraHeight)) : composerHeight;
 
   useEffect(() => {
     // Keep total height within bounds when attachments appear/disappear.
@@ -118,6 +121,7 @@ export function AgentPanel({
 
   const handleComposerResizeStart = useCallback(
     (e: React.MouseEvent) => {
+      if (isMobile) return;
       e.preventDefault();
       isResizingComposer.current = true;
       resizeStartY.current = e.clientY;
@@ -125,7 +129,7 @@ export function AgentPanel({
       document.body.style.cursor = "row-resize";
       document.body.style.userSelect = "none";
     },
-    [baseComposerHeight],
+    [baseComposerHeight, isMobile],
   );
 
   useEffect(() => {
@@ -279,11 +283,11 @@ export function AgentPanel({
 
   // Handle mouse move during drag
   const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isDragging) return;
+    if (!isDragging || isMobile) return;
     const delta = dragStartX.current - e.clientX;
     const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, dragStartWidth.current + delta));
     setPanelWidth(newWidth);
-  }, [isDragging]);
+  }, [isDragging, isMobile]);
 
   // Handle mouse up to end drag
   const handleMouseUp = useCallback(() => {
@@ -311,11 +315,12 @@ export function AgentPanel({
 
   // Start dragging
   const handleDragStart = useCallback((e: React.MouseEvent) => {
+    if (isMobile) return;
     e.preventDefault();
     dragStartX.current = e.clientX;
     dragStartWidth.current = panelWidth;
     setIsDragging(true);
-  }, [panelWidth]);
+  }, [isMobile, panelWidth]);
 
   // Get raw messages array from store (stable reference)
   const allMessages = useChatStore((state) => state.messages);
@@ -388,24 +393,47 @@ export function AgentPanel({
     <div
       className="h-full flex overflow-hidden relative"
       style={{
-        width: panelWidth,
+        width: isMobile ? "100%" : panelWidth,
+        position: isMobile ? "absolute" : "relative",
+        top: isMobile ? 0 : undefined,
+        right: isMobile ? 0 : undefined,
+        bottom: isMobile ? 0 : undefined,
+        zIndex: isMobile ? 40 : undefined,
         background: "#1e1e1e",
-        borderLeft: "1px solid #3c3c3c",
+        borderLeft: isMobile ? "none" : "1px solid #3c3c3c",
       }}
     >
       {/* Drag handle */}
-      <div
-        onMouseDown={handleDragStart}
-        className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 transition-colors ${
-          isDragging ? "bg-[#007fd4]" : "hover:bg-[#007fd4]/50"
-        }`}
-      />
+      {!isMobile && (
+        <div
+          onMouseDown={handleDragStart}
+          className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 transition-colors ${
+            isDragging ? "bg-[#007fd4]" : "hover:bg-[#007fd4]/50"
+          }`}
+        />
+      )}
 
       {/* Panel content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 h-[52px] bg-[#252526] border-b border-[#3c3c3c] flex-shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
+        <div
+          className="bg-[#252526] border-b border-[#3c3c3c] flex-shrink-0"
+          style={{
+            display: "flex",
+            alignItems: isMobile ? "flex-start" : "center",
+            justifyContent: "space-between",
+            gap: isMobile ? 10 : 12,
+            minHeight: isMobile ? 86 : 52,
+            padding: isMobile ? "10px 12px" : "0 20px",
+            flexWrap: isMobile ? "wrap" : "nowrap",
+          }}
+        >
+          <div
+            className="flex items-center gap-3 min-w-0"
+            style={{
+              flex: isMobile ? "1 1 100%" : "0 1 auto",
+            }}
+          >
             {/* Status indicator */}
             <div
               className="flex items-center gap-2 px-2.5 py-1.5 rounded text-[11px] font-medium"
@@ -438,7 +466,14 @@ export function AgentPanel({
           </div>
 
           {/* Actions */}
-          <div className="flex items-center gap-2">
+          <div
+            className="flex items-center gap-2"
+            style={{
+              width: isMobile ? "100%" : "auto",
+              flexWrap: isMobile ? "wrap" : "nowrap",
+              justifyContent: isMobile ? "flex-start" : "flex-end",
+            }}
+          >
             <button
               onClick={handleToggleStayAtDesk}
               className={`px-3 py-2 rounded text-[11px] font-medium transition-all duration-200 border flex items-center gap-1.5 ${
@@ -448,6 +483,10 @@ export function AgentPanel({
               }`}
               title={agent.stayAtDesk ? "Agent stays at desk when idle" : "Allow agent to move to lounge when idle"}
               aria-label={agent.stayAtDesk ? "Disable stay at desk" : "Enable stay at desk"}
+              style={{
+                minHeight: isMobile ? 36 : undefined,
+                whiteSpace: "nowrap",
+              }}
             >
               <Pin className="w-3.5 h-3.5" />
               <span>Stay at Desk</span>
@@ -460,6 +499,10 @@ export function AgentPanel({
                 className="px-4 py-2 rounded text-[11px] font-medium text-[#969696] hover:text-white bg-transparent hover:bg-[#37373d] border border-[#3c3c3c] hover:border-[#969696] transition-all duration-200 flex items-center gap-2"
                 title="Clear chat history"
                 aria-label="Clear chat history"
+                style={{
+                  minHeight: isMobile ? 36 : undefined,
+                  whiteSpace: "nowrap",
+                }}
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Clear Chat</span>
@@ -472,6 +515,10 @@ export function AgentPanel({
               className="px-4 py-2 rounded text-[11px] font-medium text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 transition-all duration-200"
               title="Kill agent"
               aria-label="Kill agent"
+              style={{
+                minHeight: isMobile ? 36 : undefined,
+                whiteSpace: "nowrap",
+              }}
             >
               Kill Agent
             </button>
@@ -482,13 +529,17 @@ export function AgentPanel({
                 onClick={() => setShowMenu(!showMenu)}
                 className="p-2 rounded text-[#969696] hover:text-white hover:bg-[#37373d] transition-all duration-200"
                 aria-label="More options"
+                style={{ minHeight: isMobile ? 36 : undefined, minWidth: isMobile ? 36 : undefined }}
               >
                 <MoreHorizontal className="w-[14px] h-[14px]" />
               </button>
 
               {/* Dropdown menu */}
               {showMenu && (
-                <div className="absolute right-0 top-full mt-1 w-48 bg-[#3c3c3c] border border-[#454545] rounded-md shadow-xl z-50 py-1">
+                <div
+                  className="absolute right-0 top-full mt-1 bg-[#3c3c3c] border border-[#454545] rounded-md shadow-xl z-50 py-1"
+                  style={{ width: isMobile ? 220 : 192 }}
+                >
                   <button
                     onClick={() => {
                       setShowMenu(false);
@@ -520,6 +571,7 @@ export function AgentPanel({
               className="p-2 rounded text-[#969696] hover:text-white hover:bg-[#37373d] transition-all duration-200"
               title="Close panel"
               aria-label="Close panel"
+              style={{ minHeight: isMobile ? 36 : undefined, minWidth: isMobile ? 36 : undefined }}
             >
               <X className="w-[14px] h-[14px]" />
             </button>
@@ -527,7 +579,10 @@ export function AgentPanel({
         </div>
 
         {/* Working directory */}
-        <div className="flex items-center px-3 h-[28px] bg-[#1e1e1e] border-b border-[#3c3c3c] flex-shrink-0">
+        <div
+          className="flex items-center px-3 bg-[#1e1e1e] border-b border-[#3c3c3c] flex-shrink-0"
+          style={{ minHeight: isMobile ? 32 : 28 }}
+        >
           <FolderOpen className="w-3.5 h-3.5 text-[#969696] mr-2 flex-shrink-0" />
           <span
             className="text-[11px] text-[#969696] font-mono truncate"
@@ -538,8 +593,21 @@ export function AgentPanel({
         </div>
 
         {/* Tab bar - VS Code style */}
-        <div className="flex items-center px-3 py-1.5 gap-1 bg-[#1e1e1e] border-b border-[#3c3c3c] flex-shrink-0">
-          <div className="flex items-center gap-1">
+        <div
+          className="flex items-center px-3 py-1.5 gap-2 bg-[#1e1e1e] border-b border-[#3c3c3c] flex-shrink-0"
+          style={{ minHeight: isMobile ? 46 : undefined }}
+        >
+          <div
+            className="flex items-center gap-1 hide-scrollbar"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflowX: "auto",
+              overflowY: "hidden",
+              scrollbarWidth: "none",
+              msOverflowStyle: "none",
+            }}
+          >
             {TAB_CONFIG.map(({ id, label, icon: Icon }) => {
               const isActive = activeTab === id;
               return (
@@ -553,6 +621,11 @@ export function AgentPanel({
                       : "bg-transparent text-[#969696] hover:text-[#cccccc] hover:bg-[#2a2a2a]"
                     }
                   `}
+                  style={{
+                    flexShrink: 0,
+                    minHeight: isMobile ? 36 : undefined,
+                    whiteSpace: "nowrap",
+                  }}
                 >
                   <Icon className="w-4 h-4" />
                   <span>{label}</span>
@@ -563,7 +636,7 @@ export function AgentPanel({
 
           {/* Roblox: Rojo server toggle (far right of tabs) */}
           {isRobloxBuilder && (
-            <div className="ml-auto flex items-center">
+            <div className="flex items-center" style={{ flexShrink: 0 }}>
               <button
                 onClick={handleToggleRojoServer}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all duration-200 border cursor-pointer ${
@@ -581,6 +654,7 @@ export function AgentPanel({
                     ? `Stop Rojo server${rojoPort ? ` (port ${rojoPort})` : ""}`
                     : "Start Rojo server"
                 }
+                style={{ minHeight: isMobile ? 36 : undefined, whiteSpace: "nowrap" }}
               >
                 {rojoTerminalId ? <Square className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                 <span>Rojo</span>
@@ -648,15 +722,17 @@ export function AgentPanel({
               {/* Chat input - resizable by dragging */}
               <div
                 className="flex-shrink-0 border-t border-[#3c3c3c]"
-                style={{ height: composerHeight, overflow: "hidden" }}
+                style={{ height: effectiveComposerHeight, overflow: "hidden" }}
               >
-                <div
-                  onMouseDown={handleComposerResizeStart}
-                  className="h-1 w-full cursor-row-resize bg-transparent hover:bg-[#007fd4]/30"
-                  title="Drag to resize"
-                  aria-label="Resize chat input"
-                />
-                <div style={{ height: composerHeight - 4, display: "flex", overflow: "hidden" }}>
+                {!isMobile && (
+                  <div
+                    onMouseDown={handleComposerResizeStart}
+                    className="h-1 w-full cursor-row-resize bg-transparent hover:bg-[#007fd4]/30"
+                    title="Drag to resize"
+                    aria-label="Resize chat input"
+                  />
+                )}
+                <div style={{ height: isMobile ? effectiveComposerHeight : effectiveComposerHeight - 4, display: "flex", overflow: "hidden" }}>
                   <ChatPanel agentId={agent.id} />
                 </div>
               </div>

@@ -235,6 +235,428 @@ function stripAnsi(value) {
   return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
+function assertHostedNangoConfigured() {
+  if (HOSTED_NANGO_SECRET_KEY) return;
+  const err = new Error(
+    "HOSTED_NANGO_SECRET_KEY (or NANGO_SECRET_KEY) is not configured on the control plane",
+  );
+  err.statusCode = 503;
+  throw err;
+}
+
+function normalizeHostedNangoBaseUrl() {
+  return HOSTED_NANGO_BASE_URL.replace(/\/$/, "");
+}
+
+function normalizeHostedScopedEndUserId(userId, endUserId) {
+  const owner = String(userId || "").trim();
+  const raw = String(endUserId || "").trim();
+  if (!owner) return raw;
+  if (!raw) return owner;
+  if (raw === owner) return raw;
+  if (raw.startsWith(`${owner}:`)) return raw;
+  return `${owner}:${raw}`;
+}
+
+function parseHostedNangoConnections(value) {
+  const items =
+    value?.data && Array.isArray(value.data)
+      ? value.data
+      : value?.connections && Array.isArray(value.connections)
+        ? value.connections
+        : Array.isArray(value)
+          ? value
+          : [];
+
+  return items
+    .map((item) => {
+      const connection_id = String(
+        item?.connection_id || item?.id || "",
+      ).trim();
+      if (!connection_id) return null;
+      return {
+        connection_id,
+        integration_id: String(
+          item?.provider_config_key || item?.integration_id || item?.integration || "",
+        ).trim(),
+        end_user_id: String(
+          item?.end_user?.id || item?.end_user_id || item?.metadata?.end_user_id || "",
+        ).trim() || null,
+        status: typeof item?.status === "string" ? item.status : null,
+        created_at: typeof item?.created_at === "string" ? item.created_at : null,
+        updated_at: typeof item?.updated_at === "string" ? item.updated_at : null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function isHostedNangoConnectionMatch(connection, userId, targetAgentId, integrationId) {
+  const target = String(targetAgentId || "").trim();
+  if (!target) return false;
+  const endUserId = String(connection?.end_user_id || "").trim();
+  if (!endUserId) return false;
+
+  const scoped = normalizeHostedScopedEndUserId(userId, target);
+  const targetSuffix = `:${target}`;
+  const matchesAgent =
+    endUserId === scoped || endUserId === target || endUserId.endsWith(targetSuffix);
+  if (!matchesAgent) return false;
+
+  if (!integrationId) return true;
+  return String(connection?.integration_id || "").trim().toLowerCase() ===
+    String(integrationId).trim().toLowerCase();
+}
+
+async function fetchHostedNangoJson(pathname, options = {}, timeoutMs = HOSTED_RUNTIME_TIMEOUT_MS) {
+  assertHostedNangoConfigured();
+  const baseUrl = normalizeHostedNangoBaseUrl();
+  const response = await fetchWithTimeout(`${baseUrl}${pathname}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${HOSTED_NANGO_SECRET_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  }, timeoutMs);
+
+  const raw = await response.text();
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+
+  if (!response.ok) {
+    const detail =
+      (parsed && (parsed.message || parsed.error)) ||
+      truncateText(raw || "", 500) ||
+      `Nango status ${response.status}`;
+    const err = new Error(`nango_upstream_error:${response.status}:${detail}`);
+    err.statusCode = response.status >= 500 ? 502 : response.status;
+    throw err;
+  }
+
+  return parsed;
+}
+
+async function createHostedNangoConnectSession({
+  userId,
+  integrationId,
+  endUserId,
+  endUserEmail,
+  endUserDisplayName,
+}) {
+  const integration = String(integrationId || "").trim();
+  if (!integration) {
+    const err = new Error("integration_id is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const targetEndUser = String(endUserId || "").trim();
+  if (!targetEndUser) {
+    const err = new Error("end_user_id is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const scopedEndUserId = normalizeHostedScopedEndUserId(userId, targetEndUser);
+  const payload = {
+    end_user: {
+      id: scopedEndUserId,
+      ...(String(endUserEmail || "").trim()
+        ? { email: String(endUserEmail).trim() }
+        : {}),
+      ...(String(endUserDisplayName || "").trim()
+        ? { display_name: String(endUserDisplayName).trim() }
+        : {}),
+    },
+    allowed_integrations: [integration],
+  };
+
+  const json = await fetchHostedNangoJson("/connect/sessions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const token = String(json?.data?.token || "").trim();
+  if (!token) {
+    const err = new Error("Nango response did not include data.token");
+    err.statusCode = 502;
+    throw err;
+  }
+
+  return {
+    session_token: token,
+    integration_id: integration,
+    nango_base_url: normalizeHostedNangoBaseUrl(),
+    expires_at: typeof json?.data?.expires_at === "string" ? json.data.expires_at : null,
+    connect_link:
+      typeof json?.data?.connect_link === "string"
+        ? json.data.connect_link
+        : typeof json?.data?.link === "string"
+          ? json.data.link
+          : null,
+  };
+}
+
+async function listHostedNangoConnections() {
+  const json = await fetchHostedNangoJson("/connections", { method: "GET" });
+  return parseHostedNangoConnections(json);
+}
+
+function normalizeProxyMethod(method) {
+  const label = String(method || "GET").trim().toUpperCase() || "GET";
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(label)) {
+    const err = new Error(`invalid HTTP method: ${label}`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return label;
+}
+
+async function callHostedNangoProxy({
+  integrationId,
+  connectionId,
+  endpoint,
+  method,
+  query,
+  headers,
+  body,
+}) {
+  const integration = String(integrationId || "").trim();
+  if (!integration) {
+    const err = new Error("integration_id cannot be empty");
+    err.statusCode = 400;
+    throw err;
+  }
+  const connection = String(connectionId || "").trim();
+  if (!connection) {
+    const err = new Error("connection_id cannot be empty");
+    err.statusCode = 400;
+    throw err;
+  }
+  const rawEndpoint = String(endpoint || "").trim();
+  if (!rawEndpoint) {
+    const err = new Error("endpoint cannot be empty");
+    err.statusCode = 400;
+    throw err;
+  }
+  const normalizedEndpoint = rawEndpoint.startsWith("/") ? rawEndpoint : `/${rawEndpoint}`;
+  const methodLabel = normalizeProxyMethod(method);
+
+  const url = new URL(`${normalizeHostedNangoBaseUrl()}/proxy${normalizedEndpoint}`);
+  if (query && typeof query === "object") {
+    for (const [key, value] of Object.entries(query)) {
+      const trimmedKey = String(key || "").trim();
+      if (!trimmedKey) continue;
+      url.searchParams.append(trimmedKey, String(value ?? ""));
+    }
+  }
+
+  const extraHeaders = {};
+  if (headers && typeof headers === "object") {
+    for (const [key, value] of Object.entries(headers)) {
+      const headerName = String(key || "").trim();
+      if (!headerName) continue;
+      if (
+        headerName.toLowerCase() === "authorization" ||
+        headerName.toLowerCase() === "integration-id" ||
+        headerName.toLowerCase() === "connection-id"
+      ) {
+        continue;
+      }
+      extraHeaders[headerName] = String(value ?? "");
+    }
+  }
+
+  const response = await fetchWithTimeout(
+    url.toString(),
+    {
+      method: methodLabel,
+      headers: {
+        Authorization: `Bearer ${HOSTED_NANGO_SECRET_KEY}`,
+        "Integration-Id": integration,
+        "Connection-Id": connection,
+        ...extraHeaders,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    },
+    HOSTED_RUNTIME_TIMEOUT_MS,
+  );
+
+  const raw = await response.text();
+  let data;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = raw;
+  }
+
+  return {
+    method: methodLabel,
+    endpoint: normalizedEndpoint,
+    upstream_status: response.status,
+    data,
+  };
+}
+
+async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) {
+  const method = req.method.toUpperCase();
+
+  if (suffixPath === "/api/integrations/nango/connect-session" && method === "POST") {
+    try {
+      const session = await createHostedNangoConnectSession({
+        userId,
+        integrationId: req.body?.integration_id,
+        endUserId: req.body?.end_user_id,
+        endUserEmail: req.body?.end_user_email,
+        endUserDisplayName: req.body?.end_user_display_name,
+      });
+      res.json(session);
+    } catch (err) {
+      res
+        .status(Number(err?.statusCode) || 500)
+        .json({ error: "nango_connect_session_failed", message: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  const connectMatch = suffixPath.match(/^\/api\/agent-tools\/([^/]+)\/nango-connect-session$/);
+  if (connectMatch && method === "POST") {
+    const sourceAgentId = connectMatch[1];
+    const targetAgentId = String(req.body?.target_agent_id || sourceAgentId).trim() || sourceAgentId;
+    if (targetAgentId !== sourceAgentId) {
+      res.status(403).json({ error: "cross-agent nango access is not allowed" });
+      return true;
+    }
+    try {
+      const session = await createHostedNangoConnectSession({
+        userId,
+        integrationId: req.body?.integration_id,
+        endUserId: targetAgentId,
+        endUserDisplayName: targetAgentId,
+      });
+      res.json({
+        ok: true,
+        source_agent_id: sourceAgentId,
+        target_agent_id: targetAgentId,
+        session,
+      });
+    } catch (err) {
+      res.status(Number(err?.statusCode) || 500).json({ error: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  const connectionsMatch = suffixPath.match(/^\/api\/agent-tools\/([^/]+)\/nango-connections$/);
+  if (connectionsMatch && method === "POST") {
+    const sourceAgentId = connectionsMatch[1];
+    const targetAgentId = String(req.body?.target_agent_id || sourceAgentId).trim() || sourceAgentId;
+    if (targetAgentId !== sourceAgentId) {
+      res.status(403).json({ error: "cross-agent nango access is not allowed" });
+      return true;
+    }
+    const integrationFilter = String(req.body?.integration_id || "").trim();
+    try {
+      const all = await listHostedNangoConnections();
+      const filtered = all.filter((connection) =>
+        isHostedNangoConnectionMatch(
+          connection,
+          userId,
+          targetAgentId,
+          integrationFilter || null,
+        ),
+      );
+      res.json({
+        ok: true,
+        source_agent_id: sourceAgentId,
+        target_agent_id: targetAgentId,
+        integration_id: integrationFilter || null,
+        total: filtered.length,
+        connections: filtered,
+      });
+    } catch (err) {
+      res.status(Number(err?.statusCode) || 500).json({ error: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  const proxyMatch = suffixPath.match(/^\/api\/agent-tools\/([^/]+)\/nango-proxy$/);
+  if (proxyMatch && method === "POST") {
+    const sourceAgentId = proxyMatch[1];
+    const targetAgentId = String(req.body?.target_agent_id || sourceAgentId).trim() || sourceAgentId;
+    if (targetAgentId !== sourceAgentId) {
+      res.status(403).json({ error: "cross-agent nango access is not allowed" });
+      return true;
+    }
+
+    const integrationId = String(req.body?.integration_id || "").trim();
+    const endpoint = req.body?.endpoint;
+    const methodLabel = req.body?.method;
+    const explicitConnectionId = String(req.body?.connection_id || "").trim();
+
+    try {
+      const availableConnections = await listHostedNangoConnections();
+      const connectionId = explicitConnectionId
+        ? (() => {
+            const allowed = availableConnections.some((connection) =>
+              connection.connection_id === explicitConnectionId &&
+              isHostedNangoConnectionMatch(connection, userId, targetAgentId, integrationId),
+            );
+            if (!allowed) {
+              const err = new Error(
+                `connection_id '${explicitConnectionId}' is not accessible for target agent '${targetAgentId}' and integration '${integrationId}'`,
+              );
+              err.statusCode = 403;
+              throw err;
+            }
+            return explicitConnectionId;
+          })()
+        : (() => {
+            const found = availableConnections.find((connection) =>
+              isHostedNangoConnectionMatch(connection, userId, targetAgentId, integrationId),
+            );
+            if (!found) {
+              const err = new Error(
+                `no Nango connection found for target agent '${targetAgentId}' and integration '${integrationId}'`,
+              );
+              err.statusCode = 404;
+              throw err;
+            }
+            return found.connection_id;
+          })();
+
+      const proxyResult = await callHostedNangoProxy({
+        integrationId,
+        connectionId,
+        endpoint,
+        method: methodLabel,
+        query: req.body?.query,
+        headers: req.body?.headers,
+        body: req.body?.body,
+      });
+
+      res.json({
+        ok: true,
+        source_agent_id: sourceAgentId,
+        target_agent_id: targetAgentId,
+        integration_id: integrationId,
+        connection_id: connectionId,
+        method: proxyResult.method,
+        endpoint: proxyResult.endpoint,
+        upstream_status: proxyResult.upstream_status,
+        data: proxyResult.data,
+      });
+    } catch (err) {
+      res.status(Number(err?.statusCode) || 500).json({ error: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  return false;
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = HOSTED_RUNTIME_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -976,6 +1398,18 @@ function shellSingleQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function buildHostedRuntimeNangoEnvCleanupScript(pythonPrefix = "") {
+  return [
+    `${pythonPrefix}python3 - <<'PY' || true`,
+    "from pathlib import Path",
+    "path = Path('/etc/virtualagency/server.env')",
+    "if path.exists():",
+    "    lines = [ln for ln in path.read_text().splitlines() if not ln.startswith('NANGO_SECRET_KEY=') and not ln.startswith('NANGO_BASE_URL=')]",
+    "    path.write_text('\\n'.join(lines) + '\\n')",
+    "PY",
+  ];
+}
+
 async function runHostedRootSshUpgrade(server, packageSpecifier) {
   if (!HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED) {
     throw new Error("hosted_root_ssh_upgrade_disabled");
@@ -992,7 +1426,7 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
 
   const remotePackage = `${VA_SERVER_NPM_PACKAGE}@${packageSpecifier}`;
   const quotedPackage = shellSingleQuote(remotePackage);
-  const remoteCommand = [
+  const remoteCommandLines = [
     "set -euo pipefail",
     `PKG=${quotedPackage}`,
     "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
@@ -1000,8 +1434,10 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
     "else",
     "  npm install -g \"$PKG\"",
     "fi",
-    "systemctl restart virtualagency-server",
-  ].join("\n");
+  ];
+  remoteCommandLines.push(...buildHostedRuntimeNangoEnvCleanupScript());
+  remoteCommandLines.push("systemctl restart virtualagency-server");
+  const remoteCommand = remoteCommandLines.join("\n");
 
   const sshArgs = [
     "-i",
@@ -1058,7 +1494,7 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
 
     const remotePackage = `${VA_SERVER_NPM_PACKAGE}@${packageSpecifier}`;
     const quotedPackage = shellSingleQuote(remotePackage);
-    const remoteCommand = [
+    const remoteCommandLines = [
       "set -euo pipefail",
       `PKG=${quotedPackage}`,
       "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
@@ -1066,8 +1502,12 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
       "else",
       "  sudo -n npm install -g \"$PKG\"",
       "fi",
+    ];
+    remoteCommandLines.push(...buildHostedRuntimeNangoEnvCleanupScript("sudo -n "));
+    remoteCommandLines.push(
       "( sudo -n systemctl restart virtualagency-server || pkill -f '^virtual-agency-server( |$)' || true )",
-    ].join("\n");
+    );
+    const remoteCommand = remoteCommandLines.join("\n");
 
     const sshArgs = [
       "-i",
@@ -1251,6 +1691,9 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
     "    STATUS=243",
     "    echo '" + permissionMarker + " prefix='\"${PREFIX:-unknown}\"",
     "  fi",
+    "fi",
+    'if [ "$STATUS" -eq 0 ] && [ "$CAN_SUDO" -eq 1 ]; then',
+    ...buildHostedRuntimeNangoEnvCleanupScript("sudo -n "),
     "fi",
     `echo '${marker}:'\"$STATUS\"`,
     "sleep 1",
@@ -1653,14 +2096,6 @@ function safeJsonParse(value) {
 function buildCloudInit({ bootstrapToken, proxyToken, userId }) {
   const escapedPackage = `${VA_SERVER_NPM_PACKAGE}@${VA_SERVER_NPM_VERSION}`;
   const callbackUrl = `${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/bootstrap-report`;
-  const nangoEnvLines = [];
-  if (HOSTED_NANGO_SECRET_KEY) {
-    nangoEnvLines.push(`NANGO_SECRET_KEY=${shellSingleQuote(HOSTED_NANGO_SECRET_KEY)}`);
-  }
-  if (HOSTED_NANGO_BASE_URL) {
-    nangoEnvLines.push(`NANGO_BASE_URL=${shellSingleQuote(HOSTED_NANGO_BASE_URL)}`);
-  }
-  const nangoEnvBlock = nangoEnvLines.length > 0 ? `${nangoEnvLines.join("\n")}\n` : "";
 
   return `#!/bin/bash
 set -euo pipefail
@@ -1721,7 +2156,7 @@ WORKSPACE_DIR=/opt/virtualagency/workspace
 VIRTUAL_AGENCY_PORT=${HOSTED_SERVER_PORT}
 VIRTUAL_AGENCY_BIND_HOST=0.0.0.0
 VA_HOSTED_PROXY_TOKEN=${proxyToken}
-${nangoEnvBlock}ENV_EOF
+ENV_EOF
 
 cat > /etc/systemd/system/virtualagency-server.service << 'SERVICE_EOF'
 [Unit]
@@ -2652,6 +3087,9 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
 
     const suffix = req.originalUrl.replace(/^\/api\/hosting\/va/, "") || "/";
     const suffixPath = suffix.split("?")[0] || "/";
+    if (await maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath)) {
+      return;
+    }
     if (!isAllowedHostingProxyPath(suffixPath)) {
       return res.status(403).json({ error: "hosting_proxy_forbidden_path" });
     }

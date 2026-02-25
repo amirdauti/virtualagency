@@ -2,6 +2,7 @@ import { SignedIn, UserButton, useAuth } from "@clerk/clerk-react";
 import type { CSSProperties } from "react";
 import { useCallback, useMemo, useState } from "react";
 import { isTauri } from "../../lib/api";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
 async function postJson<T>(url: string, token: string): Promise<T> {
   const res = await fetch(url, {
@@ -30,6 +31,8 @@ export function AccountControls() {
 }
 
 function AccountControlsInner() {
+  const isMobile = useIsMobile(900);
+  const isSmallPhone = useIsMobile(640);
   const { getToken } = useAuth();
   const [loading, setLoading] = useState(false);
 
@@ -56,10 +59,15 @@ function AccountControlsInner() {
 
   return (
     <SignedIn>
-      <div style={containerStyle}>
+      <div style={{ ...containerStyle, gap: isMobile ? 8 : 10 }}>
         <button
           type="button"
-          style={manageButtonStyle}
+          style={{
+            ...manageButtonStyle,
+            padding: isMobile ? "7px 10px" : "8px 14px",
+            fontSize: isMobile ? 12 : 13,
+            minHeight: isMobile ? 36 : undefined,
+          }}
           onClick={() => openPortal().catch(() => {})}
           disabled={loading}
           onMouseEnter={(e) => {
@@ -85,10 +93,17 @@ function AccountControlsInner() {
             <rect x="2" y="5" width="20" height="14" rx="2" />
             <line x1="2" y1="10" x2="22" y2="10" />
           </svg>
-          <span>{loading ? "Opening…" : "Manage subscription"}</span>
+          <span>{loading ? "Opening…" : isSmallPhone ? "Billing" : "Manage subscription"}</span>
         </button>
 
-        <div style={userButtonWrapperStyle} title="Account">
+        <div
+          style={{
+            ...userButtonWrapperStyle,
+            width: isMobile ? 36 : 38,
+            height: isMobile ? 36 : 38,
+          }}
+          title="Account"
+        >
           <UserButton />
         </div>
       </div>

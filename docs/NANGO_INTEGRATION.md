@@ -14,6 +14,19 @@ NANGO_BASE_URL=https://api.nango.dev
 - `NANGO_SECRET_KEY` is required.
 - `NANGO_BASE_URL` is optional and defaults to `https://api.nango.dev`.
 
+## Hosted mode env sync
+
+Hosted Nango is handled on the control plane. Do not place the shared Nango secret on user VPS runtime.
+
+Set these on the billing API service:
+
+```bash
+HOSTED_NANGO_SECRET_KEY=your_nango_secret_key
+HOSTED_NANGO_BASE_URL=https://api.nango.dev
+```
+
+`HOSTED_NANGO_SECRET_KEY` also falls back to `NANGO_SECRET_KEY` on the billing API process.
+
 ## Web/Desktop connect flow
 
 Endpoint used by the Integrations panel:
@@ -147,7 +160,8 @@ If `connection_id` is provided, ownership is still validated against the same ta
 ## Troubleshooting
 
 - `NANGO_SECRET_KEY is not configured on the server`
-  - set env var and restart server.
+  - Local mode: set `NANGO_SECRET_KEY` for the server process and restart.
+  - Hosted mode: set `HOSTED_NANGO_SECRET_KEY` (or `NANGO_SECRET_KEY`) on billing API and restart `virtualagency-billing-api`.
 - `no Nango connection found for target agent ...`
   - run connect flow for that agent and integration first.
 - Google OAuth warnings/verification screen
