@@ -20,22 +20,23 @@ async function postJson<T>(url: string, token: string): Promise<T> {
 }
 
 export function AccountControls() {
-  const env = (import.meta as any).env || {};
-  const hasClerk = Boolean(env.VITE_CLERK_PUBLISHABLE_KEY || env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+  const hasClerk = Boolean(
+    import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ||
+      import.meta.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+  );
   if (isTauri() || !hasClerk) return null;
 
   return <AccountControlsInner />;
 }
 
 function AccountControlsInner() {
-  const env = (import.meta as any).env || {};
   const { getToken } = useAuth();
   const [loading, setLoading] = useState(false);
 
   const baseUrl = useMemo(() => {
-    const envUrl = env?.VITE_BILLING_API_URL as string | undefined;
+    const envUrl = import.meta.env.VITE_BILLING_API_URL as string | undefined;
     return envUrl && envUrl.length > 0 ? envUrl.replace(/\/$/, "") : "";
-  }, [env?.VITE_BILLING_API_URL]);
+  }, []);
 
   const portalUrl = `${baseUrl}/api/billing/create-portal-session`;
 

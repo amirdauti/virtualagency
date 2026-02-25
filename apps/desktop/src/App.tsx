@@ -308,9 +308,9 @@ function AppShell() {
 
 function App() {
   // Gate only in browser mode for now (Tauri stays unchanged).
-  const env = (import.meta as any).env || {};
   const hasClerk = Boolean(
-    env.VITE_CLERK_PUBLISHABLE_KEY || env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+    import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ||
+      import.meta.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
   );
   if (!isTauri() && hasClerk) {
     return (

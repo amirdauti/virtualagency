@@ -69,7 +69,7 @@ export function AuthBillingGate({ children }: { children: ReactNode }) {
   }, [isLoaded, isSignedIn]);
 
   const baseUrl = useMemo(() => {
-    const envUrl = (import.meta as any).env?.VITE_BILLING_API_URL as string | undefined;
+    const envUrl = import.meta.env.VITE_BILLING_API_URL as string | undefined;
     return envUrl && envUrl.length > 0 ? envUrl.replace(/\/$/, "") : "";
   }, []);
 

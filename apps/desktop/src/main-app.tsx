@@ -10,9 +10,8 @@ window.addEventListener("unhandledrejection", (event) => {
   console.error("Unhandled promise rejection:", event.reason);
 });
 
-const env = (import.meta as any).env || {};
-const publishableKey = (env.VITE_CLERK_PUBLISHABLE_KEY ||
-  env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) as string | undefined;
+const publishableKey = (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ||
+  import.meta.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) as string | undefined;
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -27,4 +26,3 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </ErrorBoundary>
   </React.StrictMode>
 );
-
