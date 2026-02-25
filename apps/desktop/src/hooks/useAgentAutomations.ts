@@ -94,7 +94,13 @@ export function useAgentAutomations() {
               );
               useAgentStore.getState().updateAgent(agent.id, { status: "thinking" });
 
-              await sendMessage(agent.id, message, undefined, messageId);
+              await sendMessage(
+                agent.id,
+                message,
+                undefined,
+                messageId,
+                agent.runtime === "hosted" ? "hosted" : "local",
+              );
 
               updateAutomation(agent.id, automation.id, (current) => ({
                 ...current,

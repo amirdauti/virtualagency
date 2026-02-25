@@ -37,7 +37,8 @@ pub struct TelegramInboundMessage {
 pub struct TelegramBindingConfigInput {
     pub enabled: bool,
     pub bot_token: Option<String>,
-    pub allowed_handle: String,
+    pub allowed_handle: Option<String>,
+    pub allowed_chat_id: Option<i64>,
     pub send_typing: bool,
     pub send_updates: bool,
 }
@@ -49,6 +50,7 @@ pub struct TelegramBindingStatus {
     pub connected: bool,
     pub has_token: bool,
     pub allowed_handle: String,
+    pub allowed_chat_id: Option<i64>,
     pub allowed_chat_ids: Vec<i64>,
     pub send_typing: bool,
     pub send_updates: bool,
@@ -113,6 +115,7 @@ struct TelegramAgentState {
     status_active: bool,
     last_error: Option<String>,
     last_update_id: Option<i64>,
+    allowed_chat_id: Option<i64>,
     last_seen_chat_id: Option<i64>,
     allowed_chat_ids: Vec<i64>,
     queue: VecDeque<TelegramQueuedTurn>,
@@ -129,6 +132,7 @@ impl TelegramAgentState {
             connected: self.connected,
             has_token: !self.config.bot_token.is_empty(),
             allowed_handle: self.config.allowed_handle.clone(),
+            allowed_chat_id: self.allowed_chat_id,
             allowed_chat_ids: self.allowed_chat_ids.clone(),
             send_typing: self.config.send_typing,
             send_updates: self.config.send_updates,
@@ -145,6 +149,8 @@ struct PersistedBinding {
     enabled: bool,
     bot_token: String,
     allowed_handle: String,
+    #[serde(default)]
+    allowed_chat_id: Option<i64>,
     send_typing: bool,
     #[serde(default)]
     send_updates: bool,
@@ -177,6 +183,9 @@ impl TelegramManager {
             .unwrap_or_default()
             .into_iter()
             .map(|(agent_id, binding)| {
+                let allowed_chat_id = resolve_allowed_chat_id_from_persisted(&binding);
+                let allowed_chat_ids =
+                    normalize_allowed_chat_ids(binding.allowed_chat_ids, allowed_chat_id);
                 let state = TelegramAgentState {
                     config: TelegramBindingConfig {
                         enabled: binding.enabled,
@@ -190,8 +199,9 @@ impl TelegramManager {
                     status_active: false,
                     last_error: None,
                     last_update_id: binding.last_update_id,
-                    last_seen_chat_id: binding.last_seen_chat_id,
-                    allowed_chat_ids: binding.allowed_chat_ids,
+                    allowed_chat_id,
+                    last_seen_chat_id: binding.last_seen_chat_id.or(allowed_chat_id),
+                    allowed_chat_ids,
                     queue: VecDeque::new(),
                     active_turn: None,
                     passive_turn: None,
@@ -241,9 +251,13 @@ impl TelegramManager {
                     enabled: state.config.enabled,
                     bot_token: state.config.bot_token.clone(),
                     allowed_handle: state.config.allowed_handle.clone(),
+                    allowed_chat_id: state.allowed_chat_id,
                     send_typing: state.config.send_typing,
                     send_updates: state.config.send_updates,
-                    allowed_chat_ids: state.allowed_chat_ids.clone(),
+                    allowed_chat_ids: normalize_allowed_chat_ids(
+                        state.allowed_chat_ids.clone(),
+                        state.allowed_chat_id,
+                    ),
                     last_update_id: state.last_update_id,
                     last_seen_chat_id: state.last_seen_chat_id,
                 },
@@ -293,6 +307,7 @@ impl TelegramManager {
                 connected: false,
                 has_token: false,
                 allowed_handle: String::new(),
+                allowed_chat_id: None,
                 allowed_chat_ids: Vec::new(),
                 send_typing: true,
                 send_updates: false,
@@ -308,20 +323,30 @@ impl TelegramManager {
         agent_id: &str,
         input: TelegramBindingConfigInput,
     ) -> Result<TelegramBindingStatus, String> {
-        let allowed_handle = normalize_handle(&input.allowed_handle);
-        if allowed_handle.is_empty() {
-            return Err("allowed_handle is required".to_string());
-        }
-
-        let existing_token = self
+        let (existing_token, existing_handle, existing_allowed_chat_id) = self
             .agents
             .get(agent_id)
-            .map(|state| state.config.bot_token.clone())
-            .unwrap_or_default();
+            .map(|state| {
+                (
+                    state.config.bot_token.clone(),
+                    state.config.allowed_handle.clone(),
+                    state.allowed_chat_id,
+                )
+            })
+            .unwrap_or_else(|| (String::new(), String::new(), None));
 
         let bot_token = input.bot_token.unwrap_or(existing_token);
         if bot_token.trim().is_empty() {
             return Err("bot_token is required".to_string());
+        }
+        let allowed_handle = input
+            .allowed_handle
+            .as_deref()
+            .map(normalize_handle)
+            .unwrap_or(existing_handle);
+        let allowed_chat_id = input.allowed_chat_id.or(existing_allowed_chat_id);
+        if allowed_handle.is_empty() && allowed_chat_id.is_none() {
+            return Err("allowed_handle or allowed_chat_id is required".to_string());
         }
 
         let status = {
@@ -341,6 +366,7 @@ impl TelegramManager {
                         status_active: false,
                         last_error: None,
                         last_update_id: None,
+                        allowed_chat_id: None,
                         last_seen_chat_id: None,
                         allowed_chat_ids: Vec::new(),
                         queue: VecDeque::new(),
@@ -360,6 +386,12 @@ impl TelegramManager {
                 send_typing: input.send_typing,
                 send_updates: input.send_updates,
             };
+            state.allowed_chat_id = allowed_chat_id;
+            state.allowed_chat_ids =
+                normalize_allowed_chat_ids(state.allowed_chat_ids.clone(), state.allowed_chat_id);
+            if state.last_seen_chat_id.is_none() {
+                state.last_seen_chat_id = state.allowed_chat_id;
+            }
             state.last_error = None;
             state.connected = false;
 
@@ -422,9 +454,17 @@ impl TelegramManager {
                 should_persist = true;
             }
 
-            let from_handle = normalize_handle(msg.from_handle.as_deref().unwrap_or_default());
-            if from_handle.is_empty() || from_handle != state.config.allowed_handle {
-                return actions;
+            if let Some(allowed_chat_id) = state.allowed_chat_id {
+                if msg.chat_id != allowed_chat_id {
+                    return actions;
+                }
+            } else {
+                let from_handle = normalize_handle(msg.from_handle.as_deref().unwrap_or_default());
+                if from_handle.is_empty() || from_handle != state.config.allowed_handle {
+                    return actions;
+                }
+                state.allowed_chat_id = Some(msg.chat_id);
+                should_persist = true;
             }
 
             if state.last_seen_chat_id != Some(msg.chat_id) {
@@ -432,8 +472,10 @@ impl TelegramManager {
                 should_persist = true;
             }
 
-            if !state.allowed_chat_ids.iter().any(|id| *id == msg.chat_id) {
-                state.allowed_chat_ids.push(msg.chat_id);
+            let normalized_allowed_chat_ids =
+                normalize_allowed_chat_ids(state.allowed_chat_ids.clone(), state.allowed_chat_id);
+            if normalized_allowed_chat_ids != state.allowed_chat_ids {
+                state.allowed_chat_ids = normalized_allowed_chat_ids;
                 should_persist = true;
             }
 
@@ -648,8 +690,32 @@ fn new_turn(chat_id: i64) -> TelegramActiveTurn {
 
 fn resolve_mirror_chat_id(state: &TelegramAgentState) -> Option<i64> {
     state
-        .last_seen_chat_id
+        .allowed_chat_id
+        .or(state.last_seen_chat_id)
         .or_else(|| state.allowed_chat_ids.last().copied())
+}
+
+fn resolve_allowed_chat_id_from_persisted(binding: &PersistedBinding) -> Option<i64> {
+    binding
+        .allowed_chat_id
+        .or(binding.last_seen_chat_id)
+        .or_else(|| binding.allowed_chat_ids.last().copied())
+}
+
+fn normalize_allowed_chat_ids(chat_ids: Vec<i64>, allowed_chat_id: Option<i64>) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(chat_ids.len() + usize::from(allowed_chat_id.is_some()));
+    for chat_id in chat_ids {
+        if seen.insert(chat_id) {
+            normalized.push(chat_id);
+        }
+    }
+    if let Some(chat_id) = allowed_chat_id {
+        if seen.insert(chat_id) {
+            normalized.push(chat_id);
+        }
+    }
+    normalized
 }
 
 fn maybe_enqueue_typing(state: &mut TelegramAgentState, actions: &mut Vec<TelegramAction>) {
@@ -2309,6 +2375,7 @@ mod tests {
             status_active: false,
             last_error: None,
             last_update_id: None,
+            allowed_chat_id: Some(chat_id),
             last_seen_chat_id: Some(chat_id),
             allowed_chat_ids: vec![chat_id],
             queue: VecDeque::new(),
@@ -2457,6 +2524,98 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, TelegramAction::DispatchToAgent(_))),
             "should queue while passive turn is active"
+        );
+    }
+
+    #[test]
+    fn known_chat_id_auth_takes_precedence_over_handle() {
+        let agent_id = "agent-1";
+        let state = make_enabled_state(42, false);
+        let mut manager = make_manager_with_state(agent_id, state);
+
+        let rejected = manager.handle_inbound(TelegramInboundMessage {
+            agent_id: agent_id.to_string(),
+            update_id: 1,
+            chat_id: 999,
+            from_handle: Some("alice".to_string()),
+            text: "should be rejected".to_string(),
+            media: Vec::new(),
+        });
+        assert!(
+            rejected
+                .iter()
+                .all(|action| !matches!(action, TelegramAction::DispatchToAgent(_))),
+            "mismatched chat id should be rejected even with matching handle"
+        );
+
+        let accepted = manager.handle_inbound(TelegramInboundMessage {
+            agent_id: agent_id.to_string(),
+            update_id: 2,
+            chat_id: 42,
+            from_handle: Some("wrong_handle".to_string()),
+            text: "should be accepted".to_string(),
+            media: Vec::new(),
+        });
+        assert!(
+            accepted
+                .iter()
+                .any(|action| matches!(action, TelegramAction::DispatchToAgent(_))),
+            "known chat id should authenticate even when handle differs"
+        );
+    }
+
+    #[test]
+    fn legacy_handle_only_binding_sets_allowed_chat_id_on_first_valid_message() {
+        let agent_id = "agent-1";
+        let mut state = make_enabled_state(42, false);
+        state.allowed_chat_id = None;
+        state.last_seen_chat_id = None;
+        state.allowed_chat_ids.clear();
+        let mut manager = make_manager_with_state(agent_id, state);
+
+        let actions = manager.handle_inbound(TelegramInboundMessage {
+            agent_id: agent_id.to_string(),
+            update_id: 1,
+            chat_id: 77,
+            from_handle: Some("alice".to_string()),
+            text: "bootstrap".to_string(),
+            media: Vec::new(),
+        });
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, TelegramAction::DispatchToAgent(_))),
+            "first valid legacy message should dispatch"
+        );
+
+        let state = manager.agents.get(agent_id).expect("state should exist");
+        assert_eq!(state.allowed_chat_id, Some(77));
+        assert_eq!(state.last_seen_chat_id, Some(77));
+        assert_eq!(state.allowed_chat_ids, vec![77]);
+    }
+
+    #[test]
+    fn persisted_migration_falls_back_to_legacy_chat_fields() {
+        let binding = PersistedBinding {
+            enabled: true,
+            bot_token: "token".to_string(),
+            allowed_handle: "alice".to_string(),
+            allowed_chat_id: None,
+            send_typing: true,
+            send_updates: false,
+            allowed_chat_ids: vec![10, 11],
+            last_update_id: None,
+            last_seen_chat_id: Some(12),
+        };
+        assert_eq!(resolve_allowed_chat_id_from_persisted(&binding), Some(12));
+
+        let binding_without_last_seen = PersistedBinding {
+            last_seen_chat_id: None,
+            ..binding
+        };
+        assert_eq!(
+            resolve_allowed_chat_id_from_persisted(&binding_without_last_seen),
+            Some(11)
         );
     }
 

@@ -1304,7 +1304,10 @@ struct SetAgentTelegramRequest {
     enabled: bool,
     #[serde(default)]
     bot_token: Option<String>,
-    allowed_handle: String,
+    #[serde(default)]
+    allowed_handle: Option<String>,
+    #[serde(default)]
+    allowed_chat_id: Option<i64>,
     #[serde(default = "default_send_typing")]
     send_typing: bool,
     #[serde(default = "default_send_updates")]
@@ -1326,6 +1329,7 @@ struct AgentTelegramResponse {
     connected: bool,
     has_token: bool,
     allowed_handle: String,
+    allowed_chat_id: Option<i64>,
     allowed_chat_ids: Vec<i64>,
     send_typing: bool,
     send_updates: bool,
@@ -1343,6 +1347,7 @@ impl From<TelegramBindingStatus> for AgentTelegramResponse {
             connected: value.connected,
             has_token: value.has_token,
             allowed_handle: value.allowed_handle,
+            allowed_chat_id: value.allowed_chat_id,
             allowed_chat_ids: value.allowed_chat_ids,
             send_typing: value.send_typing,
             send_updates: value.send_updates,
@@ -1387,6 +1392,7 @@ async fn set_agent_telegram(
                 enabled: req.enabled,
                 bot_token: req.bot_token,
                 allowed_handle: req.allowed_handle,
+                allowed_chat_id: req.allowed_chat_id,
                 send_typing: req.send_typing,
                 send_updates: req.send_updates,
             },
@@ -2464,7 +2470,10 @@ struct AgentToolsSetTelegramRequest {
     enabled: bool,
     #[serde(default)]
     bot_token: Option<String>,
-    allowed_handle: String,
+    #[serde(default)]
+    allowed_handle: Option<String>,
+    #[serde(default)]
+    allowed_chat_id: Option<i64>,
     #[serde(default = "default_send_typing")]
     send_typing: bool,
     #[serde(default = "default_send_updates")]
@@ -2497,6 +2506,7 @@ async fn agent_tools_set_telegram(
                 enabled: req.enabled,
                 bot_token: req.bot_token,
                 allowed_handle: req.allowed_handle,
+                allowed_chat_id: req.allowed_chat_id,
                 send_typing: req.send_typing,
                 send_updates: req.send_updates,
             },

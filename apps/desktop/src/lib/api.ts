@@ -15,6 +15,15 @@ const ENV_WS_URL = import.meta.env.VITE_WS_URL as string | undefined;
 const ENV_BILLING_API_URL = import.meta.env.VITE_BILLING_API_URL as
   | string
   | undefined;
+const ENV_CLERK_PUBLISHABLE_KEY = import.meta.env
+  .VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
+const ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = import.meta.env
+  .NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY as string | undefined;
+const HAS_BUILDTIME_CLERK_KEY = Boolean(
+  (ENV_CLERK_PUBLISHABLE_KEY && ENV_CLERK_PUBLISHABLE_KEY.trim().length > 0) ||
+    (ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY &&
+      ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY.trim().length > 0),
+);
 
 const SERVER_URL_STORAGE_KEY = "virtual-agency-server-url";
 const AGENT_RUNTIME_STORAGE_KEY = "virtual-agency-agent-runtime-map";
@@ -26,20 +35,25 @@ let lastServerResolveFailureAt = 0;
 
 let hostedAuthTokenProvider: (() => Promise<string | null>) | null = null;
 let hostedAuthProviderResolvers: Array<() => void> = [];
+let hostedAuthProviderState: "unknown" | "available" | "unavailable" =
+  HAS_BUILDTIME_CLERK_KEY ? "unknown" : "unavailable";
+const HOSTED_AUTH_REQUIRED_PREFIX = "hosted_auth_required";
+const HOSTED_AUTH_REQUIRED_MESSAGE =
+  "Hosted auth required. Sign in to use Cloud Agents.";
 
 export function setHostedAuthTokenProvider(
   provider: (() => Promise<string | null>) | null,
 ) {
   hostedAuthTokenProvider = provider;
-  if (provider) {
-    const resolvers = hostedAuthProviderResolvers;
-    hostedAuthProviderResolvers = [];
-    for (const resolve of resolvers) resolve();
-  }
+  hostedAuthProviderState = provider ? "available" : "unavailable";
+  const resolvers = hostedAuthProviderResolvers;
+  hostedAuthProviderResolvers = [];
+  for (const resolve of resolvers) resolve();
 }
 
-async function waitForHostedAuthProvider(timeoutMs = 12000): Promise<boolean> {
+async function waitForHostedAuthProvider(timeoutMs = 250): Promise<boolean> {
   if (hostedAuthTokenProvider) return true;
+  if (hostedAuthProviderState === "unavailable") return false;
   await new Promise<void>((resolve) => {
     const timeout = setTimeout(resolve, timeoutMs);
     hostedAuthProviderResolvers.push(() => {
@@ -48,6 +62,14 @@ async function waitForHostedAuthProvider(timeoutMs = 12000): Promise<boolean> {
     });
   });
   return Boolean(hostedAuthTokenProvider);
+}
+
+function createHostedAuthRequiredError(
+  code: "missing_hosted_auth_provider" | "missing_hosted_auth_token",
+): Error {
+  return new Error(
+    `${HOSTED_AUTH_REQUIRED_PREFIX}:${code}:${HOSTED_AUTH_REQUIRED_MESSAGE}`,
+  );
 }
 
 async function tryGetClerkTokenFallback(): Promise<string | null> {
@@ -69,7 +91,7 @@ function getBillingApiBaseUrl(): string {
 }
 
 async function getHostedAuthToken(): Promise<string> {
-  if (!hostedAuthTokenProvider) {
+  if (!hostedAuthTokenProvider && hostedAuthProviderState === "unknown") {
     await waitForHostedAuthProvider();
   }
   if (hostedAuthTokenProvider) {
@@ -85,15 +107,15 @@ async function getHostedAuthToken(): Promise<string> {
   }
 
   if (!hostedAuthTokenProvider) {
-    throw new Error("missing_hosted_auth_provider");
+    throw createHostedAuthRequiredError("missing_hosted_auth_provider");
   }
-  throw new Error("missing_hosted_auth_token");
+  throw createHostedAuthRequiredError("missing_hosted_auth_token");
 }
 
 async function getHostedAuthTokenStrict(): Promise<string> {
   const token = await getHostedAuthToken();
   if (!token) {
-    throw new Error("missing_hosted_auth_token");
+    throw createHostedAuthRequiredError("missing_hosted_auth_token");
   }
   return token;
 }
@@ -163,9 +185,10 @@ function shouldIncludeHosted(options?: RuntimeQueryOptions): boolean {
   return hasHostedAgentsMapped();
 }
 
-function isHostedAuthBootError(err: unknown): boolean {
+export function isHostedAuthBootError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return (
+    message.includes(HOSTED_AUTH_REQUIRED_PREFIX) ||
     message.includes("missing_hosted_auth_provider") ||
     message.includes("missing_hosted_auth_token")
   );
@@ -373,7 +396,9 @@ async function pollHostedEventsOnce() {
       hostedLastSeq = payload.latest_seq;
     }
   } catch (err) {
-    console.warn("[API] Hosted event poll failed:", err);
+    if (!isHostedAuthBootError(err)) {
+      console.warn("[API] Hosted event poll failed:", err);
+    }
   } finally {
     hostedPollingInFlight = false;
   }
@@ -902,11 +927,13 @@ export async function sendMessage(
   id: string,
   message: string,
   images?: string[],
-  clientMessageId?: string
+  clientMessageId?: string,
+  runtimeOverride?: AgentRuntime,
 ): Promise<void> {
   if (isTauri()) {
     return tauriInvoke("send_message", { id, message, images: images || [] });
   } else {
+    const runtime = runtimeOverride || getAgentRuntime(id);
     // In browser mode, convert blob URLs to base64 (with automatic resizing for large images)
     const imageData: Array<{ data: string; mime_type: string }> = [];
     if (images && images.length > 0) {
@@ -925,7 +952,6 @@ export async function sendMessage(
       }
     }
 
-    const runtime = getAgentRuntime(id);
     await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify({
@@ -1018,8 +1044,10 @@ export async function listAgents(options: RuntimeQueryOptions = {}): Promise<str
       try {
         const hosted = await fetchHostedApi<Array<{ id: string }>>("/api/hosting/va/api/agents");
         hosted.forEach((agent) => all.add(agent.id));
-      } catch {
-        // ignore hosted errors
+      } catch (err) {
+        if (isHostedAuthBootError(err)) {
+          throw err;
+        }
       }
     }
     return Array.from(all);
@@ -1063,6 +1091,7 @@ export interface AgentTelegramSettings {
   connected: boolean;
   has_token: boolean;
   allowed_handle: string;
+  allowed_chat_id: number | null;
   allowed_chat_ids: number[];
   send_typing: boolean;
   send_updates: boolean;
@@ -1075,7 +1104,8 @@ export interface AgentTelegramSettings {
 export interface SetAgentTelegramRequest {
   enabled: boolean;
   bot_token?: string;
-  allowed_handle: string;
+  allowed_handle?: string;
+  allowed_chat_id?: number;
   send_typing?: boolean;
   send_updates?: boolean;
 }
@@ -1221,8 +1251,10 @@ export async function listAgentDetails(options: RuntimeQueryOptions = {}): Promi
       result.push(
         ...hosted.map((agent) => ({ ...agent, runtime: "hosted" as AgentRuntime })),
       );
-    } catch {
-      // ignore hosted errors
+    } catch (err) {
+      if (isHostedAuthBootError(err)) {
+        throw err;
+      }
     }
   }
   return result;
@@ -1248,9 +1280,10 @@ export async function listTerminals(options: RuntimeQueryOptions = {}): Promise<
       const hosted = await fetchHostedApi<ServerTerminalInfo[]>("/api/hosting/va/api/terminals");
       result.push(...hosted);
     } catch (err) {
-      if (!isHostedAuthBootError(err)) {
-        console.warn("[api] Failed to list hosted terminals:", err);
+      if (isHostedAuthBootError(err)) {
+        throw err;
       }
+      console.warn("[api] Failed to list hosted terminals:", err);
     }
   }
   return result;

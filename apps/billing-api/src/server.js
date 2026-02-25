@@ -1975,6 +1975,21 @@ function hasValidControlPlaneToken(req) {
   return req.headers["x-control-plane-token"] === HOSTED_CONTROL_PLANE_TOKEN;
 }
 
+const HOSTING_PROXY_ALLOWED_PATH_PREFIXES = [
+  "/api/agents",
+  "/api/terminals",
+  "/api/files",
+  "/api/events",
+  "/api/browse",
+  "/api/integrations",
+];
+
+function isAllowedHostingProxyPath(pathname) {
+  return HOSTING_PROXY_ALLOWED_PATH_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
+
 // Stripe webhook must use raw body (must come before json() for this route)
 app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   if (!stripe) {
@@ -2584,6 +2599,10 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     const server = await ensureHostedServerAccess(userId);
 
     const suffix = req.originalUrl.replace(/^\/api\/hosting\/va/, "") || "/";
+    const suffixPath = suffix.split("?")[0] || "/";
+    if (!isAllowedHostingProxyPath(suffixPath)) {
+      return res.status(403).json({ error: "hosting_proxy_forbidden_path" });
+    }
     const targetUrl = `${server.runtimeBaseUrl}${suffix}`;
 
     const headers = {

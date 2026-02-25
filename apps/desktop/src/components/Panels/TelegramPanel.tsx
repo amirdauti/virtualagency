@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS: AgentTelegramSettings = {
   connected: false,
   has_token: false,
   allowed_handle: "",
+  allowed_chat_id: null,
   allowed_chat_ids: [],
   send_typing: true,
   send_updates: false,
@@ -80,7 +81,8 @@ export function TelegramPanel({ agentId }: TelegramPanelProps) {
     try {
       const updated = await setAgentTelegramSettings(agentId, {
         enabled,
-        allowed_handle: normalizedHandle,
+        allowed_handle: normalizedHandle.length > 0 ? normalizedHandle : undefined,
+        allowed_chat_id: status.allowed_chat_id ?? undefined,
         send_typing: sendTyping,
         send_updates: sendUpdates,
         bot_token: botToken.trim().length > 0 ? botToken.trim() : undefined,
@@ -133,7 +135,7 @@ export function TelegramPanel({ agentId }: TelegramPanelProps) {
           <div>
             <div style={titleStyle}>Telegram Bot Routing</div>
             <div style={mutedStyle}>
-              This agent will only process Telegram messages from the configured handle.
+              Messages are locked to the canonical chat ID once known; handle matching is only used to bootstrap legacy bindings.
             </div>
           </div>
           <button onClick={() => void refresh()} disabled={loading || saving} style={secondaryButtonStyle}>
@@ -200,7 +202,11 @@ export function TelegramPanel({ agentId }: TelegramPanelProps) {
         <div style={buttonRowStyle}>
           <button
             onClick={() => void save()}
-            disabled={saving || normalizedHandle.length === 0 || (!status.has_token && botToken.trim().length === 0)}
+            disabled={
+              saving ||
+              (normalizedHandle.length === 0 && status.allowed_chat_id === null) ||
+              (!status.has_token && botToken.trim().length === 0)
+            }
             style={primaryButtonStyle}
           >
             {saving ? "Saving..." : "Save"}
@@ -211,6 +217,10 @@ export function TelegramPanel({ agentId }: TelegramPanelProps) {
         </div>
 
         <div style={metaBoxStyle}>
+          <div style={metaLineStyle}>
+            <span style={mutedLabelStyle}>Canonical allowed chat ID:</span>{" "}
+            {status.allowed_chat_id !== null ? status.allowed_chat_id : "none yet"}
+          </div>
           <div style={metaLineStyle}>
             <span style={mutedLabelStyle}>Allowed chat IDs:</span>{" "}
             {status.allowed_chat_ids.length > 0 ? status.allowed_chat_ids.join(", ") : "none yet"}

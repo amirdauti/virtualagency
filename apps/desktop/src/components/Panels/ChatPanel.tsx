@@ -237,7 +237,13 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       const clientMessageId = createClientMessageId(agentId);
       addUserMessage(agentId, `[Automation] ${automation.taskDescription}`, undefined, clientMessageId);
       updateAgent(agentId, { status: "thinking" });
-      await sendMessage(agentId, message, undefined, clientMessageId);
+      await sendMessage(
+        agentId,
+        message,
+        undefined,
+        clientMessageId,
+        agent?.runtime === "hosted" ? "hosted" : "local",
+      );
 
       updateAgent(agentId, {
         automations: automations.map((entry) =>
@@ -256,7 +262,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     } finally {
       setRunningAutomationId(null);
     }
-  }, [agentId, automations, addUserMessage, runningAutomationId, updateAgent]);
+  }, [agent?.runtime, agentId, automations, addUserMessage, runningAutomationId, updateAgent]);
 
   const handlePaste = useCallback(async (e: ClipboardEvent<HTMLTextAreaElement>) => {
     console.log("[ChatPanel] Paste event triggered, isTauri:", isTauri());
@@ -493,7 +499,13 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
     try {
       console.log("[ChatPanel] Sending message:", { agentId, outgoingMessage, imagePaths, promptKind });
-      await sendMessage(agentId, outgoingMessage, imagePaths, clientMessageId);
+      await sendMessage(
+        agentId,
+        outgoingMessage,
+        imagePaths,
+        clientMessageId,
+        agent?.runtime === "hosted" ? "hosted" : "local",
+      );
       console.log("[ChatPanel] Message sent successfully");
     } catch (err) {
       if (!isTauri() && agent && isAgentNotFoundError(err)) {
@@ -509,7 +521,13 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             specialty: agent.specialty,
             runtime: agent.runtime || "local",
           });
-          await sendMessage(agentId, outgoingMessage, imagePaths, clientMessageId);
+          await sendMessage(
+            agentId,
+            outgoingMessage,
+            imagePaths,
+            clientMessageId,
+            agent.runtime === "hosted" ? "hosted" : "local",
+          );
           console.log("[ChatPanel] Message sent successfully after agent recreate");
           return;
         } catch (recreateErr) {

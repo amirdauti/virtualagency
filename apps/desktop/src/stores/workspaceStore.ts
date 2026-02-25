@@ -14,6 +14,7 @@ import {
   setAgentRuntime,
   getAgentRuntime,
   replaceAgentRuntimeMap,
+  isHostedAuthBootError,
 } from "../lib/api";
 import { MCP_SERVERS } from "@virtual-agency/shared";
 import type { Agent, MCPServerId, AgentRuntime } from "@virtual-agency/shared";
@@ -169,6 +170,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           const runtime = resolveSavedRuntime(saved);
           agent.runtime = runtime;
 
+          // In browser mode hosted agents persist on the VPS and are reconciled from
+          // server snapshot later in this load flow. Avoid blocking startup on hosted
+          // auth bootstrap here.
+          if (!isTauri() && runtime === "hosted") {
+            setAgentRuntime(agent.id, runtime);
+            nextRuntimeMap[agent.id] = runtime;
+            agentStore.addAgent(agent);
+            continue;
+          }
+
           try {
             // Spawn the CLI process for this agent with saved model settings and session ID
             await createAgent(agent.id, agent.workingDirectory, {
@@ -185,7 +196,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
             nextRuntimeMap[agent.id] = runtime;
             agentStore.addAgent(agent);
           } catch (err) {
-            console.error(`Failed to spawn agent ${agent.name}:`, err);
+            if (runtime === "hosted" && isHostedAuthBootError(err)) {
+              console.warn(
+                `[workspace] Hosted auth not ready while restoring ${agent.name}; keeping local UI state and deferring runtime sync.`,
+              );
+            } else {
+              console.error(`Failed to spawn agent ${agent.name}:`, err);
+            }
             // Add agent anyway but mark as error state
             setAgentRuntime(agent.id, runtime);
             nextRuntimeMap[agent.id] = runtime;

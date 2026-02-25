@@ -28,6 +28,12 @@ require_cmd scp
 require_cmd ssh
 require_cmd security
 
+if [[ -z "${VITE_CLERK_PUBLISHABLE_KEY:-}" && -z "${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}" ]]; then
+  echo "Missing Clerk publishable key for frontend build." >&2
+  echo "Set VITE_CLERK_PUBLISHABLE_KEY (or NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) before deploying web assets." >&2
+  exit 1
+fi
+
 echo "=== Checking codesigning identity ==="
 if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; then
   echo "Codesigning identity not found: $SIGNING_IDENTITY" >&2
