@@ -2027,6 +2027,19 @@ function isAllowedHostingProxyPath(pathname) {
   );
 }
 
+function isNonFatalReadGitFailure(rawText) {
+  const text = String(rawText || "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("not a git repository") ||
+    text.includes("exists on disk, but not in 'head'") ||
+    text.includes("does not exist in 'head'") ||
+    text.includes("invalid object name 'head'") ||
+    text.includes("unknown revision or path not in the working tree") ||
+    text.includes("bad object head")
+  );
+}
+
 // Stripe webhook must use raw body (must come before json() for this route)
 app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   if (!stripe) {
@@ -2680,6 +2693,16 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
 
     const contentType = upstreamResponse.headers.get("content-type") || "";
     const text = await upstreamResponse.text();
+
+    // read_git is best-effort for UI diff previews; non-git/empty-history failures
+    // should not surface as hard 500s in hosted UI.
+    if (
+      !upstreamResponse.ok &&
+      suffixPath.startsWith("/api/files/read_git/") &&
+      isNonFatalReadGitFailure(text)
+    ) {
+      return res.status(200).json({ content: "" });
+    }
 
     res.status(upstreamResponse.status);
     if (contentType) {
