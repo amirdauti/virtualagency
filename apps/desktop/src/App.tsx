@@ -312,7 +312,46 @@ function App() {
     import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ||
       import.meta.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
   );
-  if (!isTauri() && hasClerk) {
+  const isBrowserApp = !isTauri();
+
+  // Fail closed: if browser auth is not configured, never fall through to an
+  // unrestricted workspace view.
+  if (isBrowserApp && !hasClerk) {
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#0b0b12",
+          color: "#fff",
+          padding: 24,
+          textAlign: "center",
+        }}
+      >
+        <div style={{ maxWidth: 720 }}>
+          <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 10 }}>
+            Authentication Configuration Required
+          </div>
+          <div style={{ opacity: 0.85, lineHeight: 1.45 }}>
+            This app build is missing Clerk publishable keys. Set
+            {" "}
+            <code>VITE_CLERK_PUBLISHABLE_KEY</code>
+            {" "}
+            (or
+            {" "}
+            <code>NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY</code>
+            {" "}
+            ) and redeploy the frontend.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isBrowserApp) {
     return (
       <AuthBillingGate>
         <AppShell />
