@@ -1,3 +1,14 @@
+## [1.7.0](https://github.com/amirdauti/virtualagency/compare/v1.6.1...v1.7.0) (2026-02-25)
+
+### Features
+
+* **server:** harden hosted auth flow and telegram chat-id security ([f3e77c1](https://github.com/amirdauti/virtualagency/commit/f3e77c102ebc1754983345af22ae319d9d561216))
+
+### Bug Fixes
+
+* **hosting:** fallback to va ssh upgrade before root ssh ([566da11](https://github.com/amirdauti/virtualagency/commit/566da1152989021ee211baa44336b1c6b1767e74))
+* **hosting:** use ssh fallback when in-place rebuild times out ([9f44d4b](https://github.com/amirdauti/virtualagency/commit/9f44d4b862deed41f260230dc06ac41aa6b2ad9d))
+
 ## [1.6.1](https://github.com/amirdauti/virtualagency/compare/v1.6.0...v1.6.1) (2026-02-24)
 
 ### Bug Fixes
