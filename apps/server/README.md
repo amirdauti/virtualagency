@@ -46,3 +46,5 @@ This package expects prebuilt binaries to exist in `dist/` with names:
 - `virtual-agency-server-windows-arm64.exe`
 
 Only binaries that exist at publish time are included in the npm tarball.
+
+Release note: this package may be republished with patch versions to validate hosted auto-rollout behavior.
