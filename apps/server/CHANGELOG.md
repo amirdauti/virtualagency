@@ -1,3 +1,15 @@
+## [1.7.1](https://github.com/amirdauti/virtualagency/compare/v1.7.0...v1.7.1) (2026-02-25)
+
+### Bug Fixes
+
+* **billing:** refresh stale active subscription state from Stripe on /me ([e18afb5](https://github.com/amirdauti/virtualagency/commit/e18afb5c1f84a6b7cf22c26aca00e6318d5d917d))
+* **hosting-proxy:** always degrade read_git upstream errors ([608f4b6](https://github.com/amirdauti/virtualagency/commit/608f4b609036a93d7df8af9d4af6d06ad9d557c0))
+* **hosting-proxy:** return empty read_git content on proxy exceptions ([924cd2a](https://github.com/amirdauti/virtualagency/commit/924cd2a5051f1c2023910b554796b602e77b2841))
+* **hosting-proxy:** suppress non-fatal read_git errors for hosted UI ([62162aa](https://github.com/amirdauti/virtualagency/commit/62162aabbd7bb3dc3669eb01cddc3046a99709f3))
+* **server:** trigger semantic patch release for rollout validation ([2828034](https://github.com/amirdauti/virtualagency/commit/2828034606fcd12f935552910c19fe7fb463a957))
+* **web:** allow hosted-active users through billing gate ([b7a2442](https://github.com/amirdauti/virtualagency/commit/b7a24422cd6eaac77ee4ea05760aa378aec9eb4e))
+* **web:** use direct Vite env access for Clerk/billing runtime config ([99496ac](https://github.com/amirdauti/virtualagency/commit/99496ac53d619d6ce814ea91eeb240f3d2346a20))
+
 ## [1.7.0](https://github.com/amirdauti/virtualagency/compare/v1.6.1...v1.7.0) (2026-02-25)
 
 ### Features
