@@ -882,6 +882,43 @@ function isSubscriptionActive(meta) {
   return periodEnd * 1000 > Date.now();
 }
 
+function shouldRefreshBillingSubscriptionFromStripe(meta) {
+  const status = meta?.subscriptionStatus;
+  if (status !== "active" && status !== "trialing") return false;
+  const periodEnd = meta?.currentPeriodEnd;
+  if (typeof periodEnd !== "number") return false;
+  return periodEnd * 1000 <= Date.now();
+}
+
+async function refreshBillingSubscriptionMetadataIfStale(userId, meta) {
+  if (!stripe) return meta;
+  if (!shouldRefreshBillingSubscriptionFromStripe(meta)) return meta;
+
+  const subscriptionId =
+    typeof meta?.stripeSubscriptionId === "string"
+      ? meta.stripeSubscriptionId.trim()
+      : "";
+  if (!subscriptionId) return meta;
+
+  try {
+    const sub = await stripe.subscriptions.retrieve(subscriptionId);
+    const updates = {
+      subscriptionStatus: sub.status || null,
+      currentPeriodEnd:
+        typeof sub.current_period_end === "number" ? sub.current_period_end : null,
+      cancelAtPeriodEnd: Boolean(sub.cancel_at_period_end),
+    };
+    await updateUserPrivateMetadata(userId, updates);
+    return mergePrivateMetadata(meta, updates);
+  } catch (err) {
+    console.warn(
+      `[billing] failed to refresh subscription metadata for ${userId}:`,
+      err?.message || err,
+    );
+    return meta;
+  }
+}
+
 function isHostedSubscriptionActive(meta) {
   const status = meta?.hostedServerSubscriptionStatus;
   if (status !== "active" && status !== "trialing") return false;
@@ -2147,19 +2184,20 @@ app.get("/api/billing/me", requireAuth, async (req, res) => {
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
   const { meta } = await getUserWithMeta(userId);
+  const effectiveMeta = await refreshBillingSubscriptionMetadataIfStale(userId, meta);
 
   res.json({
     userId,
-    active: isSubscriptionActive(meta),
-    status: meta.subscriptionStatus || null,
-    currentPeriodEnd: meta.currentPeriodEnd || null,
-    cancelAtPeriodEnd: meta.cancelAtPeriodEnd || false,
-    stripeCustomerId: meta.stripeCustomerId || null,
-    stripeSubscriptionId: meta.stripeSubscriptionId || null,
-    hostedServerActive: isHostedSubscriptionActive(meta),
-    hostedServerStatus: meta.hostedServerSubscriptionStatus || null,
-    hostedServerCurrentPeriodEnd: meta.hostedServerCurrentPeriodEnd || null,
-    hostedServerCancelAtPeriodEnd: meta.hostedServerCancelAtPeriodEnd || false,
+    active: isSubscriptionActive(effectiveMeta),
+    status: effectiveMeta.subscriptionStatus || null,
+    currentPeriodEnd: effectiveMeta.currentPeriodEnd || null,
+    cancelAtPeriodEnd: effectiveMeta.cancelAtPeriodEnd || false,
+    stripeCustomerId: effectiveMeta.stripeCustomerId || null,
+    stripeSubscriptionId: effectiveMeta.stripeSubscriptionId || null,
+    hostedServerActive: isHostedSubscriptionActive(effectiveMeta),
+    hostedServerStatus: effectiveMeta.hostedServerSubscriptionStatus || null,
+    hostedServerCurrentPeriodEnd: effectiveMeta.hostedServerCurrentPeriodEnd || null,
+    hostedServerCancelAtPeriodEnd: effectiveMeta.hostedServerCancelAtPeriodEnd || false,
   });
 });
 
