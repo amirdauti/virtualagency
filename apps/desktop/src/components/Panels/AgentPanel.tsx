@@ -108,7 +108,11 @@ export function AgentPanel({
       : DEFAULT_COMPOSER_HEIGHT;
   });
   const composerHeight = baseComposerHeight + composerExtraHeight;
-  const effectiveComposerHeight = isMobile ? Math.max(190, Math.min(320, 190 + composerExtraHeight)) : composerHeight;
+  const mobileBaseComposerHeight = 152;
+  const mobileExtraHeight = draftImageCount > 0 ? 72 : 0;
+  const effectiveComposerHeight = isMobile
+    ? Math.max(mobileBaseComposerHeight, Math.min(260, mobileBaseComposerHeight + mobileExtraHeight))
+    : composerHeight;
 
   useEffect(() => {
     // Keep total height within bounds when attachments appear/disappear.

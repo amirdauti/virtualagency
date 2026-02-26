@@ -119,6 +119,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const [scheduledTaskDescription, setScheduledTaskDescription] = useState<string>(SCHEDULED_TASK_EXAMPLES[0]);
   const [automationIntervalMinutes, setAutomationIntervalMinutes] = useState<number>(60);
   const [runningAutomationId, setRunningAutomationId] = useState<string | null>(null);
+  const [showMobileOptions, setShowMobileOptions] = useState(false);
 
   const automations = agent?.automations ?? [];
 
@@ -645,6 +646,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   }, [agentId, attachedImages, removeDraftImage]);
 
   const canSend = input.trim() || attachedImages.length > 0;
+  const showAdvancedControls = !isMobile || showMobileOptions;
 
   return (
     <div style={{ display: "flex", flex: 1, minHeight: 0, height: "100%", background: "#1a1a1a", borderTop: "1px solid var(--border)" }}>
@@ -662,7 +664,20 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           width: "100%",
         }}
       >
+      {isMobile && (
+        <div style={mobileOptionsRowStyle}>
+          <button
+            onClick={() => setShowMobileOptions((value) => !value)}
+            style={mobileOptionsButtonStyle}
+            aria-label={showMobileOptions ? "Hide chat options" : "Show chat options"}
+          >
+            {showMobileOptions ? "Hide Options" : "Options"}
+          </button>
+        </div>
+      )}
+
       {/* Model and Thinking/Reasoning Controls */}
+      {showAdvancedControls && (
       <div
         style={{
           ...settingsBarStyle,
@@ -791,8 +806,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           </div>
         )}
       </div>
+      )}
 
-      {promptKind === "scheduled" && (
+      {showAdvancedControls && promptKind === "scheduled" && (
         <div
           style={{
             ...automationComposerStyle,
@@ -832,7 +848,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         </div>
       )}
 
-      {automations.length > 0 && (
+      {showAdvancedControls && automations.length > 0 && (
         <div
           style={{
             ...automationListStyle,
@@ -929,7 +945,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         display: "flex",
         alignItems: "flex-end",
         flex: 1,
-        minHeight: isMobile ? 118 : 0,
+        minHeight: isMobile ? 108 : 0,
         background: "#252526",
         border: "1px solid #3c3c3c",
         borderRadius: 8,
@@ -1299,5 +1315,23 @@ const automationDeleteButtonStyle: React.CSSProperties = {
   background: "rgba(239,68,68,0.12)",
   color: "#fca5a5",
   fontSize: 11,
+  cursor: "pointer",
+};
+
+const mobileOptionsRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "flex-start",
+};
+
+const mobileOptionsButtonStyle: React.CSSProperties = {
+  height: 32,
+  padding: "0 10px",
+  borderRadius: 6,
+  border: "1px solid #3c3c3c",
+  background: "#252526",
+  color: "#d1d5db",
+  fontSize: 12,
+  fontWeight: 600,
   cursor: "pointer",
 };
