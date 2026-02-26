@@ -876,9 +876,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           flex: 1,
           minHeight: 0,
           height: "100%",
-          gap: isMobile ? 10 : 12,
+          gap: isMobile ? 6 : 12,
           padding: isMobile
-            ? "10px 12px calc(12px + env(safe-area-inset-bottom, 0px)) 12px"
+            ? "8px 10px 10px 10px"
             : "16px 16px 20px 16px",
           width: "100%",
         }}
@@ -971,7 +971,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         display: "flex",
         alignItems: "flex-end",
         flex: 1,
-        minHeight: isMobile ? 108 : 0,
+        minHeight: isMobile ? 124 : 0,
         background: "#252526",
         border: "1px solid #3c3c3c",
         borderRadius: 8,
@@ -1351,13 +1351,13 @@ const mobileOptionsRowStyle: React.CSSProperties = {
 };
 
 const mobileOptionsButtonStyle: React.CSSProperties = {
-  height: 32,
-  padding: "0 10px",
+  height: 28,
+  padding: "0 8px",
   borderRadius: 6,
   border: "1px solid #3c3c3c",
   background: "#252526",
   color: "#d1d5db",
-  fontSize: 12,
+  fontSize: 11,
   fontWeight: 600,
   cursor: "pointer",
 };

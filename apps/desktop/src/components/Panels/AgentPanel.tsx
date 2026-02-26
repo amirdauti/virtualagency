@@ -108,10 +108,10 @@ export function AgentPanel({
       : DEFAULT_COMPOSER_HEIGHT;
   });
   const composerHeight = baseComposerHeight + composerExtraHeight;
-  const mobileBaseComposerHeight = 152;
-  const mobileExtraHeight = draftImageCount > 0 ? 72 : 0;
+  const mobileBaseComposerHeight = 198;
+  const mobileExtraHeight = draftImageCount > 0 ? 86 : 0;
   const effectiveComposerHeight = isMobile
-    ? Math.max(mobileBaseComposerHeight, Math.min(260, mobileBaseComposerHeight + mobileExtraHeight))
+    ? Math.max(mobileBaseComposerHeight, Math.min(288, mobileBaseComposerHeight + mobileExtraHeight))
     : composerHeight;
 
   useEffect(() => {
