@@ -646,38 +646,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   }, [agentId, attachedImages, removeDraftImage]);
 
   const canSend = input.trim() || attachedImages.length > 0;
-  const showAdvancedControls = !isMobile || showMobileOptions;
-
-  return (
-    <div style={{ display: "flex", flex: 1, minHeight: 0, height: "100%", background: "#1a1a1a", borderTop: "1px solid var(--border)" }}>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          flex: 1,
-          minHeight: 0,
-          height: "100%",
-          gap: isMobile ? 10 : 12,
-          padding: isMobile
-            ? "10px 12px calc(12px + env(safe-area-inset-bottom, 0px)) 12px"
-            : "16px 16px 20px 16px",
-          width: "100%",
-        }}
-      >
-      {isMobile && (
-        <div style={mobileOptionsRowStyle}>
-          <button
-            onClick={() => setShowMobileOptions((value) => !value)}
-            style={mobileOptionsButtonStyle}
-            aria-label={showMobileOptions ? "Hide chat options" : "Show chat options"}
-          >
-            {showMobileOptions ? "Hide Options" : "Options"}
-          </button>
-        </div>
-      )}
-
-      {/* Model and Thinking/Reasoning Controls */}
-      {showAdvancedControls && (
+  const showInlineAdvancedControls = !isMobile;
+  const renderAdvancedControls = () => (
+    <>
       <div
         style={{
           ...settingsBarStyle,
@@ -714,7 +685,6 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           </select>
         </div>
         {isCodexAgent ? (
-          // Codex: Show reasoning effort selector
           <div
             style={{
               ...settingGroupStyle,
@@ -743,7 +713,6 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             </select>
           </div>
         ) : (
-          // Claude: Show thinking toggle
           <div style={{ ...settingGroupStyle, width: isMobile ? "100%" : "auto", height: isMobile ? 38 : 28 }}>
             <label
               style={{
@@ -806,9 +775,8 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           </div>
         )}
       </div>
-      )}
 
-      {showAdvancedControls && promptKind === "scheduled" && (
+      {promptKind === "scheduled" && (
         <div
           style={{
             ...automationComposerStyle,
@@ -848,11 +816,11 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
         </div>
       )}
 
-      {showAdvancedControls && automations.length > 0 && (
+      {automations.length > 0 && (
         <div
           style={{
             ...automationListStyle,
-            maxHeight: isMobile ? 200 : 220,
+            maxHeight: isMobile ? 220 : 220,
           }}
         >
           <div style={automationListHeaderStyle}>Automations</div>
@@ -894,6 +862,64 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <div style={{ display: "flex", flex: 1, minHeight: 0, height: "100%", background: "#1a1a1a", borderTop: "1px solid var(--border)" }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          height: "100%",
+          gap: isMobile ? 10 : 12,
+          padding: isMobile
+            ? "10px 12px calc(12px + env(safe-area-inset-bottom, 0px)) 12px"
+            : "16px 16px 20px 16px",
+          width: "100%",
+        }}
+      >
+      {isMobile && (
+        <div style={mobileOptionsRowStyle}>
+          <button
+            onClick={() => setShowMobileOptions(true)}
+            style={mobileOptionsButtonStyle}
+            aria-label="Show chat options"
+          >
+            Options
+          </button>
+        </div>
+      )}
+
+      {showInlineAdvancedControls && renderAdvancedControls()}
+
+      {isMobile && showMobileOptions && (
+        <div
+          style={mobileOptionsOverlayStyle}
+          onClick={() => setShowMobileOptions(false)}
+        >
+          <div
+            style={mobileOptionsModalStyle}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={mobileOptionsHeaderStyle}>
+              <div style={mobileOptionsTitleStyle}>Chat Options</div>
+              <button
+                onClick={() => setShowMobileOptions(false)}
+                style={mobileOptionsCloseButtonStyle}
+                aria-label="Close chat options"
+              >
+                Done
+              </button>
+            </div>
+            <div style={mobileOptionsBodyStyle}>
+              {renderAdvancedControls()}
+            </div>
+          </div>
         </div>
       )}
 
@@ -1334,4 +1360,64 @@ const mobileOptionsButtonStyle: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 600,
   cursor: "pointer",
+};
+
+const mobileOptionsOverlayStyle: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0, 0, 0, 0.55)",
+  zIndex: 80,
+  display: "flex",
+  alignItems: "flex-end",
+  justifyContent: "center",
+};
+
+const mobileOptionsModalStyle: React.CSSProperties = {
+  width: "100%",
+  maxWidth: 560,
+  maxHeight: "70vh",
+  background: "#1f1f1f",
+  borderTopLeftRadius: 14,
+  borderTopRightRadius: 14,
+  borderTop: "1px solid #3c3c3c",
+  borderLeft: "1px solid #3c3c3c",
+  borderRight: "1px solid #3c3c3c",
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+};
+
+const mobileOptionsHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  padding: "10px 12px",
+  borderBottom: "1px solid #3c3c3c",
+};
+
+const mobileOptionsTitleStyle: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: "#e5e7eb",
+};
+
+const mobileOptionsCloseButtonStyle: React.CSSProperties = {
+  height: 30,
+  padding: "0 10px",
+  borderRadius: 6,
+  border: "1px solid #3c3c3c",
+  background: "#252526",
+  color: "#d1d5db",
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+const mobileOptionsBodyStyle: React.CSSProperties = {
+  padding: "10px 12px calc(12px + env(safe-area-inset-bottom, 0px)) 12px",
+  overflowY: "auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
 };
