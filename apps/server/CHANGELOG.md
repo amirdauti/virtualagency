@@ -1,3 +1,9 @@
+## [1.8.2](https://github.com/amirdauti/virtualagency/compare/v1.8.1...v1.8.2) (2026-02-26)
+
+### Bug Fixes
+
+* **server:** correct Nango proxy headers and GET body handling ([186169e](https://github.com/amirdauti/virtualagency/commit/186169e9b9b5a3fad914f970c9b377fa397205dd))
+
 ## [1.8.1](https://github.com/amirdauti/virtualagency/compare/v1.8.0...v1.8.1) (2026-02-26)
 
 ### Bug Fixes
