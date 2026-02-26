@@ -1,3 +1,14 @@
+## [1.8.1](https://github.com/amirdauti/virtualagency/compare/v1.8.0...v1.8.1) (2026-02-26)
+
+### Bug Fixes
+
+* enforce nginx upload size limit for hosted api deploys ([9dcc63a](https://github.com/amirdauti/virtualagency/commit/9dcc63a20af554fed43b1209484488f2a98e6b7d))
+* **mobile:** improve chat composer visibility and spacing ([fc2ef95](https://github.com/amirdauti/virtualagency/commit/fc2ef950bf5fd53d8836d7e2b3ffbc3a73b912ea))
+* **mobile:** keep chat composer usable by collapsing options ([695a9a6](https://github.com/amirdauti/virtualagency/commit/695a9a6b9a967c465c8bcf5fe7f57ee55589c169))
+* **mobile:** move chat options into modal sheet ([14634e2](https://github.com/amirdauti/virtualagency/commit/14634e222d7fed2ff0c0c2c5dfc49d6326301f5a))
+* route hosted nango agent-tools through control plane ([2c45a10](https://github.com/amirdauti/virtualagency/commit/2c45a10704556501104b0e0ce584d1fc16bfd653))
+* **server:** trigger patch publish for hosted nango fallback ([6aea7ec](https://github.com/amirdauti/virtualagency/commit/6aea7ec031d6a91c5245a54d143d9e2437f64f93))
+
 ## [1.8.0](https://github.com/amirdauti/virtualagency/compare/v1.7.1...v1.8.0) (2026-02-26)
 
 ### Features
