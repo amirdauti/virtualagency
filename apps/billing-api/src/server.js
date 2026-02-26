@@ -489,6 +489,7 @@ async function callHostedNangoProxy({
       if (
         headerName.toLowerCase() === "authorization" ||
         headerName.toLowerCase() === "integration-id" ||
+        headerName.toLowerCase() === "provider-config-key" ||
         headerName.toLowerCase() === "connection-id"
       ) {
         continue;
@@ -496,6 +497,8 @@ async function callHostedNangoProxy({
       extraHeaders[headerName] = String(value ?? "");
     }
   }
+  const canHaveBody = !["GET", "HEAD"].includes(methodLabel);
+  const hasRequestBody = canHaveBody && body !== undefined && body !== null;
 
   const response = await fetchWithTimeout(
     url.toString(),
@@ -503,12 +506,12 @@ async function callHostedNangoProxy({
       method: methodLabel,
       headers: {
         Authorization: `Bearer ${HOSTED_NANGO_SECRET_KEY}`,
-        "Integration-Id": integration,
+        "Provider-Config-Key": integration,
         "Connection-Id": connection,
         ...extraHeaders,
-        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(hasRequestBody ? { "Content-Type": "application/json" } : {}),
       },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      ...(hasRequestBody ? { body: JSON.stringify(body) } : {}),
     },
     HOSTED_RUNTIME_TIMEOUT_MS,
   );

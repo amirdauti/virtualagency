@@ -3158,20 +3158,62 @@ async fn agent_tools_nango_proxy(
     }
 
     if should_use_hosted_nango_fallback(&state) {
+        let mut hosted_payload = serde_json::Map::new();
+        hosted_payload.insert(
+            "target_agent_id".to_string(),
+            serde_json::Value::String(target_agent_id.clone()),
+        );
+        hosted_payload.insert(
+            "integration_id".to_string(),
+            serde_json::Value::String(integration_id.clone()),
+        );
+        hosted_payload.insert(
+            "endpoint".to_string(),
+            serde_json::Value::String(normalized_endpoint.clone()),
+        );
+        if let Some(method) = req
+            .method
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            hosted_payload.insert(
+                "method".to_string(),
+                serde_json::Value::String(method.to_string()),
+            );
+        }
+        if let Some(connection_id) = req
+            .connection_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            hosted_payload.insert(
+                "connection_id".to_string(),
+                serde_json::Value::String(connection_id.to_string()),
+            );
+        }
+        if let Some(query) = req.query.clone() {
+            hosted_payload.insert(
+                "query".to_string(),
+                serde_json::to_value(query).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        if let Some(headers) = req.headers.clone() {
+            hosted_payload.insert(
+                "headers".to_string(),
+                serde_json::to_value(headers).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        if let Some(body) = req.body.clone() {
+            hosted_payload.insert("body".to_string(), body);
+        }
+
         let proxied = proxy_agent_tools_nango_request_to_hosted(
             state.clone(),
             &source_agent_id,
             "nango-proxy",
-            serde_json::json!({
-                "target_agent_id": target_agent_id,
-                "integration_id": integration_id,
-                "endpoint": normalized_endpoint,
-                "method": req.method.clone(),
-                "connection_id": req.connection_id.clone(),
-                "query": req.query.clone(),
-                "headers": req.headers.clone(),
-                "body": req.body.clone(),
-            }),
+            serde_json::Value::Object(hosted_payload),
         )
         .await?;
 
@@ -3285,10 +3327,11 @@ async fn agent_tools_nango_proxy(
 
     let secret_key = nango_secret_key(&state)?;
     let client = reqwest::Client::new();
+    let can_have_body = method != reqwest::Method::GET && method != reqwest::Method::HEAD;
     let mut upstream_req = client
         .request(method.clone(), proxy_url)
         .header("Authorization", format!("Bearer {}", secret_key))
-        .header("Integration-Id", &integration_id)
+        .header("Provider-Config-Key", &integration_id)
         .header("Connection-Id", &connection_id);
 
     if let Some(extra_headers) = &req.headers {
@@ -3299,6 +3342,7 @@ async fn agent_tools_nango_proxy(
             }
             if header_name.eq_ignore_ascii_case("authorization")
                 || header_name.eq_ignore_ascii_case("integration-id")
+                || header_name.eq_ignore_ascii_case("provider-config-key")
                 || header_name.eq_ignore_ascii_case("connection-id")
             {
                 continue;
@@ -3307,8 +3351,10 @@ async fn agent_tools_nango_proxy(
         }
     }
 
-    if let Some(body) = &req.body {
-        upstream_req = upstream_req.json(body);
+    if can_have_body {
+        if let Some(body) = &req.body {
+            upstream_req = upstream_req.json(body);
+        }
     }
 
     let upstream = upstream_req.send().await.map_err(|e| {
