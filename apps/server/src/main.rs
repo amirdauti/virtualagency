@@ -125,6 +125,7 @@ struct AppState {
     agent_tools_token: String,
     hosted_proxy_token: Option<String>,
     public_base_url: Option<String>,
+    hosted_api_base_url: Option<String>,
     nango_secret_key: Option<String>,
     nango_base_url: String,
 }
@@ -502,6 +503,15 @@ async fn main() {
         .ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty());
+    let hosted_api_base_url = std::env::var("VA_HOSTED_API_BASE_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            hosted_proxy_token
+                .as_ref()
+                .map(|_| "https://virtualagency.ai/api/hosting/internal/va".to_string())
+        });
     let nango_secret_key = std::env::var("NANGO_SECRET_KEY")
         .ok()
         .map(|s| s.trim().to_string())
@@ -551,6 +561,7 @@ async fn main() {
         agent_tools_token,
         hosted_proxy_token,
         public_base_url,
+        hosted_api_base_url,
         nango_secret_key,
         nango_base_url,
     });
@@ -1445,7 +1456,7 @@ struct NangoConnectSessionRequest {
     end_user_display_name: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct NangoConnectSessionResponse {
     session_token: String,
     integration_id: String,
@@ -1498,7 +1509,7 @@ struct NangoCreateSessionEndUser {
     display_name: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct NangoConnectionInfo {
     connection_id: String,
     integration_id: String,
@@ -1583,6 +1594,89 @@ fn nango_secret_key(state: &SharedState) -> Result<String, (StatusCode, String)>
             StatusCode::SERVICE_UNAVAILABLE,
             "NANGO_SECRET_KEY is not configured on the server".to_string(),
         ))
+}
+
+fn should_use_hosted_nango_fallback(state: &SharedState) -> bool {
+    state.nango_secret_key.is_none() && state.hosted_proxy_token.is_some()
+}
+
+async fn proxy_agent_tools_nango_request_to_hosted(
+    state: SharedState,
+    source_agent_id: &str,
+    endpoint_suffix: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let hosted_token = state
+        .hosted_proxy_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "hosted nango fallback is unavailable: VA_HOSTED_PROXY_TOKEN is not configured"
+                .to_string(),
+        ))?;
+    let hosted_api_base = state
+        .hosted_api_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "hosted nango fallback is unavailable: VA_HOSTED_API_BASE_URL is not configured"
+                .to_string(),
+        ))?;
+
+    let trimmed_base = hosted_api_base.trim_end_matches('/');
+    let trimmed_suffix = endpoint_suffix.trim_start_matches('/');
+    let url = format!(
+        "{}/api/agent-tools/{}/{}",
+        trimmed_base, source_agent_id, trimmed_suffix
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&url)
+        .header("x-va-hosted-token", hosted_token)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed forwarding hosted Nango request: {}", e),
+            )
+        })?;
+
+    let upstream_status = response.status();
+    let raw_body = response.text().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed reading hosted Nango response: {}", e),
+        )
+    })?;
+
+    let parsed = if raw_body.trim().is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str::<serde_json::Value>(&raw_body)
+            .unwrap_or_else(|_| serde_json::Value::String(raw_body.clone()))
+    };
+
+    if !upstream_status.is_success() {
+        let message = parsed
+            .get("message")
+            .and_then(|v| v.as_str())
+            .or_else(|| parsed.get("error").and_then(|v| v.as_str()))
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| truncate_for_prompt(&raw_body, 500));
+        let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        return Err((status, message));
+    }
+
+    Ok(parsed)
 }
 
 async fn create_nango_connect_session_internal(
@@ -2851,6 +2945,38 @@ async fn agent_tools_nango_connect_session(
         }
     }
 
+    if should_use_hosted_nango_fallback(&state) {
+        let proxied = proxy_agent_tools_nango_request_to_hosted(
+            state.clone(),
+            &source_agent_id,
+            "nango-connect-session",
+            serde_json::json!({
+                "target_agent_id": target_agent_id,
+                "integration_id": req.integration_id,
+            }),
+        )
+        .await?;
+
+        let session_value = proxied.get("session").cloned().ok_or((
+            StatusCode::BAD_GATEWAY,
+            "hosted nango response missing session payload".to_string(),
+        ))?;
+        let session: NangoConnectSessionResponse =
+            serde_json::from_value(session_value).map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("invalid hosted nango session payload: {}", e),
+                )
+            })?;
+
+        return Ok(Json(AgentToolsNangoConnectSessionResponse {
+            ok: true,
+            source_agent_id,
+            target_agent_id,
+            session,
+        }));
+    }
+
     let session = create_nango_connect_session_internal(
         state.clone(),
         &req.integration_id,
@@ -2904,6 +3030,46 @@ async fn agent_tools_nango_connections(
         if !manager.has_agent(&target_agent_id) {
             return Err((StatusCode::NOT_FOUND, "target agent not found".to_string()));
         }
+    }
+
+    if should_use_hosted_nango_fallback(&state) {
+        let proxied = proxy_agent_tools_nango_request_to_hosted(
+            state.clone(),
+            &source_agent_id,
+            "nango-connections",
+            serde_json::json!({
+                "target_agent_id": target_agent_id,
+                "integration_id": integration_filter,
+            }),
+        )
+        .await?;
+
+        let connections_value = proxied.get("connections").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+        let connections: Vec<NangoConnectionInfo> = serde_json::from_value(connections_value).map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("invalid hosted nango connections payload: {}", e),
+            )
+        })?;
+        let total = proxied
+            .get("total")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(connections.len());
+        let response_integration_id = proxied
+            .get("integration_id")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string())
+            .or(integration_filter.clone());
+
+        return Ok(Json(AgentToolsNangoConnectionsResponse {
+            ok: true,
+            source_agent_id,
+            target_agent_id,
+            integration_id: response_integration_id,
+            total,
+            connections,
+        }));
     }
 
     let filtered = list_nango_connections_internal(state.clone())
@@ -2964,6 +3130,22 @@ async fn agent_tools_nango_proxy(
             "integration_id cannot be empty".to_string(),
         ));
     }
+    let endpoint = req.endpoint.trim();
+    if endpoint.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "endpoint cannot be empty".to_string()));
+    }
+    let normalized_endpoint = if endpoint.starts_with('/') {
+        endpoint.to_string()
+    } else {
+        format!("/{}", endpoint)
+    };
+    let method_label = req
+        .method
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("GET")
+        .to_ascii_uppercase();
 
     {
         let manager = state.agent_manager.read().await;
@@ -2975,23 +3157,64 @@ async fn agent_tools_nango_proxy(
         }
     }
 
-    let endpoint = req.endpoint.trim();
-    if endpoint.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "endpoint cannot be empty".to_string()));
-    }
-    let normalized_endpoint = if endpoint.starts_with('/') {
-        endpoint.to_string()
-    } else {
-        format!("/{}", endpoint)
-    };
+    if should_use_hosted_nango_fallback(&state) {
+        let proxied = proxy_agent_tools_nango_request_to_hosted(
+            state.clone(),
+            &source_agent_id,
+            "nango-proxy",
+            serde_json::json!({
+                "target_agent_id": target_agent_id,
+                "integration_id": integration_id,
+                "endpoint": normalized_endpoint,
+                "method": req.method.clone(),
+                "connection_id": req.connection_id.clone(),
+                "query": req.query.clone(),
+                "headers": req.headers.clone(),
+                "body": req.body.clone(),
+            }),
+        )
+        .await?;
 
-    let method_label = req
-        .method
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or("GET")
-        .to_ascii_uppercase();
+        let connection_id = proxied
+            .get("connection_id")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string())
+            .ok_or((
+                StatusCode::BAD_GATEWAY,
+                "hosted nango proxy response missing connection_id".to_string(),
+            ))?;
+        let response_method = proxied
+            .get("method")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string())
+            .unwrap_or(method_label.clone());
+        let response_endpoint = proxied
+            .get("endpoint")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| normalized_endpoint.clone());
+        let upstream_status = proxied
+            .get("upstream_status")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u16)
+            .unwrap_or(200);
+        let data = proxied
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        return Ok(Json(AgentToolsNangoProxyResponse {
+            ok: true,
+            source_agent_id,
+            target_agent_id,
+            integration_id,
+            connection_id,
+            method: response_method,
+            endpoint: response_endpoint,
+            upstream_status,
+            data,
+        }));
+    }
     let method = reqwest::Method::from_bytes(method_label.as_bytes()).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,

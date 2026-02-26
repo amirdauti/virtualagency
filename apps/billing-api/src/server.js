@@ -1522,6 +1522,21 @@ function buildHostedRuntimeNangoEnvCleanupScript(pythonPrefix = "") {
   ];
 }
 
+function buildHostedRuntimeHostedApiEnvSyncScript(pythonPrefix = "") {
+  const hostedApiBaseUrl = `${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/va`;
+  return [
+    `${pythonPrefix}python3 - <<'PY' || true`,
+    "from pathlib import Path",
+    `target = ${JSON.stringify(hostedApiBaseUrl)}`,
+    "path = Path('/etc/virtualagency/server.env')",
+    "lines = path.read_text().splitlines() if path.exists() else []",
+    "lines = [ln for ln in lines if not ln.startswith('VA_HOSTED_API_BASE_URL=')]",
+    "lines.append(f'VA_HOSTED_API_BASE_URL={target}')",
+    "path.write_text('\\n'.join(lines) + '\\n')",
+    "PY",
+  ];
+}
+
 async function runHostedRootSshUpgrade(server, packageSpecifier) {
   if (!HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED) {
     throw new Error("hosted_root_ssh_upgrade_disabled");
@@ -1547,6 +1562,7 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
     "  npm install -g \"$PKG\"",
     "fi",
   ];
+  remoteCommandLines.push(...buildHostedRuntimeHostedApiEnvSyncScript());
   remoteCommandLines.push(...buildHostedRuntimeNangoEnvCleanupScript());
   remoteCommandLines.push("systemctl restart virtualagency-server");
   const remoteCommand = remoteCommandLines.join("\n");
@@ -1615,6 +1631,7 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
       "  sudo -n npm install -g \"$PKG\"",
       "fi",
     ];
+    remoteCommandLines.push(...buildHostedRuntimeHostedApiEnvSyncScript("sudo -n "));
     remoteCommandLines.push(...buildHostedRuntimeNangoEnvCleanupScript("sudo -n "));
     remoteCommandLines.push(
       "( sudo -n systemctl restart virtualagency-server || pkill -f '^virtual-agency-server( |$)' || true )",
@@ -1805,6 +1822,7 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
     "  fi",
     "fi",
     'if [ "$STATUS" -eq 0 ] && [ "$CAN_SUDO" -eq 1 ]; then',
+    ...buildHostedRuntimeHostedApiEnvSyncScript("sudo -n "),
     ...buildHostedRuntimeNangoEnvCleanupScript("sudo -n "),
     "fi",
     `echo '${marker}:'\"$STATUS\"`,
@@ -2268,6 +2286,7 @@ WORKSPACE_DIR=/opt/virtualagency/workspace
 VIRTUAL_AGENCY_PORT=${HOSTED_SERVER_PORT}
 VIRTUAL_AGENCY_BIND_HOST=0.0.0.0
 VA_HOSTED_PROXY_TOKEN=${proxyToken}
+VA_HOSTED_API_BASE_URL=${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/va
 ENV_EOF
 
 cat > /etc/systemd/system/virtualagency-server.service << 'SERVICE_EOF'
@@ -2571,6 +2590,39 @@ function ensureHostedEnabled() {
 function hasValidControlPlaneToken(req) {
   if (!HOSTED_CONTROL_PLANE_TOKEN) return true;
   return req.headers["x-control-plane-token"] === HOSTED_CONTROL_PLANE_TOKEN;
+}
+
+function findHostedUserIdByProxyToken(proxyToken) {
+  const token = String(proxyToken || "").trim();
+  if (!token) return null;
+
+  for (const [userId, userState] of Object.entries(hostedState.users || {})) {
+    const candidate = String(userState?.server?.proxyToken || "").trim();
+    const status = String(userState?.server?.status || "").trim().toLowerCase();
+    if (!candidate || status === "deleted") continue;
+    if (candidate === token) return userId;
+  }
+
+  return null;
+}
+
+async function resolveHostedUserIdFromProxyToken(req) {
+  const token = String(req.headers["x-va-hosted-token"] || "").trim();
+  if (!token) {
+    const err = new Error("missing_hosted_proxy_token");
+    err.statusCode = 401;
+    throw err;
+  }
+
+  await ensureHostedStateLoaded();
+  const userId = findHostedUserIdByProxyToken(token);
+  if (!userId) {
+    const err = new Error("invalid_hosted_proxy_token");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  return userId;
 }
 
 const HOSTING_PROXY_ALLOWED_PATH_PREFIXES = [
@@ -3188,6 +3240,31 @@ app.post("/api/hosting/internal/bootstrap-report", async (req, res) => {
 
   await queueHostedStatePersist();
   res.json({ ok: true });
+});
+
+app.use("/api/hosting/internal/va", async (req, res) => {
+  let userId;
+  try {
+    userId = await resolveHostedUserIdFromProxyToken(req);
+  } catch (err) {
+    const statusCode = Number(err?.statusCode) || 401;
+    return res.status(statusCode).json({ error: err?.message || "unauthorized" });
+  }
+
+  const suffix = req.originalUrl.replace(/^\/api\/hosting\/internal\/va/, "") || "/";
+  const suffixPath = suffix.split("?")[0] || "/";
+
+  try {
+    if (await maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath)) {
+      return;
+    }
+    return res.status(404).json({ error: "hosting_internal_route_not_found" });
+  } catch (err) {
+    console.error("[hosting] internal proxy error:", err);
+    return res
+      .status(Number(err?.statusCode) || 500)
+      .json({ error: "hosting_internal_proxy_failed", message: err?.message || String(err) });
+  }
 });
 
 app.use("/api/hosting/va", requireAuth, async (req, res) => {
