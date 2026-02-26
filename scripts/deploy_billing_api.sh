@@ -98,6 +98,14 @@ public_proxy_port = os.environ["PUBLIC_PROXY_PORT"]
 text = nginx_site.read_text()
 insertions = []
 
+if "client_max_body_size" not in text:
+    if "index index.html;" in text:
+        text = text.replace("index index.html;", "index index.html;\n    client_max_body_size 50m;", 1)
+    else:
+        marker = "server_name virtualagency.ai;\n"
+        if marker in text:
+            text = text.replace(marker, marker + "    client_max_body_size 50m;\n", 1)
+
 if "location /api/billing/" not in text:
     insertions.append(
         f"""
