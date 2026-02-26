@@ -137,6 +137,7 @@ function AppShell() {
   const [isCameraInteracting, setIsCameraInteracting] = useState(false);
   const cameraIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedAgent = useAgentStore((state) => state.selectedAgent);
+  const isWorkspacePanelVisible = useAgentStore((state) => state.isWorkspacePanelVisible);
   const updateAgent = useAgentStore((state) => state.updateAgent);
   const openFiles = useFileExplorerStore((state) => state.openFiles);
   const showEditor = openFiles.length > 0;
@@ -244,7 +245,7 @@ function AppShell() {
                 />
               </Canvas>
               <Toolbar />
-              {!selectedAgent && <WorkspacePanel />}
+              {!selectedAgent && isWorkspacePanelVisible && <WorkspacePanel />}
             </>
           )}
         </div>

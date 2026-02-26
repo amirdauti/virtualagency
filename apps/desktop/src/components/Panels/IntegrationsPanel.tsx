@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Save, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 import {
   createNangoConnectSession,
+  deleteNangoConnection,
+  listNangoConnections,
   loadIntegrationsMarkdown,
+  type NangoConnectionInfo,
   saveIntegrationsMarkdown,
 } from "../../lib/api";
 
@@ -25,6 +28,7 @@ interface StoredIntegration {
 
 const START_MARKER = "<!-- VIRTUAL_AGENCY_INTEGRATIONS_JSON_START -->";
 const END_MARKER = "<!-- VIRTUAL_AGENCY_INTEGRATIONS_JSON_END -->";
+const GOOGLE_INTEGRATION_ID = "google";
 
 function createEntry(): IntegrationEntry {
   return {
@@ -105,7 +109,11 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [connectingGoogle, setConnectingGoogle] = useState(false);
+  const [loadingConnections, setLoadingConnections] = useState(false);
+  const [connections, setConnections] = useState<NangoConnectionInfo[]>([]);
+  const [removingConnectionId, setRemovingConnectionId] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("");
+  const [connectionsStatus, setConnectionsStatus] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -184,7 +192,7 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
     setStatus("");
 
     try {
-      const session = await createNangoConnectSession(agentId, "google");
+      const session = await createNangoConnectSession(agentId, GOOGLE_INTEGRATION_ID);
       if (!session.session_token) {
         throw new Error("Missing Nango connect session token");
       }
@@ -197,6 +205,7 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
         throw new Error("Popup blocked by browser");
       }
       setStatus("Opened Nango connect flow for Google in a new window.");
+      setConnectionsStatus("After completing OAuth, click Refresh in oAuth Connections.");
     } catch (err) {
       console.error("[IntegrationsPanel] Failed to start Nango Google connect:", err);
       const message = err instanceof Error ? err.message : "Unknown error";
@@ -205,6 +214,63 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
       setConnectingGoogle(false);
     }
   }, [agentId]);
+
+  const loadGoogleConnections = useCallback(
+    async (options?: { silent?: boolean }) => {
+      setLoadingConnections(true);
+      if (!options?.silent) setConnectionsStatus("");
+
+      try {
+        const response = await listNangoConnections(agentId, GOOGLE_INTEGRATION_ID);
+        setConnections(response.connections || []);
+        if (!options?.silent) {
+          setConnectionsStatus(
+            response.total > 0
+              ? `Loaded ${response.total} oAuth connection${response.total === 1 ? "" : "s"}.`
+              : "No oAuth connections found for this agent yet.",
+          );
+        }
+      } catch (err) {
+        console.error("[IntegrationsPanel] Failed to list Nango connections:", err);
+        const message = err instanceof Error ? err.message : "Unknown error";
+        setConnectionsStatus(`Failed to load oAuth connections: ${message}`);
+      } finally {
+        setLoadingConnections(false);
+      }
+    },
+    [agentId],
+  );
+
+  const handleRemoveConnection = useCallback(
+    async (connectionId: string) => {
+      const confirmed = window.confirm(
+        `Disconnect oAuth connection '${connectionId}' for this agent?`,
+      );
+      if (!confirmed) return;
+
+      setRemovingConnectionId(connectionId);
+      setConnectionsStatus("");
+
+      try {
+        await deleteNangoConnection(agentId, connectionId, GOOGLE_INTEGRATION_ID);
+        setConnections((prev) =>
+          prev.filter((connection) => connection.connection_id !== connectionId),
+        );
+        setConnectionsStatus(`Disconnected connection '${connectionId}'.`);
+      } catch (err) {
+        console.error("[IntegrationsPanel] Failed to delete Nango connection:", err);
+        const message = err instanceof Error ? err.message : "Unknown error";
+        setConnectionsStatus(`Failed to disconnect connection: ${message}`);
+      } finally {
+        setRemovingConnectionId(null);
+      }
+    },
+    [agentId],
+  );
+
+  useEffect(() => {
+    void loadGoogleConnections({ silent: true });
+  }, [loadGoogleConnections]);
 
   if (loading) {
     return (
@@ -256,6 +322,70 @@ export function IntegrationsPanel({ agentId }: IntegrationsPanelProps) {
       </div>
 
       {status && <div className="text-[12px] text-[#7dd3fc]">{status}</div>}
+
+      <div className="border border-[#3c3c3c] rounded-md p-3 bg-[#252526] flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[12px] text-[#cccccc] font-medium">oAuth Connections</div>
+          <button
+            onClick={() => void loadGoogleConnections()}
+            disabled={loadingConnections}
+            className={`px-2 py-1 rounded text-[11px] border flex items-center gap-1 ${
+              loadingConnections
+                ? "text-[#777] border-[#3c3c3c] bg-[#252526] cursor-not-allowed"
+                : "text-[#9cdcfe] border-[#36546b] bg-[#1f2b33] hover:bg-[#263741]"
+            }`}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingConnections ? "animate-spin" : ""}`} />
+            {loadingConnections ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+
+        {connectionsStatus && (
+          <div className="text-[11px] text-[#7dd3fc]">{connectionsStatus}</div>
+        )}
+
+        {connections.length === 0 ? (
+          <div className="text-[12px] text-[#969696]">
+            No oAuth connections yet for this agent.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {connections.map((connection) => (
+              <div
+                key={connection.connection_id}
+                className="border border-[#3c3c3c] rounded p-2 bg-[#1e1e1e] flex items-start justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <div className="text-[12px] text-[#e5e7eb] font-mono break-all">
+                    {connection.connection_id}
+                  </div>
+                  <div className="text-[11px] text-[#9ca3af]">
+                    Status: {connection.status || "unknown"}
+                  </div>
+                  {connection.updated_at && (
+                    <div className="text-[11px] text-[#6b7280]">
+                      Updated: {connection.updated_at}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => void handleRemoveConnection(connection.connection_id)}
+                  disabled={removingConnectionId === connection.connection_id}
+                  className={`p-1 rounded ${
+                    removingConnectionId === connection.connection_id
+                      ? "text-[#666] cursor-not-allowed"
+                      : "text-[#fca5a5] hover:text-[#f87171] hover:bg-[#3f1f1f]"
+                  }`}
+                  aria-label={`Disconnect ${connection.connection_id}`}
+                  title="Disconnect connection"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="flex flex-col gap-3">
         {entries.map((entry) => (

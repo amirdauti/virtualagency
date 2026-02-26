@@ -4,16 +4,20 @@ import type { Agent } from "@virtual-agency/shared";
 interface AgentState {
   agents: Agent[];
   selectedAgent: Agent | null;
+  isWorkspacePanelVisible: boolean;
   addAgent: (agent: Agent) => void;
   removeAgent: (id: string) => void;
   selectAgent: (id: string | null) => void;
   updateAgent: (id: string, updates: Partial<Agent>) => void;
+  toggleWorkspacePanel: () => void;
+  setWorkspacePanelVisible: (visible: boolean) => void;
   clearAllAgents: () => void;
 }
 
 export const useAgentStore = create<AgentState>((set) => ({
   agents: [],
   selectedAgent: null,
+  isWorkspacePanelVisible: true,
 
   addAgent: (agent) =>
     set((state) => {
@@ -58,6 +62,16 @@ export const useAgentStore = create<AgentState>((set) => ({
         return { ...state.selectedAgent, ...updates };
       })(),
     })),
+
+  toggleWorkspacePanel: () =>
+    set((state) => ({
+      isWorkspacePanelVisible: !state.isWorkspacePanelVisible,
+    })),
+
+  setWorkspacePanelVisible: (visible) =>
+    set({
+      isWorkspacePanelVisible: visible,
+    }),
 
   clearAllAgents: () =>
     set({

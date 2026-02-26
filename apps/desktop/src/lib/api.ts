@@ -1006,6 +1006,27 @@ export interface NangoConnectSessionResponse {
   connect_link?: string | null;
 }
 
+export interface NangoConnectionInfo {
+  connection_id: string;
+  integration_id: string;
+  end_user_id?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface NangoConnectionsResponse {
+  end_user_id: string;
+  integration_id?: string | null;
+  total: number;
+  connections: NangoConnectionInfo[];
+}
+
+export interface NangoDeleteConnectionResponse {
+  ok: boolean;
+  connection_id: string;
+}
+
 export async function createNangoConnectSession(
   id: string,
   integrationId: string
@@ -1024,6 +1045,52 @@ export async function createNangoConnectSession(
         integration_id: integrationId,
         end_user_id: id,
         end_user_display_name: id,
+      }),
+    }
+  );
+}
+
+export async function listNangoConnections(
+  id: string,
+  integrationId?: string
+): Promise<NangoConnectionsResponse> {
+  if (isTauri()) {
+    throw new Error("Nango connection management is only available in browser/server mode.");
+  }
+
+  const runtime = getAgentRuntime(id);
+  return fetchApiForRuntime<NangoConnectionsResponse>(
+    runtime,
+    "/api/integrations/nango/connections",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        end_user_id: id,
+        integration_id: integrationId,
+      }),
+    }
+  );
+}
+
+export async function deleteNangoConnection(
+  id: string,
+  connectionId: string,
+  integrationId?: string
+): Promise<NangoDeleteConnectionResponse> {
+  if (isTauri()) {
+    throw new Error("Nango connection management is only available in browser/server mode.");
+  }
+
+  const runtime = getAgentRuntime(id);
+  return fetchApiForRuntime<NangoDeleteConnectionResponse>(
+    runtime,
+    "/api/integrations/nango/connections",
+    {
+      method: "DELETE",
+      body: JSON.stringify({
+        end_user_id: id,
+        connection_id: connectionId,
+        integration_id: integrationId,
       }),
     }
   );

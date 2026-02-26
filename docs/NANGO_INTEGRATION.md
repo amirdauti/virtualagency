@@ -32,6 +32,8 @@ HOSTED_NANGO_BASE_URL=https://api.nango.dev
 Endpoint used by the Integrations panel:
 
 - `POST /api/integrations/nango/connect-session`
+- `POST /api/integrations/nango/connections`
+- `DELETE /api/integrations/nango/connections`
 
 Request body:
 
@@ -57,6 +59,25 @@ Response body:
 ```
 
 The Integrations panel opens Nango Connect in a new window for the user to complete OAuth.
+
+List connections request:
+
+```json
+{
+  "end_user_id": "agent-id",
+  "integration_id": "google"
+}
+```
+
+Delete connection request:
+
+```json
+{
+  "end_user_id": "agent-id",
+  "integration_id": "google",
+  "connection_id": "nango_connection_id"
+}
+```
 
 In hosted mode, billing proxy forwards the authenticated user id (`x-va-user-id`) and the server namespaces the Nango `end_user.id` as:
 

@@ -404,6 +404,34 @@ async function listHostedNangoConnections() {
   return parseHostedNangoConnections(json);
 }
 
+async function deleteHostedNangoConnection(connectionId) {
+  const id = String(connectionId || "").trim();
+  if (!id) {
+    const err = new Error("connection_id is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const encodedId = encodeURIComponent(id);
+  const candidatePaths = [`/connections/${encodedId}`, `/connection/${encodedId}`];
+  let lastError = null;
+
+  for (let index = 0; index < candidatePaths.length; index += 1) {
+    const path = candidatePaths[index];
+    try {
+      await fetchHostedNangoJson(path, { method: "DELETE" });
+      return;
+    } catch (err) {
+      lastError = err;
+      if (Number(err?.statusCode) !== 404 || index === candidatePaths.length - 1) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError || new Error("failed deleting Nango connection");
+}
+
 function normalizeProxyMethod(method) {
   const label = String(method || "GET").trim().toUpperCase() || "GET";
   if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(label)) {
@@ -518,6 +546,90 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
       res
         .status(Number(err?.statusCode) || 500)
         .json({ error: "nango_connect_session_failed", message: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  if (suffixPath === "/api/integrations/nango/connections" && method === "POST") {
+    const endUserId = String(req.body?.end_user_id || "").trim();
+    if (!endUserId) {
+      res.status(400).json({
+        error: "nango_connections_failed",
+        message: "end_user_id is required",
+      });
+      return true;
+    }
+
+    const integrationFilter = String(req.body?.integration_id || "").trim();
+    try {
+      const all = await listHostedNangoConnections();
+      const filtered = all.filter((connection) =>
+        isHostedNangoConnectionMatch(
+          connection,
+          userId,
+          endUserId,
+          integrationFilter || null,
+        ),
+      );
+      res.json({
+        end_user_id: endUserId,
+        integration_id: integrationFilter || null,
+        total: filtered.length,
+        connections: filtered,
+      });
+    } catch (err) {
+      res
+        .status(Number(err?.statusCode) || 500)
+        .json({ error: "nango_connections_failed", message: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  if (suffixPath === "/api/integrations/nango/connections" && method === "DELETE") {
+    const endUserId = String(req.body?.end_user_id || "").trim();
+    const connectionId = String(req.body?.connection_id || "").trim();
+    if (!endUserId) {
+      res.status(400).json({
+        error: "nango_delete_connection_failed",
+        message: "end_user_id is required",
+      });
+      return true;
+    }
+    if (!connectionId) {
+      res.status(400).json({
+        error: "nango_delete_connection_failed",
+        message: "connection_id is required",
+      });
+      return true;
+    }
+
+    const integrationFilter = String(req.body?.integration_id || "").trim();
+    try {
+      const all = await listHostedNangoConnections();
+      const target = all.find(
+        (connection) => String(connection?.connection_id || "").trim() === connectionId,
+      );
+      if (!target) {
+        res.status(404).json({
+          error: "nango_delete_connection_failed",
+          message: `connection_id '${connectionId}' was not found`,
+        });
+        return true;
+      }
+      if (!isHostedNangoConnectionMatch(target, userId, endUserId, integrationFilter || null)) {
+        res.status(403).json({
+          error: "nango_delete_connection_failed",
+          message: `connection_id '${connectionId}' is not accessible for end_user_id '${endUserId}'`,
+        });
+        return true;
+      }
+
+      await deleteHostedNangoConnection(connectionId);
+      res.json({ ok: true, connection_id: connectionId });
+    } catch (err) {
+      res
+        .status(Number(err?.statusCode) || 500)
+        .json({ error: "nango_delete_connection_failed", message: err?.message || String(err) });
     }
     return true;
   }

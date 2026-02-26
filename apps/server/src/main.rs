@@ -755,6 +755,10 @@ async fn main() {
             "/api/integrations/nango/connect-session",
             post(create_nango_connect_session),
         )
+        .route(
+            "/api/integrations/nango/connections",
+            post(list_nango_connections).delete(delete_nango_connection),
+        )
         .route("/api/ports/find", get(find_available_port))
         .route("/api/public/:slug", any(proxy_public_app_root))
         .route("/api/public/:slug/", any(proxy_public_app_root))
@@ -1450,6 +1454,35 @@ struct NangoConnectSessionResponse {
     connect_link: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct NangoConnectionsRequest {
+    end_user_id: String,
+    #[serde(default)]
+    integration_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NangoConnectionsResponse {
+    end_user_id: String,
+    integration_id: Option<String>,
+    total: usize,
+    connections: Vec<NangoConnectionInfo>,
+}
+
+#[derive(Deserialize)]
+struct NangoDeleteConnectionRequest {
+    end_user_id: String,
+    connection_id: String,
+    #[serde(default)]
+    integration_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NangoDeleteConnectionResponse {
+    ok: bool,
+    connection_id: String,
+}
+
 #[derive(Serialize)]
 struct NangoCreateSessionPayload {
     end_user: NangoCreateSessionEndUser,
@@ -1798,6 +1831,116 @@ fn resolve_connection_for_agent(
         .map(|c| c.connection_id.clone())
 }
 
+fn nango_scoped_end_user_candidates(
+    headers: &HeaderMap,
+    end_user_id: &str,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let end_user_id = end_user_id.trim();
+    if end_user_id.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "end_user_id is required".to_string()));
+    }
+
+    let scoped = headers
+        .get("x-va-user-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|user_id| format!("{}:{}", user_id, end_user_id));
+
+    let mut values = Vec::new();
+    if let Some(scoped_id) = scoped {
+        values.push(scoped_id);
+    }
+    values.push(end_user_id.to_string());
+    values.sort();
+    values.dedup();
+    Ok(values)
+}
+
+fn nango_connection_matches_end_user(
+    connection: &NangoConnectionInfo,
+    allowed_end_user_ids: &[String],
+) -> bool {
+    connection
+        .end_user_id
+        .as_deref()
+        .map(str::trim)
+        .map(|end_user_id| {
+            allowed_end_user_ids
+                .iter()
+                .any(|allowed| end_user_id == allowed.as_str())
+        })
+        .unwrap_or(false)
+}
+
+async fn delete_nango_connection_internal(
+    state: SharedState,
+    connection_id: &str,
+) -> Result<(), (StatusCode, String)> {
+    let secret_key = nango_secret_key(&state)?;
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "connection_id is required".to_string(),
+        ));
+    }
+
+    let client = reqwest::Client::new();
+    let endpoints = [
+        format!("{}/connections/{}", state.nango_base_url, connection_id),
+        format!("{}/connection/{}", state.nango_base_url, connection_id),
+    ];
+    let mut last_failure: Option<(u16, String)> = None;
+
+    for (idx, endpoint) in endpoints.iter().enumerate() {
+        let upstream = client
+            .delete(endpoint)
+            .header("Authorization", format!("Bearer {}", secret_key))
+            .send()
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed deleting Nango connection: {}", e),
+                )
+            })?;
+
+        let upstream_status = upstream.status();
+        let upstream_body = upstream.text().await.map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed reading Nango delete response: {}", e),
+            )
+        })?;
+
+        if upstream_status.is_success() {
+            return Ok(());
+        }
+
+        last_failure = Some((upstream_status.as_u16(), upstream_body.clone()));
+        if idx == endpoints.len() - 1 || upstream_status != reqwest::StatusCode::NOT_FOUND {
+            break;
+        }
+    }
+
+    if let Some((status, body)) = last_failure {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "Nango delete connection failed with status {}: {}",
+                status,
+                truncate_for_prompt(&body, 500)
+            ),
+        ));
+    }
+
+    Err((
+        StatusCode::BAD_GATEWAY,
+        "Nango delete connection failed".to_string(),
+    ))
+}
+
 async fn create_nango_connect_session(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -1830,6 +1973,166 @@ async fn create_nango_connect_session(
     })?;
 
     Ok(Json(result))
+}
+
+async fn list_nango_connections(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(req): Json<NangoConnectionsRequest>,
+) -> Result<Json<NangoConnectionsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let end_user_id = req.end_user_id.trim().to_string();
+    let allowed_end_user_ids =
+        nango_scoped_end_user_candidates(&headers, &end_user_id).map_err(|(status, message)| {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": "nango_connections_failed",
+                    "message": message,
+                })),
+            )
+        })?;
+
+    let integration_filter = req
+        .integration_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
+
+    let filtered = list_nango_connections_internal(state.clone())
+        .await
+        .map_err(|(status, message)| {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": "nango_connections_failed",
+                    "message": message,
+                })),
+            )
+        })?
+        .into_iter()
+        .filter(|connection| {
+            let matches_end_user =
+                nango_connection_matches_end_user(connection, &allowed_end_user_ids);
+            if !matches_end_user {
+                return false;
+            }
+            if let Some(integration_id) = integration_filter.as_deref() {
+                return connection.integration_id.eq_ignore_ascii_case(integration_id);
+            }
+            true
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(NangoConnectionsResponse {
+        end_user_id,
+        integration_id: integration_filter,
+        total: filtered.len(),
+        connections: filtered,
+    }))
+}
+
+async fn delete_nango_connection(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(req): Json<NangoDeleteConnectionRequest>,
+) -> Result<Json<NangoDeleteConnectionResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let end_user_id = req.end_user_id.trim().to_string();
+    let connection_id = req.connection_id.trim().to_string();
+    if connection_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "nango_delete_connection_failed",
+                "message": "connection_id is required",
+            })),
+        ));
+    }
+
+    let allowed_end_user_ids =
+        nango_scoped_end_user_candidates(&headers, &end_user_id).map_err(|(status, message)| {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": "nango_delete_connection_failed",
+                    "message": message,
+                })),
+            )
+        })?;
+
+    let integration_filter = req
+        .integration_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
+
+    let connections = list_nango_connections_internal(state.clone())
+        .await
+        .map_err(|(status, message)| {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": "nango_delete_connection_failed",
+                    "message": message,
+                })),
+            )
+        })?;
+
+    let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.connection_id == connection_id)
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "nango_delete_connection_failed",
+                "message": format!("connection_id '{}' was not found", connection_id),
+            })),
+        ));
+    };
+
+    if !nango_connection_matches_end_user(connection, &allowed_end_user_ids) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "nango_delete_connection_failed",
+                "message": format!("connection_id '{}' does not belong to end_user_id '{}'", connection_id, end_user_id),
+            })),
+        ));
+    }
+
+    if let Some(integration_id) = integration_filter.as_deref() {
+        if !connection.integration_id.eq_ignore_ascii_case(integration_id) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "nango_delete_connection_failed",
+                    "message": format!(
+                        "connection_id '{}' does not match integration_id '{}'",
+                        connection_id, integration_id
+                    ),
+                })),
+            ));
+        }
+    }
+
+    delete_nango_connection_internal(state.clone(), &connection_id)
+        .await
+        .map_err(|(status, message)| {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": "nango_delete_connection_failed",
+                    "message": message,
+                })),
+            )
+        })?;
+
+    Ok(Json(NangoDeleteConnectionResponse {
+        ok: true,
+        connection_id,
+    }))
 }
 
 async fn send_message(

@@ -10,6 +10,8 @@ export function Toolbar() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const agents = useAgentStore((state) => state.agents);
+  const isWorkspacePanelVisible = useAgentStore((state) => state.isWorkspacePanelVisible);
+  const toggleWorkspacePanel = useAgentStore((state) => state.toggleWorkspacePanel);
 
   return (
     <>
@@ -51,11 +53,32 @@ export function Toolbar() {
           </button>
 
           {/* Agent count badge */}
-          <div
+          <button
+            onClick={toggleWorkspacePanel}
             style={{
               ...agentCountStyle,
               padding: isMobile ? "7px 10px" : "8px 14px",
               fontSize: isMobile ? 12 : 13,
+              background: isWorkspacePanelVisible
+                ? "rgba(30, 30, 46, 0.95)"
+                : "rgba(20, 20, 30, 0.8)",
+              borderColor: isWorkspacePanelVisible
+                ? "rgba(60, 60, 60, 0.8)"
+                : "rgba(59, 130, 246, 0.45)",
+            }}
+            title={isWorkspacePanelVisible ? "Hide agents list" : "Show agents list"}
+            aria-label={isWorkspacePanelVisible ? "Hide agents list" : "Show agents list"}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(55, 55, 70, 0.95)";
+              e.currentTarget.style.borderColor = "rgba(75, 85, 99, 0.8)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = isWorkspacePanelVisible
+                ? "rgba(30, 30, 46, 0.95)"
+                : "rgba(20, 20, 30, 0.8)";
+              e.currentTarget.style.borderColor = isWorkspacePanelVisible
+                ? "rgba(60, 60, 60, 0.8)"
+                : "rgba(59, 130, 246, 0.45)";
             }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -65,7 +88,7 @@ export function Toolbar() {
               <path d="M16 3.13a4 4 0 0 1 0 7.75" />
             </svg>
             <span>{agents.length}</span>
-          </div>
+          </button>
         </div>
 
         {/* Right side: Add Agent button */}
@@ -146,6 +169,8 @@ const agentCountStyle: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 500,
   boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+  cursor: "pointer",
+  transition: "all 0.2s ease",
 };
 
 const addButtonStyle: React.CSSProperties = {
