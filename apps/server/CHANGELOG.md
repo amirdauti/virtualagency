@@ -1,3 +1,16 @@
+## [1.8.0](https://github.com/amirdauti/virtualagency/compare/v1.7.1...v1.8.0) (2026-02-26)
+
+### Features
+
+* add oauth connection management and agent list toggle ([a57f17c](https://github.com/amirdauti/virtualagency/commit/a57f17c28fa97088e7f37153c2b836d84d65ab97))
+* **platform:** improve mobile UX and hosted nango integration flow ([e003650](https://github.com/amirdauti/virtualagency/commit/e0036504b0d3c2ffd32f56da6af8c08b6a1a817a))
+
+### Bug Fixes
+
+* **auth:** fail closed when clerk publishable key is missing ([323551a](https://github.com/amirdauti/virtualagency/commit/323551a424189ccaf00b6e2d9e289c8c9fa8b1b3))
+* **billing-api:** make hosted rollout shell scripts newline-safe ([bf9a8b3](https://github.com/amirdauti/virtualagency/commit/bf9a8b36a1d1d661f5fa06e4ad36a7fb5ee3c2c1))
+* **server:** improve Nango/Google control-plane hints for agents ([6a7f815](https://github.com/amirdauti/virtualagency/commit/6a7f8159ac9459c4fed7ef31c9ec26363ebf6652))
+
 ## [1.7.1](https://github.com/amirdauti/virtualagency/compare/v1.7.0...v1.7.1) (2026-02-25)
 
 ### Bug Fixes
