@@ -1124,6 +1124,7 @@ export async function listAgents(options: RuntimeQueryOptions = {}): Promise<str
 export async function updateAgentSettings(
   id: string,
   options: {
+    name?: string;
     model?: string;
     thinkingEnabled?: boolean;
     reasoningEffort?: ReasoningEffort;
@@ -1143,6 +1144,7 @@ export async function updateAgentSettings(
     await fetchApiForRuntime<void>(runtime, `/api/agents/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({
+        name: options.name,
         model: options.model,
         thinking_enabled: options.thinkingEnabled,
         reasoning_effort: options.reasoningEffort,
@@ -1466,6 +1468,8 @@ export interface HostedServerStateResponse {
   hostedSubscriptionActive: boolean;
   hostedSubscriptionStatus: string | null;
   hostedSubscriptionPeriodEnd: number | null;
+  hostedSubscriptionPlan?: "cloud_25" | "cloud_50" | "cloud_75" | null;
+  hostedSubscriptionPriceId?: string | null;
 }
 
 export async function getHostedServerState(): Promise<HostedServerStateResponse> {
@@ -1477,13 +1481,15 @@ export async function getHostedServerState(): Promise<HostedServerStateResponse>
   });
 }
 
-export async function createHostedCheckoutSession(): Promise<{ url: string }> {
+export async function createHostedCheckoutSession(
+  plan: "cloud_25" | "cloud_50" | "cloud_75" = "cloud_25",
+): Promise<{ url: string }> {
   if (isTauri()) {
     throw new Error("Hosted checkout is browser-only.");
   }
   return fetchHostedApi<{ url: string }>("/api/hosting/create-checkout-session", {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ plan }),
   });
 }
 

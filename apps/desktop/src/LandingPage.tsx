@@ -329,6 +329,47 @@ function StepCard({ step, title, description, children }: { step: string; title:
   );
 }
 
+function PricingCard({
+  name,
+  price,
+  subtitle,
+  bullets,
+  highlight = false,
+}: {
+  name: string;
+  price: string;
+  subtitle: string;
+  bullets: string[];
+  highlight?: boolean;
+}) {
+  const ref = useReveal<HTMLDivElement>();
+  return (
+    <div
+      ref={ref}
+      className={`reveal rounded-2xl border p-6 transition-all duration-500 ${
+        highlight
+          ? "border-[var(--cyan)]/35 bg-gradient-to-br from-[var(--cyan)]/10 to-white/[0.04] shadow-[0_0_40px_rgba(0,240,255,0.08)]"
+          : "border-white/10 bg-gradient-to-br from-white/6 to-white/2"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-4">
+        <h3 className="text-lg font-semibold text-white">{name}</h3>
+        {highlight && <Pill cyan>Most popular</Pill>}
+      </div>
+      <div className="mt-4 text-3xl font-bold text-white">{price}</div>
+      <div className="mt-2 text-sm text-white/55">{subtitle}</div>
+      <ul className="mt-5 space-y-2.5 text-sm text-white/80">
+        {bullets.map((item) => (
+          <li key={item} className="flex gap-2.5">
+            <span className="mt-1.5 h-1.5 w-1.5 flex-none rounded-full bg-[var(--cyan)]/80" />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /* ─── Floating Decorative Elements ─── */
 
 function FloatingShapes() {
@@ -439,6 +480,7 @@ export function LandingPage() {
   const faqs: FAQ[] = useMemo(
     () => [
       { q: "Is Virtual Agency \"local-first\"?", a: "Yes. The web UI connects to a small local server running on your machine (127.0.0.1). That server spawns terminals and agent CLIs and keeps workspace actions on-device." },
+      { q: "How does pricing work?", a: "You can start on Local Only at $10/month, then move to Cloud + Local tiers at $25, $50, or $75/month with increasing server capacity (vCPU and RAM)." },
       { q: "Which models do you support?", a: "Virtual Agency can run agents via supported CLIs (Codex and Claude). You pick the backend per agent and see their status and activity in real time." },
       { q: "Can I run multiple agents at once?", a: "That\u2019s the core workflow. Each agent gets its own working directory, chat, terminal sessions, and file edits \u2014 like a small team." },
       { q: "Is this a replacement for my IDE?", a: "No \u2014 it\u2019s a command center. You can inspect file changes, open and edit files, and run terminals, but it\u2019s designed around managing agent work rather than replacing VS Code." },
@@ -476,9 +518,9 @@ export function LandingPage() {
             </span>
           </a>
           <nav className="hidden items-center gap-8 text-sm text-white/60 md:flex">
-            {["features", "roblox", "how", "showcase", "faq"].map((id) => (
+            {["features", "pricing", "roblox", "how", "showcase", "faq"].map((id) => (
               <a key={id} className="relative transition-colors hover:text-[var(--cyan)] after:absolute after:bottom-[-4px] after:left-0 after:h-[1px] after:w-0 after:bg-[var(--cyan)] after:transition-all hover:after:w-full" href={`#${id}`}>
-                {id === "how" ? "How it works" : id === "roblox" ? "Roblox Agent" : id.charAt(0).toUpperCase() + id.slice(1)}
+                {id === "how" ? "How it works" : id === "roblox" ? "Roblox Agent" : id === "pricing" ? "Pricing" : id.charAt(0).toUpperCase() + id.slice(1)}
               </a>
             ))}
           </nav>
@@ -812,6 +854,69 @@ export function LandingPage() {
                 <Pill>Agent status</Pill>
               </div>
             </StepCard>
+          </div>
+        </section>
+
+        <BeamDivider />
+
+        {/* ═══════════ PRICING ═══════════ */}
+        <section id="pricing" className="relative mx-auto max-w-7xl px-5 py-20 sm:px-8 sm:py-28">
+          <div className="mx-auto max-w-3xl text-center">
+            <SectionEyebrow text="Pricing" />
+            <h2 className="mt-5 text-balance text-3xl font-bold tracking-tight text-white md:text-5xl">
+              Pick the plan that fits your runtime
+            </h2>
+            <p className="mt-4 text-base text-white/50 md:text-lg">
+              Start local, then add managed cloud capacity when you need always-on agents.
+            </p>
+          </div>
+
+          <div className="mt-14 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+            <PricingCard
+              name="Local Only"
+              price="$10/mo"
+              subtitle="Everything runs on your machine."
+              bullets={[
+                "Local server + web app access",
+                "Local terminals, chat, file diffs",
+                "No managed cloud server included",
+              ]}
+            />
+            <PricingCard
+              name="Cloud + Local Starter"
+              price="$25/mo"
+              subtitle="Includes managed cloud capacity."
+              bullets={[
+                "Cloud Agents + Local Agents",
+                "2 vCPU • 2GB RAM",
+                "Best for lighter workloads",
+              ]}
+              highlight
+            />
+            <PricingCard
+              name="Cloud + Local Pro"
+              price="$50/mo"
+              subtitle="More cloud capacity for heavier tasks."
+              bullets={[
+                "Cloud Agents + Local Agents",
+                "3 vCPU • 4GB RAM",
+                "Better for sustained multi-agent runs",
+              ]}
+            />
+            <PricingCard
+              name="Cloud + Local Max"
+              price="$75/mo"
+              subtitle="Highest managed cloud capacity."
+              bullets={[
+                "Cloud Agents + Local Agents",
+                "4 vCPU • 8GB RAM",
+                "For demanding, always-on workloads",
+              ]}
+            />
+          </div>
+
+          <div className="mt-10 text-center text-xs text-white/35">
+            Existing users on higher legacy cloud capacity keep their current allocation.
           </div>
         </section>
 

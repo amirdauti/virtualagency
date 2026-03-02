@@ -1271,6 +1271,7 @@ async fn kill_agent(
 
 #[derive(Deserialize)]
 struct UpdateAgentRequest {
+    name: Option<String>,
     model: Option<String>,
     thinking_enabled: Option<bool>,
     reasoning_effort: Option<String>,
@@ -1283,14 +1284,15 @@ async fn update_agent_settings(
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     tracing::info!(
-        "[update_agent_settings] Updating agent {} - model: {:?}, thinking: {:?}, reasoning_effort: {:?}, mcp_servers: {:?}",
-        id, req.model, req.thinking_enabled, req.reasoning_effort, req.mcp_servers
+        "[update_agent_settings] Updating agent {} - name: {:?}, model: {:?}, thinking: {:?}, reasoning_effort: {:?}, mcp_servers: {:?}",
+        id, req.name, req.model, req.thinking_enabled, req.reasoning_effort, req.mcp_servers
     );
 
     let mut manager = state.agent_manager.write().await;
 
     match manager.update_agent_settings(
         &id,
+        req.name,
         req.model,
         req.thinking_enabled,
         req.reasoning_effort,

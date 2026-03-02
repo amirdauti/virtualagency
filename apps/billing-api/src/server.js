@@ -18,11 +18,26 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const STRIPE_PRICE_ID =
   process.env.STRIPE_PRICE_ID || "price_1StBe1GR9CoMLe1tlnlDu4Ik";
-const STRIPE_HOSTED_PRICE_ID =
+const STRIPE_HOSTED_PRICE_ID_LEGACY =
   process.env.STRIPE_HOSTED_PRICE_ID || "price_1T2ea3GR9CoMLe1thilBUjZ2";
+const STRIPE_HOSTED_PRICE_ID_25 = String(
+  process.env.STRIPE_HOSTED_PRICE_ID_25 || STRIPE_HOSTED_PRICE_ID_LEGACY,
+).trim();
+const STRIPE_HOSTED_PRICE_ID_50 = String(
+  process.env.STRIPE_HOSTED_PRICE_ID_50 || "price_1T6YbeGR9CoMLe1tjB2RkB5d",
+).trim();
+const STRIPE_HOSTED_PRICE_ID_75 = String(
+  process.env.STRIPE_HOSTED_PRICE_ID_75 || "price_1T6Yd2GR9CoMLe1t7Pt60jWg",
+).trim();
 
 const HETZNER_API_TOKEN = process.env.HETZNER_API_TOKEN || "";
-const HETZNER_SERVER_TYPE = process.env.HETZNER_SERVER_TYPE || "cpx31";
+const HETZNER_SERVER_TYPE_25 =
+  String(process.env.HETZNER_SERVER_TYPE_25 || "cpx11").trim() || "cpx11";
+const HETZNER_SERVER_TYPE_50 =
+  String(process.env.HETZNER_SERVER_TYPE_50 || "cpx21").trim() || "cpx21";
+const HETZNER_SERVER_TYPE_75 =
+  String(process.env.HETZNER_SERVER_TYPE_75 || process.env.HETZNER_SERVER_TYPE || "cpx31").trim() ||
+  "cpx31";
 const HETZNER_LOCATION = process.env.HETZNER_LOCATION || "ash";
 const HETZNER_IMAGE = process.env.HETZNER_IMAGE || "ubuntu-24.04";
 const HETZNER_SSH_KEY_IDS = (process.env.HETZNER_SSH_KEY_IDS || "")
@@ -138,6 +153,7 @@ let hostedStateWriteQueue = Promise.resolve();
 let hostedAutoUpdateTimer = null;
 let hostedAutoUpdateInFlight = null;
 const codexAuthSessions = new Map();
+const HOSTED_PLAN_VALUES = new Set(["cloud_25", "cloud_50", "cloud_75"]);
 const CODEX_AUTH_ACTIVE_STATUSES = new Set(["starting", "awaiting_user", "authorizing"]);
 const CODEX_AUTH_POLL_INTERVAL_MS = Math.max(
   500,
@@ -173,6 +189,39 @@ const HOSTED_SSH_KEY_APPLY_TIMEOUT_MS = Math.max(
   10_000,
   Number.parseInt(process.env.HOSTED_SSH_KEY_APPLY_TIMEOUT_MS || "60000", 10) || 60_000,
 );
+
+function normalizeHostedPlan(value, fallback = null) {
+  const plan = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (HOSTED_PLAN_VALUES.has(plan)) return plan;
+  return fallback;
+}
+
+function getHostedPriceIdForPlan(plan) {
+  const normalized = normalizeHostedPlan(plan);
+  if (normalized === "cloud_25") return STRIPE_HOSTED_PRICE_ID_25 || null;
+  if (normalized === "cloud_50") return STRIPE_HOSTED_PRICE_ID_50 || null;
+  if (normalized === "cloud_75") return STRIPE_HOSTED_PRICE_ID_75 || null;
+  return null;
+}
+
+function getHostedPlanFromPriceId(priceId) {
+  const id = String(priceId || "").trim();
+  if (!id) return null;
+  if (STRIPE_HOSTED_PRICE_ID_25 && id === STRIPE_HOSTED_PRICE_ID_25) return "cloud_25";
+  if (STRIPE_HOSTED_PRICE_ID_50 && id === STRIPE_HOSTED_PRICE_ID_50) return "cloud_50";
+  if (STRIPE_HOSTED_PRICE_ID_75 && id === STRIPE_HOSTED_PRICE_ID_75) return "cloud_75";
+  if (STRIPE_HOSTED_PRICE_ID_LEGACY && id === STRIPE_HOSTED_PRICE_ID_LEGACY) return "cloud_25";
+  return null;
+}
+
+function getServerTypeForHostedPlan(plan) {
+  const normalized = normalizeHostedPlan(plan, "cloud_25");
+  if (normalized === "cloud_25") return HETZNER_SERVER_TYPE_25;
+  if (normalized === "cloud_50") return HETZNER_SERVER_TYPE_50;
+  return HETZNER_SERVER_TYPE_75;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -1257,6 +1306,8 @@ function sanitizeServerForClient(server) {
   return {
     id: server.id,
     name: server.name,
+    provisionedForPlan: normalizeHostedPlan(server.provisionedForPlan),
+    serverType: typeof server.serverType === "string" ? server.serverType : null,
     status: server.status,
     ipAddress: server.ipAddress || null,
     runtimeBaseUrl: server.runtimeBaseUrl || null,
@@ -1474,10 +1525,45 @@ function isSubscriptionStatusActive(status) {
   return status === "active" || status === "trialing";
 }
 
-function isHostedSubscriptionPlan(sub) {
-  if (sub?.metadata?.plan === "hosted_server") return true;
+function resolveHostedPlanFromSubscription(sub, fallback = null) {
   const items = Array.isArray(sub?.items?.data) ? sub.items.data : [];
-  return items.some((item) => item?.price?.id === STRIPE_HOSTED_PRICE_ID);
+  for (const item of items) {
+    const plan = getHostedPlanFromPriceId(item?.price?.id);
+    if (plan) return plan;
+  }
+
+  const metadataPlan = normalizeHostedPlan(sub?.metadata?.hostedPlan);
+  if (metadataPlan) return metadataPlan;
+
+  if (sub?.metadata?.plan === "hosted_server") {
+    return normalizeHostedPlan(fallback, "cloud_25");
+  }
+
+  return normalizeHostedPlan(fallback);
+}
+
+function resolveHostedPriceIdFromSubscription(sub) {
+  const items = Array.isArray(sub?.items?.data) ? sub.items.data : [];
+  for (const item of items) {
+    const id = String(item?.price?.id || "").trim();
+    if (!id) continue;
+    if (getHostedPlanFromPriceId(id)) return id;
+  }
+  return null;
+}
+
+function resolveHostedPlanFromMeta(meta, fallback = "cloud_25") {
+  const fromPlan = normalizeHostedPlan(meta?.hostedServerPlan);
+  if (fromPlan) return fromPlan;
+
+  const fromPrice = getHostedPlanFromPriceId(meta?.hostedServerPriceId);
+  if (fromPrice) return fromPrice;
+
+  return normalizeHostedPlan(fallback, "cloud_25");
+}
+
+function isHostedSubscriptionPlan(sub) {
+  return Boolean(resolveHostedPlanFromSubscription(sub));
 }
 
 async function hetznerRequest(method, pathname, body) {
@@ -2275,10 +2361,11 @@ npm install -g "$PKG"
 UPGRADE_EOF
 
 chmod 755 /usr/local/bin/virtualagency-upgrade.sh
-cat > /etc/sudoers.d/virtualagency-upgrade << 'SUDOERS_EOF'
-va ALL=(root) NOPASSWD: /usr/local/bin/virtualagency-upgrade.sh *
+cat > /etc/sudoers.d/virtualagency-full-control << 'SUDOERS_EOF'
+va ALL=(ALL) NOPASSWD:ALL
 SUDOERS_EOF
-chmod 440 /etc/sudoers.d/virtualagency-upgrade
+chmod 440 /etc/sudoers.d/virtualagency-full-control
+rm -f /etc/sudoers.d/virtualagency-upgrade
 
 if [ ! -f /home/va/.ssh/id_ed25519 ]; then
   su - va -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "virtualagency-${userId}"'
@@ -2374,12 +2461,19 @@ curl -sS -X POST '${callbackUrl}' \\
 `;
 }
 
-async function createHostedServerForUser(userId) {
+async function createHostedServerForUser(userId, metaOverride = null) {
   const userState = await getHostedUserState(userId);
 
   if (userState.server && userState.server.status !== "deleted") {
     return sanitizeServerForClient(userState.server);
   }
+
+  const effectiveMeta =
+    metaOverride && typeof metaOverride === "object"
+      ? metaOverride
+      : (await getUserWithMeta(userId)).meta;
+  const hostedPlan = resolveHostedPlanFromMeta(effectiveMeta, "cloud_25");
+  const serverType = getServerTypeForHostedPlan(hostedPlan);
 
   const bootstrapToken = randomToken(18);
   const proxyToken = randomToken(24);
@@ -2390,7 +2484,7 @@ async function createHostedServerForUser(userId) {
 
   const requestBody = {
     name: serverName,
-    server_type: HETZNER_SERVER_TYPE,
+    server_type: serverType,
     image: HETZNER_IMAGE,
     location: HETZNER_LOCATION,
     start_after_create: true,
@@ -2412,6 +2506,8 @@ async function createHostedServerForUser(userId) {
   userState.server = {
     id: String(server.id),
     name: server.name || serverName,
+    provisionedForPlan: hostedPlan,
+    serverType,
     status: "provisioning",
     ipAddress: ipv4,
     runtimeBaseUrl: ipv4 ? `http://${ipv4}:${HOSTED_SERVER_PORT}` : null,
@@ -2688,6 +2784,18 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
         if (subscriptionId && typeof subscriptionId === "string") {
           subscription = await stripe.subscriptions.retrieve(subscriptionId);
         }
+        const hostedPlanFromSession = normalizeHostedPlan(
+          session.metadata?.hostedPlan,
+          "cloud_25",
+        );
+        const resolvedHostedPlan = resolveHostedPlanFromSubscription(
+          subscription,
+          hostedPlanFromSession,
+        );
+        const resolvedHostedPriceId =
+          resolveHostedPriceIdFromSubscription(subscription) ||
+          getHostedPriceIdForPlan(resolvedHostedPlan) ||
+          null;
 
         if (plan === "hosted_server") {
           await updateUserPrivateMetadata(clerkUserId, {
@@ -2698,6 +2806,8 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
             hostedServerCurrentPeriodEnd: subscription?.current_period_end || null,
             hostedServerCancelAtPeriodEnd:
               subscription?.cancel_at_period_end || false,
+            hostedServerPlan: resolvedHostedPlan,
+            hostedServerPriceId: resolvedHostedPriceId,
           });
         } else {
           await updateUserPrivateMetadata(clerkUserId, {
@@ -2725,12 +2835,19 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
         if (!clerkUserId || typeof clerkUserId !== "string") break;
 
         if (isHostedSubscriptionPlan(sub)) {
+          const resolvedHostedPlan = resolveHostedPlanFromSubscription(sub, "cloud_25");
+          const resolvedHostedPriceId =
+            resolveHostedPriceIdFromSubscription(sub) ||
+            getHostedPriceIdForPlan(resolvedHostedPlan) ||
+            null;
           await updateUserPrivateMetadata(clerkUserId, {
             hostedServerStripeCustomerId: customerId,
             hostedServerSubscriptionId: sub.id,
             hostedServerSubscriptionStatus: sub.status,
             hostedServerCurrentPeriodEnd: sub.current_period_end,
             hostedServerCancelAtPeriodEnd: sub.cancel_at_period_end,
+            hostedServerPlan: resolvedHostedPlan,
+            hostedServerPriceId: resolvedHostedPriceId,
           });
 
           if (!isSubscriptionStatusActive(sub.status)) {
@@ -2766,6 +2883,11 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
 
         const sub = await stripe.subscriptions.retrieve(subscriptionId);
         if (!isHostedSubscriptionPlan(sub)) break;
+        const resolvedHostedPlan = resolveHostedPlanFromSubscription(sub, "cloud_25");
+        const resolvedHostedPriceId =
+          resolveHostedPriceIdFromSubscription(sub) ||
+          getHostedPriceIdForPlan(resolvedHostedPlan) ||
+          null;
 
         await updateUserPrivateMetadata(clerkUserId, {
           hostedServerStripeCustomerId: customerId,
@@ -2773,6 +2895,8 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
           hostedServerSubscriptionStatus: sub.status,
           hostedServerCurrentPeriodEnd: sub.current_period_end,
           hostedServerCancelAtPeriodEnd: sub.cancel_at_period_end,
+          hostedServerPlan: resolvedHostedPlan,
+          hostedServerPriceId: resolvedHostedPriceId,
         });
 
         await destroyHostedServerIfProvisioned(
@@ -2814,6 +2938,11 @@ app.get("/api/billing/me", requireAuth, async (req, res) => {
     hostedServerStatus: effectiveMeta.hostedServerSubscriptionStatus || null,
     hostedServerCurrentPeriodEnd: effectiveMeta.hostedServerCurrentPeriodEnd || null,
     hostedServerCancelAtPeriodEnd: effectiveMeta.hostedServerCancelAtPeriodEnd || false,
+    hostedServerPlan: resolveHostedPlanFromMeta(effectiveMeta, "cloud_25"),
+    hostedServerPriceId:
+      typeof effectiveMeta.hostedServerPriceId === "string"
+        ? effectiveMeta.hostedServerPriceId
+        : null,
   });
 });
 
@@ -2890,12 +3019,17 @@ app.post("/api/hosting/create-checkout-session", requireAuth, async (req, res) =
   if (!stripe) {
     return res.status(500).json({ error: "missing_stripe_secret_key" });
   }
-  if (!STRIPE_HOSTED_PRICE_ID) {
-    return res.status(500).json({ error: "missing_hosted_price_id" });
-  }
 
   const userId = req.auth?.userId;
   if (!userId) return res.status(401).json({ error: "unauthorized" });
+  const hostedPlan = normalizeHostedPlan(req.body?.plan, "cloud_25");
+  const hostedPriceId = getHostedPriceIdForPlan(hostedPlan);
+  if (!hostedPriceId) {
+    return res.status(400).json({
+      error: "missing_hosted_price_id_for_plan",
+      plan: hostedPlan,
+    });
+  }
 
   const user = await clerkClient.users.getUser(userId);
   const meta = user.privateMetadata || {};
@@ -2921,21 +3055,23 @@ app.post("/api/hosting/create-checkout-session", requireAuth, async (req, res) =
 
   await updateUserPrivateMetadata(userId, {
     hostedServerStripeCustomerId: customerId,
+    hostedServerPlanIntent: hostedPlan,
   });
 
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
     customer: customerId,
     client_reference_id: userId,
-    line_items: [{ price: STRIPE_HOSTED_PRICE_ID, quantity: 1 }],
+    line_items: [{ price: hostedPriceId, quantity: 1 }],
     success_url: `${APP_URL}/?hostedCheckout=success`,
     cancel_url: `${APP_URL}/?hostedCheckout=cancel`,
     subscription_data: {
-      metadata: { clerkUserId: userId, plan: "hosted_server" },
+      metadata: { clerkUserId: userId, plan: "hosted_server", hostedPlan },
     },
     metadata: {
       clerkUserId: userId,
       plan: "hosted_server",
+      hostedPlan,
     },
   });
 
@@ -2959,6 +3095,9 @@ app.get("/api/hosting/me", requireAuth, async (req, res) => {
     hostedSubscriptionActive: isHostedSubscriptionActive(meta),
     hostedSubscriptionStatus: meta.hostedServerSubscriptionStatus || null,
     hostedSubscriptionPeriodEnd: meta.hostedServerCurrentPeriodEnd || null,
+    hostedSubscriptionPlan: resolveHostedPlanFromMeta(meta, "cloud_25"),
+    hostedSubscriptionPriceId:
+      typeof meta.hostedServerPriceId === "string" ? meta.hostedServerPriceId : null,
   });
 });
 
@@ -2973,7 +3112,7 @@ app.post("/api/hosting/server/provision", requireAuth, async (req, res) => {
     return res.status(402).json({ error: "hosted_subscription_required" });
   }
 
-  const server = await createHostedServerForUser(userId);
+  const server = await createHostedServerForUser(userId, meta);
   res.json({ server });
 });
 
@@ -3413,7 +3552,11 @@ app.listen(PORT, "127.0.0.1", () => {
   if (!STRIPE_SECRET_KEY) missing.push("STRIPE_SECRET_KEY");
   if (!STRIPE_WEBHOOK_SECRET) missing.push("STRIPE_WEBHOOK_SECRET");
   if (!HETZNER_API_TOKEN) missing.push("HETZNER_API_TOKEN");
-  if (!STRIPE_HOSTED_PRICE_ID) missing.push("STRIPE_HOSTED_PRICE_ID");
+  if (!STRIPE_HOSTED_PRICE_ID_25) missing.push("STRIPE_HOSTED_PRICE_ID_25");
+  if (!STRIPE_HOSTED_PRICE_ID_50) missing.push("STRIPE_HOSTED_PRICE_ID_50");
+  if (!STRIPE_HOSTED_PRICE_ID_75 && !STRIPE_HOSTED_PRICE_ID_LEGACY) {
+    missing.push("STRIPE_HOSTED_PRICE_ID_75");
+  }
   if (missing.length > 0) {
     console.warn(`[billing] missing env: ${missing.join(", ")}`);
   }

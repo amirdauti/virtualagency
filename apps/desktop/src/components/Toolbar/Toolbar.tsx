@@ -2,13 +2,17 @@ import { useState } from "react";
 import { useAgentStore } from "../../stores/agentStore";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { SettingsPanel } from "../Settings/SettingsPanel";
+import { CloudAgentsPanel } from "../Settings/CloudAgentsPanel";
 import { AccountControls } from "../Auth/AccountControls";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { isTauri } from "../../lib/api";
 
 export function Toolbar() {
   const isMobile = useIsMobile(900);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
+  const showCloudButton = !isTauri();
   const agents = useAgentStore((state) => state.agents);
   const isWorkspacePanelVisible = useAgentStore((state) => state.isWorkspacePanelVisible);
   const toggleWorkspacePanel = useAgentStore((state) => state.toggleWorkspacePanel);
@@ -91,32 +95,58 @@ export function Toolbar() {
           </button>
         </div>
 
-        {/* Right side: Add Agent button */}
-        <button
-          onClick={() => setDialogOpen(true)}
-          style={{
-            ...addButtonStyle,
-            padding: isMobile ? "7px 10px" : "8px 14px",
-            fontSize: isMobile ? 12 : 13,
-            minHeight: isMobile ? 36 : undefined,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)";
-            e.currentTarget.style.transform = "translateY(-1px)";
-            e.currentTarget.style.boxShadow = "0 6px 20px rgba(59, 130, 246, 0.4)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)";
-            e.currentTarget.style.transform = "translateY(0)";
-            e.currentTarget.style.boxShadow = "0 4px 14px rgba(59, 130, 246, 0.3)";
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          <span>Add Agent</span>
-        </button>
+        {/* Right side: Cloud + Add Agent */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {showCloudButton && (
+            <button
+              onClick={() => setCloudOpen(true)}
+              style={{
+                ...cloudButtonStyle,
+                padding: isMobile ? "7px 10px" : "8px 14px",
+                fontSize: isMobile ? 12 : 13,
+                minHeight: isMobile ? 36 : undefined,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "linear-gradient(135deg, #6d28d9 0%, #7c3aed 100%)";
+                e.currentTarget.style.transform = "translateY(-1px)";
+                e.currentTarget.style.boxShadow = "0 6px 20px rgba(124, 58, 237, 0.35)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%)";
+                e.currentTarget.style.transform = "translateY(0)";
+                e.currentTarget.style.boxShadow = "0 4px 14px rgba(124, 58, 237, 0.28)";
+              }}
+            >
+              <span>Cloud Agents</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => setDialogOpen(true)}
+            style={{
+              ...addButtonStyle,
+              padding: isMobile ? "7px 10px" : "8px 14px",
+              fontSize: isMobile ? 12 : 13,
+              minHeight: isMobile ? 36 : undefined,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)";
+              e.currentTarget.style.transform = "translateY(-1px)";
+              e.currentTarget.style.boxShadow = "0 6px 20px rgba(59, 130, 246, 0.4)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)";
+              e.currentTarget.style.transform = "translateY(0)";
+              e.currentTarget.style.boxShadow = "0 4px 14px rgba(59, 130, 246, 0.3)";
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <span>Add Agent</span>
+          </button>
+        </div>
 
         <AccountControls />
       </div>
@@ -127,6 +157,9 @@ export function Toolbar() {
       />
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {showCloudButton && (
+        <CloudAgentsPanel isOpen={cloudOpen} onClose={() => setCloudOpen(false)} />
+      )}
     </>
   );
 }
@@ -187,4 +220,20 @@ const addButtonStyle: React.CSSProperties = {
   fontWeight: 600,
   transition: "all 0.2s ease",
   boxShadow: "0 4px 14px rgba(59, 130, 246, 0.3)",
+};
+
+const cloudButtonStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "8px 14px",
+  background: "linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%)",
+  border: "none",
+  borderRadius: 10,
+  color: "white",
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 600,
+  transition: "all 0.2s ease",
+  boxShadow: "0 4px 14px rgba(124, 58, 237, 0.28)",
 };

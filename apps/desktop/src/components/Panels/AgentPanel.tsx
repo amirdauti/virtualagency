@@ -20,6 +20,7 @@ import { ChatPanel } from "./ChatPanel";
 import { ChatHistory } from "./ChatHistory";
 import { FileTree } from "../FileExplorer/FileTree";
 import { EditAvatarDialog } from "./EditAvatarDialog";
+import { EditAgentDialog } from "./EditAgentDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
 import { TelegramPanel } from "./TelegramPanel";
 import { killAgent } from "../../lib/api";
@@ -90,6 +91,7 @@ export function AgentPanel({
   });
   const [isDragging, setIsDragging] = useState(false);
   const [showEditAvatar, setShowEditAvatar] = useState(false);
+  const [showEditAgent, setShowEditAgent] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showScrollIndicator, setShowScrollIndicator] = useState(false);
 
@@ -459,10 +461,10 @@ export function AgentPanel({
                 {agent.name}
               </span>
               <button
-                onClick={() => setShowEditAvatar(true)}
+                onClick={() => setShowEditAgent(true)}
                 className="p-1.5 rounded text-[#969696] hover:text-[#007fd4] hover:bg-[#094771] transition-all duration-200 group"
-                title="Edit avatar"
-                aria-label="Edit agent avatar"
+                title="Edit agent details"
+                aria-label="Edit agent details"
               >
                 <Pencil className="w-3.5 h-3.5" />
               </button>
@@ -544,6 +546,16 @@ export function AgentPanel({
                   className="absolute right-0 top-full mt-1 bg-[#3c3c3c] border border-[#454545] rounded-md shadow-xl z-50 py-1"
                   style={{ width: isMobile ? 220 : 192 }}
                 >
+                  <button
+                    onClick={() => {
+                      setShowMenu(false);
+                      setShowEditAgent(true);
+                    }}
+                    className="w-full px-3 py-1.5 text-left text-[13px] text-[#cccccc] hover:bg-[#094771] hover:text-white flex items-center gap-2"
+                  >
+                    <Pencil className="w-4 h-4" />
+                    Edit Details
+                  </button>
                   <button
                     onClick={() => {
                       setShowMenu(false);
@@ -779,6 +791,13 @@ export function AgentPanel({
         onClose={() => setShowEditAvatar(false)}
         agentId={agent.id}
         currentAvatarId={agent.avatarId || "default"}
+      />
+      <EditAgentDialog
+        isOpen={showEditAgent}
+        onClose={() => setShowEditAgent(false)}
+        agentId={agent.id}
+        currentName={agent.name}
+        currentMcpServers={agent.mcpServers}
       />
     </div>
   );

@@ -1293,11 +1293,15 @@ impl AgentProcess {
 
     pub fn update_settings(
         &mut self,
+        name: Option<String>,
         model: Option<String>,
         thinking_enabled: Option<bool>,
         reasoning_effort: Option<String>,
         mcp_servers: Option<Vec<String>>,
     ) {
+        if let Some(n) = name {
+            self.name = n;
+        }
         if let Some(m) = model {
             self.model = m;
         }
@@ -1580,13 +1584,14 @@ impl AgentManager {
     pub fn update_agent_settings(
         &mut self,
         id: &str,
+        name: Option<String>,
         model: Option<String>,
         thinking_enabled: Option<bool>,
         reasoning_effort: Option<String>,
         mcp_servers: Option<Vec<String>>,
     ) -> Result<(), String> {
         if let Some(agent) = self.agents.get_mut(id) {
-            agent.update_settings(model, thinking_enabled, reasoning_effort, mcp_servers);
+            agent.update_settings(name, model, thinking_enabled, reasoning_effort, mcp_servers);
             Ok(())
         } else {
             Err(format!("Agent not found: {}", id))
