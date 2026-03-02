@@ -1,3 +1,9 @@
+## [1.9.0](https://github.com/amirdauti/virtualagency/compare/v1.8.2...v1.9.0) (2026-03-02)
+
+### Features
+
+* add tiered cloud plans and dedicated cloud management UX ([dd88743](https://github.com/amirdauti/virtualagency/commit/dd88743006bae820089e7d67f7a9e2b7db30ca11))
+
 ## [1.8.2](https://github.com/amirdauti/virtualagency/compare/v1.8.1...v1.8.2) (2026-02-26)
 
 ### Bug Fixes
