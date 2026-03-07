@@ -1,3 +1,9 @@
+## [1.10.0](https://github.com/amirdauti/virtualagency/compare/v1.9.0...v1.10.0) (2026-03-07)
+
+### Features
+
+* **server:** add GPT-5.4 model support and frontend deploy guard ([8c0cd84](https://github.com/amirdauti/virtualagency/commit/8c0cd84fcecb008f2b7d3e2543fa3a8a1c611a6e))
+
 ## [1.9.0](https://github.com/amirdauti/virtualagency/compare/v1.8.2...v1.9.0) (2026-03-02)
 
 ### Features
