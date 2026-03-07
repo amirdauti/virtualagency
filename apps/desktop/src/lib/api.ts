@@ -745,6 +745,8 @@ export async function findAvailablePort(
 // See: claude --help for more info
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export type CodexModel =
+  | "gpt-5.4"
+  | "gpt-5.4-pro"
   | "gpt-5.3-codex"
   | "gpt-5.2-codex"
   | "gpt-5.2"

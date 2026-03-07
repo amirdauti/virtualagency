@@ -54,6 +54,8 @@ const CLAUDE_MODELS: { value: ClaudeModel; name: string; description: string; ba
 
 // Codex model configurations
 const CODEX_MODELS: { value: CodexModel; name: string; description: string; badge?: string }[] = [
+  { value: "gpt-5.4", name: "GPT-5.4", description: "Latest frontier model", badge: "New" },
+  { value: "gpt-5.4-pro", name: "GPT-5.4 Pro", description: "Highest capability GPT-5.4 tier" },
   { value: "gpt-5.3-codex", name: "GPT-5.3 Codex", description: "Latest frontier model", badge: "New" },
   { value: "gpt-5.2-codex", name: "GPT-5.2 Codex", description: "Latest frontier model", badge: "Recommended" },
   { value: "gpt-5.2", name: "GPT-5.2", description: "Latest frontier model (general)" },

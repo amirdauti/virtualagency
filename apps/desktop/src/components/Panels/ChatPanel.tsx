@@ -25,6 +25,8 @@ const CLAUDE_MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
 ];
 
 const CODEX_MODEL_OPTIONS: { value: CodexModel; label: string }[] = [
+  { value: "gpt-5.4", label: "GPT-5.4" },
+  { value: "gpt-5.4-pro", label: "GPT-5.4 Pro" },
   { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
   { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
   { value: "gpt-5.2", label: "GPT-5.2" },
