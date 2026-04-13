@@ -139,6 +139,20 @@ If `connection_id` is omitted, the server resolves it from Nango connections usi
 
 If `connection_id` is provided, ownership is still validated against the same target agent + integration.
 
+### Google Analytics 4 auto-routing
+
+When using the generic `google` Nango integration, Virtual Agency now auto-injects
+`Base-Url-Override` for common GA4 endpoints when the caller does not provide one:
+
+- GA4 Data API:
+  - endpoint patterns such as `/v1beta/properties/1234:runReport`
+  - default base URL: `https://analyticsdata.googleapis.com`
+- GA4 Admin API:
+  - endpoint patterns such as `/v1beta/accounts` and `/v1beta/accountSummaries`
+  - default base URL: `https://analyticsadmin.googleapis.com`
+
+If the caller explicitly sets `Base-Url-Override` in `headers`, that value is preserved.
+
 ## Example agent proxy calls
 
 ### Read Gmail labels
@@ -175,6 +189,31 @@ If `connection_id` is provided, ownership is still validated against the same ta
   "body": {
     "title": "Virtual Agency Test Doc"
   }
+}
+```
+
+### Run a GA4 report without manual base URL headers
+
+```json
+{
+  "integration_id": "google",
+  "method": "POST",
+  "endpoint": "/v1beta/properties/1234:runReport",
+  "body": {
+    "dateRanges": [{ "startDate": "7daysAgo", "endDate": "today" }],
+    "metrics": [{ "name": "activeUsers" }],
+    "dimensions": [{ "name": "date" }]
+  }
+}
+```
+
+### List GA4 accounts without manual base URL headers
+
+```json
+{
+  "integration_id": "google",
+  "method": "GET",
+  "endpoint": "/v1beta/accounts"
 }
 ```
 

@@ -491,6 +491,35 @@ function normalizeProxyMethod(method) {
   return label;
 }
 
+function resolveGoogleAnalyticsBaseUrlOverride(endpoint) {
+  const normalized = String(endpoint || "").trim().replace(/^\/+/, "");
+
+  const isGa4Data =
+    normalized.startsWith("v1beta/properties/") &&
+    [
+      ":runReport",
+      ":batchRunReports",
+      ":runPivotReport",
+      ":batchRunPivotReports",
+      ":runRealtimeReport",
+      ":checkCompatibility",
+    ].some((suffix) => normalized.includes(suffix));
+  if (isGa4Data) {
+    return "https://analyticsdata.googleapis.com";
+  }
+
+  const isGa4Admin =
+    normalized === "v1beta/accounts" ||
+    normalized.startsWith("v1beta/accounts/") ||
+    normalized === "v1beta/accountSummaries" ||
+    normalized.startsWith("v1beta/accountSummaries/");
+  if (isGa4Admin) {
+    return "https://analyticsadmin.googleapis.com";
+  }
+
+  return null;
+}
+
 async function callHostedNangoProxy({
   integrationId,
   connectionId,
@@ -544,6 +573,15 @@ async function callHostedNangoProxy({
         continue;
       }
       extraHeaders[headerName] = String(value ?? "");
+    }
+  }
+  if (
+    integration.toLowerCase() === "google" &&
+    !Object.keys(extraHeaders).some((key) => key.toLowerCase() === "base-url-override")
+  ) {
+    const baseUrlOverride = resolveGoogleAnalyticsBaseUrlOverride(normalizedEndpoint);
+    if (baseUrlOverride) {
+      extraHeaders["Base-Url-Override"] = baseUrlOverride;
     }
   }
   const canHaveBody = !["GET", "HEAD"].includes(methodLabel);

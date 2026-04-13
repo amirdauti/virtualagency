@@ -1602,6 +1602,41 @@ fn should_use_hosted_nango_fallback(state: &SharedState) -> bool {
     state.nango_secret_key.is_none() && state.hosted_proxy_token.is_some()
 }
 
+fn google_analytics_base_url_override(endpoint: &str) -> Option<&'static str> {
+    let normalized = endpoint.trim().trim_start_matches('/');
+
+    let is_ga4_data = normalized.starts_with("v1beta/properties/")
+        && (normalized.contains(":runReport")
+            || normalized.contains(":batchRunReports")
+            || normalized.contains(":runPivotReport")
+            || normalized.contains(":batchRunPivotReports")
+            || normalized.contains(":runRealtimeReport")
+            || normalized.contains(":checkCompatibility"));
+    if is_ga4_data {
+        return Some("https://analyticsdata.googleapis.com");
+    }
+
+    let is_ga4_admin = normalized == "v1beta/accounts"
+        || normalized.starts_with("v1beta/accounts/")
+        || normalized == "v1beta/accountSummaries"
+        || normalized.starts_with("v1beta/accountSummaries/");
+    if is_ga4_admin {
+        return Some("https://analyticsadmin.googleapis.com");
+    }
+
+    None
+}
+
+fn has_base_url_override(headers: Option<&HashMap<String, String>>) -> bool {
+    headers
+        .map(|headers| {
+            headers
+                .keys()
+                .any(|key| key.trim().eq_ignore_ascii_case("Base-Url-Override"))
+        })
+        .unwrap_or(false)
+}
+
 async fn proxy_agent_tools_nango_request_to_hosted(
     state: SharedState,
     source_agent_id: &str,
@@ -3335,6 +3370,13 @@ async fn agent_tools_nango_proxy(
         .header("Authorization", format!("Bearer {}", secret_key))
         .header("Provider-Config-Key", &integration_id)
         .header("Connection-Id", &connection_id);
+
+    if integration_id.eq_ignore_ascii_case("google") && !has_base_url_override(req.headers.as_ref())
+    {
+        if let Some(base_url) = google_analytics_base_url_override(&normalized_endpoint) {
+            upstream_req = upstream_req.header("Base-Url-Override", base_url);
+        }
+    }
 
     if let Some(extra_headers) = &req.headers {
         for (key, value) in extra_headers {
