@@ -1,3 +1,9 @@
+## [1.10.1](https://github.com/amirdauti/virtualagency/compare/v1.10.0...v1.10.1) (2026-04-13)
+
+### Bug Fixes
+
+* auto-route ga4 google nango proxy requests ([81796c9](https://github.com/amirdauti/virtualagency/commit/81796c96057ededce3c7dcbb4445e5cc41af5b5a))
+
 ## [1.10.0](https://github.com/amirdauti/virtualagency/compare/v1.9.0...v1.10.0) (2026-03-07)
 
 ### Features
