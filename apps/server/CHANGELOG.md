@@ -1,3 +1,9 @@
+## [1.11.0](https://github.com/amirdauti/virtualagency/compare/v1.10.1...v1.11.0) (2026-06-02)
+
+### Features
+
+* harden codex gpt-5.5 rollout ([aa86d8e](https://github.com/amirdauti/virtualagency/commit/aa86d8ef013649a265e15735b1ff4087122610a8))
+
 ## [1.10.1](https://github.com/amirdauti/virtualagency/compare/v1.10.0...v1.10.1) (2026-04-13)
 
 ### Bug Fixes
