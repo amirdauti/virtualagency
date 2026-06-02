@@ -20,7 +20,7 @@ pub fn create_agent(
     session_id: Option<String>,
 ) -> Result<(), String> {
     let cli = cli_type.map(|s| CliType::from_str(&s)).unwrap_or_default();
-    let default_model = if cli == CliType::Codex { "gpt-5.2-codex" } else { "sonnet" };
+    let default_model = if cli == CliType::Codex { "gpt-5.5" } else { "sonnet" };
     let specialty = specialty.map(|s| AgentSpecialty::from_str(&s)).unwrap_or_default();
     let mut manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     manager.create_agent(

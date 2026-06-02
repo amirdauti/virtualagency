@@ -63,6 +63,10 @@ const HOSTED_NANGO_BASE_URL =
 const VA_SERVER_NPM_PACKAGE =
   process.env.VA_SERVER_NPM_PACKAGE || "@virtualagency/server";
 const VA_SERVER_NPM_VERSION = process.env.VA_SERVER_NPM_VERSION || "latest";
+const VA_CODEX_NPM_PACKAGE =
+  String(process.env.VA_CODEX_NPM_PACKAGE || "@openai/codex").trim() || "@openai/codex";
+const VA_CODEX_NPM_VERSION =
+  String(process.env.VA_CODEX_NPM_VERSION || "0.136.0").trim() || "0.136.0";
 const HOSTED_AUTO_UPDATE_ENABLED = !["0", "false", "off", "no"].includes(
   String(process.env.HOSTED_AUTO_UPDATE_ENABLED || "1").trim().toLowerCase(),
 );
@@ -108,6 +112,23 @@ const NPM_VIEW_TIMEOUT_MS = Math.max(
   Number.parseInt(process.env.NPM_VIEW_TIMEOUT_MS || "15000", 10) || 15_000,
 );
 const execFileAsync = promisify(execFile);
+
+function buildNpmPackageSpec(packageName, packageVersion) {
+  const normalizedName = String(packageName || "").trim();
+  if (!normalizedName) {
+    throw new Error("npm_package_name_missing");
+  }
+  const normalizedVersion = String(packageVersion || "").trim();
+  if (!normalizedVersion || normalizedVersion === "latest") {
+    return normalizedName;
+  }
+  return `${normalizedName}@${normalizedVersion}`;
+}
+
+function trackedConfiguredPackageVersion(packageVersion) {
+  const normalizedVersion = String(packageVersion || "").trim();
+  return normalizedVersion && normalizedVersion !== "latest" ? normalizedVersion : null;
+}
 
 const stripe = STRIPE_SECRET_KEY
   ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
@@ -1356,6 +1377,8 @@ function sanitizeServerForClient(server) {
     lastError: server.lastError || null,
     packageVersion: server.packageVersion || null,
     packageVersionUpdatedAt: server.packageVersionUpdatedAt || null,
+    codexPackageVersion: server.codexPackageVersion || null,
+    codexPackageVersionUpdatedAt: server.codexPackageVersionUpdatedAt || null,
     lastAutoUpdateAttemptAt: server.lastAutoUpdateAttemptAt || null,
     lastAutoUpdateError: server.lastAutoUpdateError || null,
     pairingCode: server.pairingCode || null,
@@ -1403,6 +1426,14 @@ function normalizeHostedServerState(server) {
     packageVersionUpdatedAt:
       typeof server.packageVersionUpdatedAt === "string"
         ? server.packageVersionUpdatedAt
+        : null,
+    codexPackageVersion:
+      typeof server.codexPackageVersion === "string" && server.codexPackageVersion.trim()
+        ? server.codexPackageVersion.trim()
+        : null,
+    codexPackageVersionUpdatedAt:
+      typeof server.codexPackageVersionUpdatedAt === "string"
+        ? server.codexPackageVersionUpdatedAt
         : null,
     lastAutoUpdateAttemptAt:
       typeof server.lastAutoUpdateAttemptAt === "string"
@@ -1678,15 +1709,19 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
     throw new Error("hosted_root_ssh_upgrade_missing_key_path");
   }
 
-  const remotePackage = `${VA_SERVER_NPM_PACKAGE}@${packageSpecifier}`;
-  const quotedPackage = shellSingleQuote(remotePackage);
+  const remoteServerPackage = buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, packageSpecifier);
+  const remoteCodexPackage = buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION);
+  const quotedServerPackage = shellSingleQuote(remoteServerPackage);
+  const quotedCodexPackage = shellSingleQuote(remoteCodexPackage);
   const remoteCommandLines = [
     "set -euo pipefail",
-    `PKG=${quotedPackage}`,
+    `SERVER_PKG=${quotedServerPackage}`,
+    `CODEX_PKG=${quotedCodexPackage}`,
     "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
-    "  /usr/local/bin/virtualagency-upgrade.sh \"$PKG\"",
+    "  /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\"",
+    "  npm install -g \"$CODEX_PKG\"",
     "else",
-    "  npm install -g \"$PKG\"",
+    "  npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\"",
     "fi",
   ];
   remoteCommandLines.push(...buildHostedRuntimeHostedApiEnvSyncScript());
@@ -1747,15 +1782,19 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
 
     await addHostedAuthorizedKey(server, publicKey);
 
-    const remotePackage = `${VA_SERVER_NPM_PACKAGE}@${packageSpecifier}`;
-    const quotedPackage = shellSingleQuote(remotePackage);
+    const remoteServerPackage = buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, packageSpecifier);
+    const remoteCodexPackage = buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION);
+    const quotedServerPackage = shellSingleQuote(remoteServerPackage);
+    const quotedCodexPackage = shellSingleQuote(remoteCodexPackage);
     const remoteCommandLines = [
       "set -euo pipefail",
-      `PKG=${quotedPackage}`,
+      `SERVER_PKG=${quotedServerPackage}`,
+      `CODEX_PKG=${quotedCodexPackage}`,
       "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
-      "  sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$PKG\"",
+      "  sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\"",
+      "  sudo -n npm install -g \"$CODEX_PKG\"",
       "else",
-      "  sudo -n npm install -g \"$PKG\"",
+      "  sudo -n npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\"",
       "fi",
     ];
     remoteCommandLines.push(...buildHostedRuntimeHostedApiEnvSyncScript("sudo -n "));
@@ -1921,28 +1960,35 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
   const terminalId = `hosted-rebuild-${randomToken(6)}`;
   const marker = `__VA_REBUILD_DONE_${randomToken(4)}__`;
   const permissionMarker = "__VA_REBUILD_PERM__:missing_sudo_upgrade_privilege";
-  const packageSpec = `${VA_SERVER_NPM_PACKAGE}@${packageVersion}`;
-  const quotedPackageSpec = shellSingleQuote(packageSpec);
+  const serverPackageSpec = buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, packageVersion);
+  const codexPackageSpec = buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION);
+  const quotedServerPackageSpec = shellSingleQuote(serverPackageSpec);
+  const quotedCodexPackageSpec = shellSingleQuote(codexPackageSpec);
   const markerRegex = new RegExp(`${marker}:(\\d+)`);
 
   // Emit a deterministic marker before restarting the service, so callers can observe completion
   // even though the service restart momentarily interrupts hosted API requests.
   const command = [
-    `PKG=${quotedPackageSpec}`,
+    `SERVER_PKG=${quotedServerPackageSpec}`,
+    `CODEX_PKG=${quotedCodexPackageSpec}`,
     "STATUS=0",
     "CAN_SUDO=0",
     "INSTALL_DONE=0",
     "if command -v sudo >/dev/null 2>&1; then",
     "  if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
-    "    sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
+    "    sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\" && sudo -n npm install -g \"$CODEX_PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
     "  else",
-    "    sudo -n npm install -g \"$PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
+    "    sudo -n npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
     "  fi",
     "fi",
     "if [ \"$INSTALL_DONE\" -eq 0 ]; then",
     "  PREFIX=$(npm config get prefix 2>/dev/null || true)",
     "  if [ -n \"$PREFIX\" ] && [ -w \"$PREFIX\" ]; then",
-    "    npm install -g \"$PKG\" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?",
+    "    if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
+    "      /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\" && npm install -g \"$CODEX_PKG\" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?",
+    "    else",
+    "      npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?",
+    "    fi",
     "  else",
     "    STATUS=243",
     "    echo '" + permissionMarker + " prefix='\"${PREFIX:-unknown}\"",
@@ -2166,6 +2212,8 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
       server.packageVersion = null;
       server.packageVersionUpdatedAt = nowIso();
     }
+    server.codexPackageVersion = trackedConfiguredPackageVersion(VA_CODEX_NPM_VERSION);
+    server.codexPackageVersionUpdatedAt = nowIso();
     server.lastError = null;
     server.lastAutoUpdateError = null;
     server.updatedAt = nowIso();
@@ -2351,7 +2399,12 @@ function safeJsonParse(value) {
 }
 
 function buildCloudInit({ bootstrapToken, proxyToken, userId }) {
-  const escapedPackage = `${VA_SERVER_NPM_PACKAGE}@${VA_SERVER_NPM_VERSION}`;
+  const escapedPackage = shellSingleQuote(
+    buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, VA_SERVER_NPM_VERSION),
+  );
+  const escapedCodexPackage = shellSingleQuote(
+    buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION),
+  );
   const callbackUrl = `${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/bootstrap-report`;
 
   return `#!/bin/bash
@@ -2376,7 +2429,7 @@ mkdir -p /opt/virtualagency/workspace
 mkdir -p /etc/virtualagency
 chown -R va:va /opt/virtualagency
 
-npm install -g ${escapedPackage} @openai/codex @anthropic-ai/claude-code
+npm install -g ${escapedPackage} ${escapedCodexPackage} @anthropic-ai/claude-code
 
 cat > /usr/local/bin/virtualagency-upgrade.sh << 'UPGRADE_EOF'
 #!/bin/bash
@@ -2384,7 +2437,11 @@ set -euo pipefail
 
 PKG="$1"
 if [ -z "$PKG" ]; then
-  PKG="${escapedPackage}"
+  PKG=${escapedPackage}
+fi
+CODEX_PKG="$2"
+if [ -z "$CODEX_PKG" ]; then
+  CODEX_PKG=${escapedCodexPackage}
 fi
 case "$PKG" in
   @virtualagency/server@*|@virtualagency/server)
@@ -2394,8 +2451,16 @@ case "$PKG" in
     exit 2
     ;;
 esac
+case "$CODEX_PKG" in
+  @openai/codex@*|@openai/codex)
+    ;;
+  *)
+    echo "Refusing unexpected Codex package: $CODEX_PKG" >&2
+    exit 2
+    ;;
+esac
 
-npm install -g "$PKG"
+npm install -g "$PKG" "$CODEX_PKG"
 UPGRADE_EOF
 
 chmod 755 /usr/local/bin/virtualagency-upgrade.sh
@@ -2557,6 +2622,10 @@ async function createHostedServerForUser(userId, metaOverride = null) {
     codexAuth: defaultCodexAuthState(),
     packageVersion: VA_SERVER_NPM_VERSION === "latest" ? null : VA_SERVER_NPM_VERSION,
     packageVersionUpdatedAt: VA_SERVER_NPM_VERSION === "latest" ? null : now,
+    codexPackageVersion: trackedConfiguredPackageVersion(VA_CODEX_NPM_VERSION),
+    codexPackageVersionUpdatedAt: trackedConfiguredPackageVersion(VA_CODEX_NPM_VERSION)
+      ? now
+      : null,
     lastAutoUpdateAttemptAt: null,
     lastAutoUpdateError: null,
     createdAt: now,
@@ -3308,6 +3377,8 @@ app.get("/api/hosting/internal/rollout-status", async (req, res) => {
       retryDelayMs: HOSTED_AUTO_UPDATE_RETRY_DELAY_MS,
       package: VA_SERVER_NPM_PACKAGE,
       packageVersion: VA_SERVER_NPM_VERSION,
+      codexPackage: VA_CODEX_NPM_PACKAGE,
+      codexPackageVersion: VA_CODEX_NPM_VERSION,
       sshFallbackEnabled: HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED,
       sshFallbackKeyConfigured: Boolean(HOSTED_AUTO_UPDATE_SSH_KEY_PATH),
       sshFallbackUser: HOSTED_AUTO_UPDATE_SSH_USER,

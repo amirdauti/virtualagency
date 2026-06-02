@@ -25,6 +25,8 @@ const CLAUDE_MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
 ];
 
 const CODEX_MODEL_OPTIONS: { value: CodexModel; label: string }[] = [
+  { value: "gpt-5.5", label: "GPT-5.5" },
+  { value: "gpt-5.5-pro", label: "GPT-5.5 Pro" },
   { value: "gpt-5.4", label: "GPT-5.4" },
   { value: "gpt-5.4-pro", label: "GPT-5.4 Pro" },
   { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
@@ -113,7 +115,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const isCodexAgent = agent?.cliType === "codex";
 
   // Local state for model and thinking/reasoning, initialized from agent
-  const defaultModel = isCodexAgent ? "gpt-5.2-codex" : "sonnet";
+  const defaultModel = isCodexAgent ? "gpt-5.5" : "sonnet";
   const [selectedModel, setSelectedModel] = useState<string>(agent?.model || defaultModel);
   const [thinkingEnabled, setThinkingEnabled] = useState(agent?.thinkingEnabled || false);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(agent?.reasoningEffort || "medium");

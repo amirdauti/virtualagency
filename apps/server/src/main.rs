@@ -2419,7 +2419,7 @@ struct AgentToolsCreateAgentRequest {
 fn default_model_for_cli(cli_type: &CliType) -> String {
     match cli_type {
         CliType::Claude => "sonnet".to_string(),
-        CliType::Codex => "gpt-5.4".to_string(),
+        CliType::Codex => "gpt-5.5".to_string(),
     }
 }
 

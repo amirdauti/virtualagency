@@ -54,11 +54,13 @@ const CLAUDE_MODELS: { value: ClaudeModel; name: string; description: string; ba
 
 // Codex model configurations
 const CODEX_MODELS: { value: CodexModel; name: string; description: string; badge?: string }[] = [
-  { value: "gpt-5.4", name: "GPT-5.4", description: "Latest frontier model", badge: "New" },
-  { value: "gpt-5.4-pro", name: "GPT-5.4 Pro", description: "Highest capability GPT-5.4 tier" },
-  { value: "gpt-5.3-codex", name: "GPT-5.3 Codex", description: "Latest frontier model", badge: "New" },
-  { value: "gpt-5.2-codex", name: "GPT-5.2 Codex", description: "Latest frontier model", badge: "Recommended" },
-  { value: "gpt-5.2", name: "GPT-5.2", description: "Latest frontier model (general)" },
+  { value: "gpt-5.5", name: "GPT-5.5", description: "Default for the latest Codex CLI rollout", badge: "Recommended" },
+  { value: "gpt-5.5-pro", name: "GPT-5.5 Pro", description: "Highest capability GPT-5.5 tier", badge: "New" },
+  { value: "gpt-5.4", name: "GPT-5.4", description: "Previous GPT-5 frontier tier" },
+  { value: "gpt-5.4-pro", name: "GPT-5.4 Pro", description: "Previous GPT-5.4 Pro tier" },
+  { value: "gpt-5.3-codex", name: "GPT-5.3 Codex", description: "Codex-tuned model for legacy compatibility" },
+  { value: "gpt-5.2-codex", name: "GPT-5.2 Codex", description: "Legacy Codex model" },
+  { value: "gpt-5.2", name: "GPT-5.2", description: "Legacy GPT-5.2 general model" },
   { value: "gpt-5.1-codex-max", name: "GPT-5.1 Codex Max", description: "Frontier agentic coding model" },
   { value: "gpt-5.1-codex", name: "GPT-5.1 Codex", description: "Intelligent coding model" },
   { value: "gpt-5.1", name: "GPT-5.1", description: "GPT-5.1 general model" },
@@ -229,7 +231,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const [specialty, setSpecialty] = useState<AgentSpecialty>("normal");
   const [cliType, setCliType] = useState<CliType>("claude");
   const [claudeModel, setClaudeModel] = useState<ClaudeModel>("sonnet");
-  const [codexModel, setCodexModel] = useState<CodexModel>("gpt-5.3-codex");
+  const [codexModel, setCodexModel] = useState<CodexModel>("gpt-5.5");
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [avatarId, setAvatarId] = useState<AvatarId>("default");
@@ -378,7 +380,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
     setSpecialty("normal");
     setCliType("claude");
     setClaudeModel("sonnet");
-    setCodexModel("gpt-5.3-codex");
+    setCodexModel("gpt-5.5");
     setThinkingEnabled(false);
     setReasoningEffort("medium");
     setAvatarId("default");

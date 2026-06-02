@@ -745,6 +745,8 @@ export async function findAvailablePort(
 // See: claude --help for more info
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export type CodexModel =
+  | "gpt-5.5"
+  | "gpt-5.5-pro"
   | "gpt-5.4"
   | "gpt-5.4-pro"
   | "gpt-5.3-codex"
@@ -776,7 +778,7 @@ export interface AgentOptions {
 // Agent APIs
 export async function createAgent(id: string, workingDir: string, options?: AgentOptions): Promise<void> {
   const cliType = options?.cliType || "claude";
-  const model = options?.model || (cliType === "codex" ? "gpt-5.3-codex" : "sonnet");
+  const model = options?.model || (cliType === "codex" ? "gpt-5.5" : "sonnet");
   const thinkingEnabled = options?.thinkingEnabled || false;
   const reasoningEffort = options?.reasoningEffort || "medium";
   const mcpServers = options?.mcpServers || [];
