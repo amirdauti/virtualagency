@@ -1,3 +1,9 @@
+## [1.11.1](https://github.com/amirdauti/virtualagency/compare/v1.11.0...v1.11.1) (2026-07-15)
+
+### Bug Fixes
+
+* **server:** route hosted nango integration endpoints ([47eb60d](https://github.com/amirdauti/virtualagency/commit/47eb60d34f6edaaf53939d711636566d6a7d9e66))
+
 ## [1.11.0](https://github.com/amirdauti/virtualagency/compare/v1.10.1...v1.11.0) (2026-06-02)
 
 ### Features
