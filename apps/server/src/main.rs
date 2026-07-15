@@ -1474,7 +1474,7 @@ struct NangoConnectionsRequest {
     integration_id: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct NangoConnectionsResponse {
     end_user_id: String,
     integration_id: Option<String>,
@@ -1490,7 +1490,7 @@ struct NangoDeleteConnectionRequest {
     integration_id: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct NangoDeleteConnectionResponse {
     ok: bool,
     connection_id: String,
@@ -1637,10 +1637,10 @@ fn has_base_url_override(headers: Option<&HashMap<String, String>>) -> bool {
         .unwrap_or(false)
 }
 
-async fn proxy_agent_tools_nango_request_to_hosted(
+async fn proxy_nango_request_to_hosted_path(
     state: SharedState,
-    source_agent_id: &str,
-    endpoint_suffix: &str,
+    method: reqwest::Method,
+    path: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let hosted_token = state
@@ -1665,15 +1665,12 @@ async fn proxy_agent_tools_nango_request_to_hosted(
         ))?;
 
     let trimmed_base = hosted_api_base.trim_end_matches('/');
-    let trimmed_suffix = endpoint_suffix.trim_start_matches('/');
-    let url = format!(
-        "{}/api/agent-tools/{}/{}",
-        trimmed_base, source_agent_id, trimmed_suffix
-    );
+    let trimmed_path = path.trim_start_matches('/');
+    let url = format!("{}/{}", trimmed_base, trimmed_path);
 
     let client = reqwest::Client::new();
     let response = client
-        .post(&url)
+        .request(method, &url)
         .header("x-va-hosted-token", hosted_token)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
@@ -1709,11 +1706,23 @@ async fn proxy_agent_tools_nango_request_to_hosted(
             .or_else(|| parsed.get("error").and_then(|v| v.as_str()))
             .map(|v| v.to_string())
             .unwrap_or_else(|| truncate_for_prompt(&raw_body, 500));
-        let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let status =
+            StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         return Err((status, message));
     }
 
     Ok(parsed)
+}
+
+async fn proxy_agent_tools_nango_request_to_hosted(
+    state: SharedState,
+    source_agent_id: &str,
+    endpoint_suffix: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let trimmed_suffix = endpoint_suffix.trim_start_matches('/');
+    let path = format!("/api/agent-tools/{}/{}", source_agent_id, trimmed_suffix);
+    proxy_nango_request_to_hosted_path(state, reqwest::Method::POST, &path, payload).await
 }
 
 async fn create_nango_connect_session_internal(
@@ -2004,6 +2013,20 @@ fn nango_connection_matches_end_user(
         .unwrap_or(false)
 }
 
+fn nango_handler_error(
+    status: StatusCode,
+    error: &str,
+    message: impl Into<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": error,
+            "message": message.into(),
+        })),
+    )
+}
+
 async fn delete_nango_connection_internal(
     state: SharedState,
     connection_id: &str,
@@ -2085,6 +2108,35 @@ async fn create_nango_connect_session(
         .map(|user_id| format!("{}:{}", user_id, req.end_user_id.trim()))
         .unwrap_or_else(|| req.end_user_id.trim().to_string());
 
+    if should_use_hosted_nango_fallback(&state) {
+        let proxied = proxy_nango_request_to_hosted_path(
+            state.clone(),
+            reqwest::Method::POST,
+            "/api/integrations/nango/connect-session",
+            serde_json::json!({
+                "integration_id": req.integration_id.clone(),
+                "end_user_id": req.end_user_id.clone(),
+                "end_user_email": req.end_user_email.clone(),
+                "end_user_display_name": req.end_user_display_name.clone(),
+            }),
+        )
+        .await
+        .map_err(|(status, message)| {
+            nango_handler_error(status, "nango_connect_session_failed", message)
+        })?;
+
+        let session: NangoConnectSessionResponse =
+            serde_json::from_value(proxied).map_err(|e| {
+                nango_handler_error(
+                    StatusCode::BAD_GATEWAY,
+                    "nango_connect_session_failed",
+                    format!("invalid hosted nango session payload: {}", e),
+                )
+            })?;
+
+        return Ok(Json(session));
+    }
+
     let result = create_nango_connect_session_internal(
         state.clone(),
         &req.integration_id,
@@ -2129,6 +2181,32 @@ async fn list_nango_connections(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
+
+    if should_use_hosted_nango_fallback(&state) {
+        let proxied = proxy_nango_request_to_hosted_path(
+            state.clone(),
+            reqwest::Method::POST,
+            "/api/integrations/nango/connections",
+            serde_json::json!({
+                "end_user_id": end_user_id.clone(),
+                "integration_id": integration_filter.clone(),
+            }),
+        )
+        .await
+        .map_err(|(status, message)| {
+            nango_handler_error(status, "nango_connections_failed", message)
+        })?;
+
+        let response: NangoConnectionsResponse = serde_json::from_value(proxied).map_err(|e| {
+            nango_handler_error(
+                StatusCode::BAD_GATEWAY,
+                "nango_connections_failed",
+                format!("invalid hosted nango connections payload: {}", e),
+            )
+        })?;
+
+        return Ok(Json(response));
+    }
 
     let filtered = list_nango_connections_internal(state.clone())
         .await
@@ -2197,6 +2275,34 @@ async fn delete_nango_connection(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
+
+    if should_use_hosted_nango_fallback(&state) {
+        let proxied = proxy_nango_request_to_hosted_path(
+            state.clone(),
+            reqwest::Method::DELETE,
+            "/api/integrations/nango/connections",
+            serde_json::json!({
+                "end_user_id": end_user_id.clone(),
+                "connection_id": connection_id.clone(),
+                "integration_id": integration_filter.clone(),
+            }),
+        )
+        .await
+        .map_err(|(status, message)| {
+            nango_handler_error(status, "nango_delete_connection_failed", message)
+        })?;
+
+        let response: NangoDeleteConnectionResponse =
+            serde_json::from_value(proxied).map_err(|e| {
+                nango_handler_error(
+                    StatusCode::BAD_GATEWAY,
+                    "nango_delete_connection_failed",
+                    format!("invalid hosted nango delete payload: {}", e),
+                )
+            })?;
+
+        return Ok(Json(response));
+    }
 
     let connections = list_nango_connections_internal(state.clone())
         .await
