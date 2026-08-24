@@ -102,6 +102,7 @@ struct TelegramActiveTurn {
     chat_id: i64,
     accumulated: String,
     latest_complete: Option<String>,
+    last_sent_agent_message: Option<String>,
     pending_progress_text: String,
     last_typing_at: Option<Instant>,
     sent_update_ids: HashSet<String>,
@@ -605,12 +606,14 @@ impl TelegramManager {
                     state.status_active = false;
                     if let Some(active) = state.active_turn.take() {
                         let response = finalize_turn_text(&active, &status.status);
-                        for chunk in split_for_telegram(&response) {
-                            actions.push(TelegramAction::SendMessage {
-                                bot_token: state.config.bot_token.clone(),
-                                chat_id: active.chat_id,
-                                text: chunk,
-                            });
+                        if should_send_final_response(&active, &response) {
+                            for chunk in split_for_telegram(&response) {
+                                actions.push(TelegramAction::SendMessage {
+                                    bot_token: state.config.bot_token.clone(),
+                                    chat_id: active.chat_id,
+                                    text: chunk,
+                                });
+                            }
                         }
                         maybe_start_next_turn(&status.agent_id, state, &mut actions);
                     } else if let Some(passive) = state.passive_turn.take() {
@@ -623,12 +626,14 @@ impl TelegramManager {
                             || !passive.accumulated.trim().is_empty();
                         if has_text || matches!(status.status, crate::agents::AgentStatus::Error) {
                             let response = finalize_turn_text(&passive, &status.status);
-                            for chunk in split_for_telegram(&response) {
-                                actions.push(TelegramAction::SendMessage {
-                                    bot_token: state.config.bot_token.clone(),
-                                    chat_id: passive.chat_id,
-                                    text: chunk,
-                                });
+                            if should_send_final_response(&passive, &response) {
+                                for chunk in split_for_telegram(&response) {
+                                    actions.push(TelegramAction::SendMessage {
+                                        bot_token: state.config.bot_token.clone(),
+                                        chat_id: passive.chat_id,
+                                        text: chunk,
+                                    });
+                                }
                             }
                         }
                         maybe_start_next_turn(&status.agent_id, state, &mut actions);
@@ -681,6 +686,7 @@ fn new_turn(chat_id: i64) -> TelegramActiveTurn {
         chat_id,
         accumulated: String::new(),
         latest_complete: None,
+        last_sent_agent_message: None,
         pending_progress_text: String::new(),
         last_typing_at: None,
         sent_update_ids: HashSet::new(),
@@ -1215,7 +1221,21 @@ fn format_codex_item_completed_update(
 ) -> Option<String> {
     let item_type = json_get_str(item, "type")?;
     if item_type == "agent_message" {
-        return None;
+        let text = json_get_first_str(item, &["text", "message", "content"])?;
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+
+        let key = get_codex_item_id(item)
+            .map(|id| format!("codex-complete:{}", id))
+            .unwrap_or_else(|| format!("codex-complete:agent-message:{}", stable_hash(text)));
+        if !turn.sent_update_ids.insert(key) {
+            return None;
+        }
+
+        turn.last_sent_agent_message = Some(text.to_string());
+        return Some(text.to_string());
     }
 
     if item_type == "reasoning" {
@@ -1841,6 +1861,10 @@ fn finalize_turn_text(turn: &TelegramActiveTurn, status: &crate::agents::AgentSt
     text
 }
 
+fn should_send_final_response(turn: &TelegramActiveTurn, response: &str) -> bool {
+    turn.last_sent_agent_message.as_deref() != Some(response.trim())
+}
+
 fn split_for_telegram(text: &str) -> Vec<String> {
     if text.chars().count() <= TELEGRAM_MESSAGE_CHUNK {
         return vec![text.to_string()];
@@ -2339,6 +2363,7 @@ mod tests {
             chat_id: 1,
             accumulated: String::new(),
             latest_complete: None,
+            last_sent_agent_message: None,
             pending_progress_text: String::new(),
             last_typing_at: None,
             sent_update_ids: HashSet::new(),
@@ -2427,6 +2452,36 @@ mod tests {
     }
 
     #[test]
+    fn codex_agent_message_completed_emits_incremental_update() {
+        let mut turn = make_turn();
+        let raw = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "item_0",
+                "type": "agent_message",
+                "text": "I am implementing the window and audio fixes now."
+            }
+        })
+        .to_string();
+
+        apply_agent_output_to_turn(&raw, &mut turn);
+        let updates = collect_incremental_updates(&raw, &mut turn);
+
+        assert_eq!(
+            updates,
+            vec!["I am implementing the window and audio fixes now."]
+        );
+        assert_eq!(
+            turn.last_sent_agent_message.as_deref(),
+            Some("I am implementing the window and audio fixes now.")
+        );
+        assert!(!should_send_final_response(
+            &turn,
+            &finalize_turn_text(&turn, &AgentStatus::Idle)
+        ));
+    }
+
+    #[test]
     fn mirrors_non_telegram_turn_updates_and_final_message() {
         let agent_id = "agent-1";
         let state = make_enabled_state(42, true);
@@ -2470,7 +2525,17 @@ mod tests {
             })
             .to_string(),
         });
-        let _ = manager.handle_broadcast(&final_item_event);
+        let final_message_actions = manager.handle_broadcast(&final_item_event);
+        assert!(
+            final_message_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    TelegramAction::SendMessage { chat_id, text, .. }
+                        if *chat_id == 42 && text == "All done."
+                )
+            }),
+            "expected completed agent message to be mirrored immediately"
+        );
 
         let idle_event = crate::BroadcastMessage::AgentStatus(AgentStatusChange {
             agent_id: agent_id.to_string(),
@@ -2478,15 +2543,47 @@ mod tests {
         });
         let final_actions = manager.handle_broadcast(&idle_event);
         assert!(
-            final_actions.iter().any(|action| {
-                matches!(
-                    action,
-                    TelegramAction::SendMessage { chat_id, text, .. }
-                        if *chat_id == 42 && text == "All done."
-                )
-            }),
-            "expected mirrored final response"
+            final_actions
+                .iter()
+                .all(|action| !matches!(action, TelegramAction::SendMessage { .. })),
+            "already mirrored final response should not be sent twice"
         );
+    }
+
+    #[test]
+    fn agent_message_is_sent_at_idle_when_incremental_updates_are_disabled() {
+        let agent_id = "agent-1";
+        let state = make_enabled_state(42, false);
+        let mut manager = make_manager_with_state(agent_id, state);
+
+        let final_item_event = crate::BroadcastMessage::AgentOutput(AgentOutput {
+            agent_id: agent_id.to_string(),
+            stream: OutputStream::Stdout,
+            data: serde_json::json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "item_0",
+                    "type": "agent_message",
+                    "text": "All done."
+                }
+            })
+            .to_string(),
+        });
+        let update_actions = manager.handle_broadcast(&final_item_event);
+        assert!(update_actions.is_empty());
+
+        let idle_event = crate::BroadcastMessage::AgentStatus(AgentStatusChange {
+            agent_id: agent_id.to_string(),
+            status: AgentStatus::Idle,
+        });
+        let final_actions = manager.handle_broadcast(&idle_event);
+        assert!(final_actions.iter().any(|action| {
+            matches!(
+                action,
+                TelegramAction::SendMessage { chat_id, text, .. }
+                    if *chat_id == 42 && text == "All done."
+            )
+        }));
     }
 
     #[test]
