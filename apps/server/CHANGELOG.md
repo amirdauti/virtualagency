@@ -1,3 +1,9 @@
+## [1.12.0](https://github.com/amirdauti/virtualagency/compare/v1.11.1...v1.12.0) (2026-08-24)
+
+### Features
+
+* **server:** manage Codex CLI and add GPT-5.6 models ([83250fb](https://github.com/amirdauti/virtualagency/commit/83250fb3dba2ceabb8be1e70d75dbd3289139c8a))
+
 ## [1.11.1](https://github.com/amirdauti/virtualagency/compare/v1.11.0...v1.11.1) (2026-07-15)
 
 ### Bug Fixes
