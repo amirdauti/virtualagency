@@ -10,6 +10,9 @@ use tokio::sync::mpsc;
 
 use crate::BroadcastMessage;
 
+const DEFAULT_CODEX_NPM_PACKAGE: &str = "@openai/codex";
+const DEFAULT_CODEX_NPM_VERSION: &str = "0.149.1";
+
 fn get_mcp_server_package(id: &str) -> Option<&'static str> {
     match id {
         "dritan" => Some("@dritan/mcp"),
@@ -460,10 +463,114 @@ fn find_claude_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
     Err("Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code".to_string())
 }
 
+#[cfg(not(windows))]
+fn managed_codex_prefix() -> Option<PathBuf> {
+    let home = env::var("HOME").ok().filter(|v| !v.trim().is_empty())?;
+    Some(PathBuf::from(home).join(".npm-global"))
+}
+
+#[cfg(not(windows))]
+fn managed_codex_bin() -> Option<PathBuf> {
+    Some(managed_codex_prefix()?.join("bin").join("codex"))
+}
+
+#[cfg(not(windows))]
+fn desired_codex_package_spec() -> String {
+    let package = env::var("VA_CODEX_NPM_PACKAGE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_CODEX_NPM_PACKAGE.to_string());
+    let version = env::var("VA_CODEX_NPM_VERSION")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_CODEX_NPM_VERSION.to_string());
+
+    let package_has_version = if package.starts_with('@') {
+        package
+            .split_once('/')
+            .and_then(|(_, rest)| rest.rfind('@'))
+            .is_some()
+    } else {
+        package.contains('@')
+    };
+
+    if version == "latest" || version == "*" || package_has_version {
+        package
+    } else {
+        format!("{}@{}", package, version)
+    }
+}
+
+#[cfg(not(windows))]
+fn codex_version_matches(bin: &PathBuf, desired_version: &str) -> bool {
+    if desired_version == "latest" || desired_version == "*" {
+        return bin.exists();
+    }
+
+    let output = Command::new(bin).arg("--version").output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.split_whitespace().any(|part| part == desired_version)
+}
+
+#[cfg(not(windows))]
+fn ensure_managed_codex_cli() -> Option<PathBuf> {
+    let prefix = managed_codex_prefix()?;
+    let bin = managed_codex_bin()?;
+    let desired_version = env::var("VA_CODEX_NPM_VERSION")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_CODEX_NPM_VERSION.to_string());
+
+    if codex_version_matches(&bin, &desired_version) {
+        return Some(bin);
+    }
+
+    let package_spec = desired_codex_package_spec();
+    tracing::info!(
+        "[AgentProcess] Installing managed Codex CLI: {} into {}",
+        package_spec,
+        prefix.display()
+    );
+
+    let status = Command::new("npm")
+        .args(["install", "--prefix"])
+        .arg(&prefix)
+        .arg("-g")
+        .arg(&package_spec)
+        .status();
+
+    match status {
+        Ok(status) if status.success() && bin.exists() => Some(bin),
+        Ok(status) => {
+            tracing::warn!(
+                "[AgentProcess] Managed Codex install exited with status: {}",
+                status
+            );
+            None
+        }
+        Err(err) => {
+            tracing::warn!("[AgentProcess] Managed Codex install failed: {}", err);
+            None
+        }
+    }
+}
+
 fn find_codex_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
-    // First, try PATH lookup
-    if let Some(path) = find_on_path("codex") {
-        return Ok(path);
+    if let Ok(path) = env::var("VA_CODEX_BIN") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(path);
+        }
     }
 
     // Then try common install locations
@@ -502,12 +609,16 @@ fn find_codex_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
 
     #[cfg(not(windows))]
     {
+        if let Some(path) = ensure_managed_codex_cli() {
+            return Ok(path);
+        }
+
         let home = env::var("HOME").unwrap_or_default();
         candidates.extend([
-            PathBuf::from("/opt/homebrew/bin/codex"),
-            PathBuf::from("/usr/local/bin/codex"),
             PathBuf::from(format!("{}/.npm-global/bin/codex", home)),
             PathBuf::from(format!("{}/node_modules/.bin/codex", home)),
+            PathBuf::from("/opt/homebrew/bin/codex"),
+            PathBuf::from("/usr/local/bin/codex"),
             PathBuf::from(format!("{}/.nvm/versions/node/*/bin/codex", home)),
             PathBuf::from("./node_modules/.bin/codex"),
         ]);
@@ -521,6 +632,10 @@ fn find_codex_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
 
     #[cfg(windows)]
     if let Some(path) = find_cli_via_npm_prefix("codex") {
+        return Ok(path);
+    }
+
+    if let Some(path) = find_on_path("codex") {
         return Ok(path);
     }
 

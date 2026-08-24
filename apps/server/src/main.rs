@@ -43,6 +43,8 @@ use telegram::{
 };
 
 type SharedState = Arc<AppState>;
+
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
 static WHISPER_INSTALL_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 const AGENTS_STATE_VERSION: u32 = 1;
 const PUBLISHED_APPS_STATE_VERSION: u32 = 1;
@@ -1086,8 +1088,8 @@ struct CreateAgentRequest {
     id: Option<String>,
     name: String,
     working_dir: String,
-    #[serde(default = "default_model")]
-    model: String,
+    #[serde(default)]
+    model: Option<String>,
     #[serde(default)]
     thinking_enabled: bool,
     #[serde(default = "default_reasoning_effort")]
@@ -1100,10 +1102,6 @@ struct CreateAgentRequest {
     cli_type: Option<String>, // "claude" or "codex"
     #[serde(default)]
     session_id: Option<String>, // Session ID to resume conversation
-}
-
-fn default_model() -> String {
-    "sonnet".to_string()
 }
 
 fn default_reasoning_effort() -> String {
@@ -1137,6 +1135,10 @@ async fn create_agent(
         CliType::Claude => "claude".to_string(),
         CliType::Codex => "codex".to_string(),
     };
+    let model = req
+        .model
+        .clone()
+        .unwrap_or_else(|| default_model_for_cli(&cli_type));
 
     let specialty = req
         .specialty
@@ -1150,7 +1152,7 @@ async fn create_agent(
 
     tracing::info!(
         "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}, reasoning_effort: {}, specialty: {}, mcp_servers: {:?}, cli_type: {}, session_id: {:?}",
-        req.id, req.name, req.working_dir, req.model, req.thinking_enabled, req.reasoning_effort, specialty_str, req.mcp_servers, cli_type_str, req.session_id
+        req.id, req.name, req.working_dir, model, req.thinking_enabled, req.reasoning_effort, specialty_str, req.mcp_servers, cli_type_str, req.session_id
     );
 
     let mut manager = state.agent_manager.write().await;
@@ -1159,7 +1161,7 @@ async fn create_agent(
         req.id.as_deref(),
         &req.name,
         &req.working_dir,
-        &req.model,
+        &model,
         req.thinking_enabled,
         &req.reasoning_effort,
         specialty,
@@ -1187,7 +1189,7 @@ async fn create_agent(
                 id,
                 name: req.name,
                 working_dir: req.working_dir,
-                model: req.model,
+                model,
                 thinking_enabled: req.thinking_enabled,
                 mcp_servers: req.mcp_servers,
                 cli_type: cli_type_str,
@@ -2525,7 +2527,7 @@ struct AgentToolsCreateAgentRequest {
 fn default_model_for_cli(cli_type: &CliType) -> String {
     match cli_type {
         CliType::Claude => "sonnet".to_string(),
-        CliType::Codex => "gpt-5.5".to_string(),
+        CliType::Codex => DEFAULT_CODEX_MODEL.to_string(),
     }
 }
 

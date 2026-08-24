@@ -13,16 +13,15 @@ import type {
 const ENV_SERVER_URL = import.meta.env.VITE_SERVER_URL as string | undefined;
 const ENV_WS_URL = import.meta.env.VITE_WS_URL as string | undefined;
 const ENV_BILLING_API_URL = import.meta.env.VITE_BILLING_API_URL as
-  | string
-  | undefined;
-const ENV_CLERK_PUBLISHABLE_KEY = import.meta.env
-  .VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
+  string | undefined;
+const ENV_CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as
+  string | undefined;
 const ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = import.meta.env
   .NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY as string | undefined;
 const HAS_BUILDTIME_CLERK_KEY = Boolean(
   (ENV_CLERK_PUBLISHABLE_KEY && ENV_CLERK_PUBLISHABLE_KEY.trim().length > 0) ||
-    (ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY &&
-      ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY.trim().length > 0),
+  (ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY &&
+    ENV_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY.trim().length > 0)
 );
 
 const SERVER_URL_STORAGE_KEY = "virtual-agency-server-url";
@@ -42,7 +41,7 @@ const HOSTED_AUTH_REQUIRED_MESSAGE =
   "Hosted auth required. Sign in to use Cloud Agents.";
 
 export function setHostedAuthTokenProvider(
-  provider: (() => Promise<string | null>) | null,
+  provider: (() => Promise<string | null>) | null
 ) {
   hostedAuthTokenProvider = provider;
   hostedAuthProviderState = provider ? "available" : "unavailable";
@@ -65,10 +64,10 @@ async function waitForHostedAuthProvider(timeoutMs = 250): Promise<boolean> {
 }
 
 function createHostedAuthRequiredError(
-  code: "missing_hosted_auth_provider" | "missing_hosted_auth_token",
+  code: "missing_hosted_auth_provider" | "missing_hosted_auth_token"
 ): Error {
   return new Error(
-    `${HOSTED_AUTH_REQUIRED_PREFIX}:${code}:${HOSTED_AUTH_REQUIRED_MESSAGE}`,
+    `${HOSTED_AUTH_REQUIRED_PREFIX}:${code}:${HOSTED_AUTH_REQUIRED_MESSAGE}`
   );
 }
 
@@ -196,7 +195,10 @@ export function isHostedAuthBootError(err: unknown): boolean {
 
 // Detect if running in Tauri (v2 uses __TAURI_INTERNALS__)
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+  return (
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+  );
 }
 
 function loadSavedServerUrl(): string | null {
@@ -204,7 +206,9 @@ function loadSavedServerUrl(): string | null {
     if (typeof localStorage === "undefined") return null;
     const value = localStorage.getItem(SERVER_URL_STORAGE_KEY);
     if (!value) return null;
-    return value.startsWith("http://") || value.startsWith("https://") ? value : null;
+    return value.startsWith("http://") || value.startsWith("https://")
+      ? value
+      : null;
   } catch {
     return null;
   }
@@ -256,7 +260,9 @@ async function probeServer(url: string): Promise<boolean> {
   }
 }
 
-export async function getServerHttpBaseUrl(options: ServerUrlResolveOptions = {}): Promise<string> {
+export async function getServerHttpBaseUrl(
+  options: ServerUrlResolveOptions = {}
+): Promise<string> {
   if (isTauri()) {
     // In Tauri mode we don't use HTTP; requests go through invoke().
     return "";
@@ -276,7 +282,9 @@ export async function getServerHttpBaseUrl(options: ServerUrlResolveOptions = {}
   }
 
   resolvingServerUrl = (async () => {
-    for (const candidate of defaultServerCandidates(Boolean(options.includePortScan))) {
+    for (const candidate of defaultServerCandidates(
+      Boolean(options.includePortScan)
+    )) {
       // If the saved URL is dead, quickly move on.
       // When the server is up, /api/health responds immediately.
       // eslint-disable-next-line no-await-in-loop
@@ -376,14 +384,18 @@ async function pollHostedEventsOnce() {
       hostedLastSeq > 0
         ? `?since=${encodeURIComponent(String(hostedLastSeq))}`
         : "";
-    const payload = await fetchHostedApi<{ latest_seq: number; events: unknown[] }>(
-      `/api/hosting/va/api/events${suffix}`,
-      { method: "GET" },
-    );
+    const payload = await fetchHostedApi<{
+      latest_seq: number;
+      events: unknown[];
+    }>(`/api/hosting/va/api/events${suffix}`, { method: "GET" });
     const events = Array.isArray(payload?.events) ? payload.events : [];
     for (const event of events) {
       const seq = (event as { seq?: unknown })?.seq;
-      if (typeof seq === "number" && Number.isFinite(seq) && seq > hostedLastSeq) {
+      if (
+        typeof seq === "number" &&
+        Number.isFinite(seq) &&
+        seq > hostedLastSeq
+      ) {
         hostedLastSeq = seq;
       }
       handleIncomingWsData(JSON.stringify(event));
@@ -430,19 +442,39 @@ async function replayMissedEvents() {
   const seen = seenSeqDuringReplay;
 
   try {
-    const path = since > 0 ? `/api/events?since=${encodeURIComponent(String(since))}` : "/api/events";
-    const payload = await fetchApi<{ latest_seq: number; events: unknown[] }>(path);
+    const path =
+      since > 0
+        ? `/api/events?since=${encodeURIComponent(String(since))}`
+        : "/api/events";
+    const payload = await fetchApi<{ latest_seq: number; events: unknown[] }>(
+      path
+    );
 
     // If the server restarted (seq reset), our stored `since` may be ahead of server state.
     // In that case, re-fetch the current buffer from the server and reset our cursor.
-    if (since > 0 && typeof payload?.latest_seq === "number" && payload.latest_seq < since) {
+    if (
+      since > 0 &&
+      typeof payload?.latest_seq === "number" &&
+      payload.latest_seq < since
+    ) {
       lastEventSeq = 0;
       persistLastEventSeq(0);
-      const fullPayload = await fetchApi<{ latest_seq: number; events: unknown[] }>("/api/events");
-      const fullEvents = Array.isArray(fullPayload?.events) ? fullPayload.events : [];
+      const fullPayload = await fetchApi<{
+        latest_seq: number;
+        events: unknown[];
+      }>("/api/events");
+      const fullEvents = Array.isArray(fullPayload?.events)
+        ? fullPayload.events
+        : [];
       for (const ev of fullEvents) {
         const seq = (ev as { seq?: unknown })?.seq;
-        if (seen && typeof seq === "number" && Number.isFinite(seq) && seen.has(seq)) continue;
+        if (
+          seen &&
+          typeof seq === "number" &&
+          Number.isFinite(seq) &&
+          seen.has(seq)
+        )
+          continue;
         handleIncomingWsData(JSON.stringify(ev));
       }
       if (fullPayload && typeof fullPayload.latest_seq === "number") {
@@ -454,7 +486,13 @@ async function replayMissedEvents() {
     const events = Array.isArray(payload?.events) ? payload.events : [];
     for (const ev of events) {
       const seq = (ev as { seq?: unknown })?.seq;
-      if (seen && typeof seq === "number" && Number.isFinite(seq) && seen.has(seq)) continue;
+      if (
+        seen &&
+        typeof seq === "number" &&
+        Number.isFinite(seq) &&
+        seen.has(seq)
+      )
+        continue;
       handleIncomingWsData(JSON.stringify(ev));
     }
     if (payload && typeof payload.latest_seq === "number") {
@@ -466,7 +504,10 @@ async function replayMissedEvents() {
 }
 
 async function connectWebSocket() {
-  if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) {
+  if (
+    ws?.readyState === WebSocket.OPEN ||
+    ws?.readyState === WebSocket.CONNECTING
+  ) {
     return;
   }
 
@@ -477,7 +518,7 @@ async function connectWebSocket() {
 
   socket.onopen = () => {
     if (ws !== socket || generation !== wsGeneration) return;
-    console.log('[API] WebSocket connected');
+    console.log("[API] WebSocket connected");
     if (wsReconnectTimeout) {
       clearTimeout(wsReconnectTimeout);
       wsReconnectTimeout = null;
@@ -514,7 +555,10 @@ async function connectWebSocket() {
             .map((raw) => {
               try {
                 const msg = JSON.parse(raw);
-                const seq = typeof msg?.seq === "number" ? msg.seq : Number.POSITIVE_INFINITY;
+                const seq =
+                  typeof msg?.seq === "number"
+                    ? msg.seq
+                    : Number.POSITIVE_INFINITY;
                 return { raw, seq };
               } catch {
                 return { raw, seq: Number.POSITIVE_INFINITY };
@@ -531,7 +575,8 @@ async function connectWebSocket() {
 
   socket.onmessage = (event) => {
     if (ws !== socket || generation !== wsGeneration) return;
-    const data = typeof event.data === "string" ? event.data : String(event.data);
+    const data =
+      typeof event.data === "string" ? event.data : String(event.data);
     if (isReplaying) {
       // During replay we buffer most live events to preserve ordering, but terminal IO must
       // stay responsive (otherwise typing feels laggy as echo waits for replay to finish).
@@ -557,14 +602,14 @@ async function connectWebSocket() {
 
   socket.onclose = () => {
     if (ws !== socket || generation !== wsGeneration) return;
-    console.log('[API] WebSocket disconnected, reconnecting...');
+    console.log("[API] WebSocket disconnected, reconnecting...");
     ws = null;
     wsReconnectTimeout = setTimeout(() => void connectWebSocket(), 2000);
   };
 
   socket.onerror = (error) => {
     if (ws !== socket || generation !== wsGeneration) return;
-    console.error('[API] WebSocket error:', error);
+    console.error("[API] WebSocket error:", error);
   };
 }
 
@@ -604,7 +649,10 @@ export function sendWebSocketMessage(message: unknown): boolean {
 }
 
 // Tauri invoke helper
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function tauriInvoke<T>(
+  cmd: string,
+  args?: Record<string, unknown>
+): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke(cmd, args);
 }
@@ -615,7 +663,7 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${base}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       ...options?.headers,
     },
   });
@@ -624,7 +672,10 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
     const errorText = await response.text();
     let message = errorText;
     try {
-      const parsed = JSON.parse(errorText) as { error?: unknown; message?: unknown };
+      const parsed = JSON.parse(errorText) as {
+        error?: unknown;
+        message?: unknown;
+      };
       if (typeof parsed?.message === "string" && parsed.message.trim()) {
         message = parsed.message;
       } else if (typeof parsed?.error === "string" && parsed.error.trim()) {
@@ -652,7 +703,7 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
 
 export async function fetchHostedApi<T>(
   path: string,
-  options?: RequestInit,
+  options?: RequestInit
 ): Promise<T> {
   const base = getBillingApiBaseUrl();
   const token = await getHostedAuthTokenStrict();
@@ -669,7 +720,10 @@ export async function fetchHostedApi<T>(
     const errorText = await response.text();
     let message = errorText;
     try {
-      const parsed = JSON.parse(errorText) as { error?: unknown; message?: unknown };
+      const parsed = JSON.parse(errorText) as {
+        error?: unknown;
+        message?: unknown;
+      };
       if (typeof parsed?.message === "string" && parsed.message.trim()) {
         message = parsed.message;
       } else if (typeof parsed?.error === "string" && parsed.error.trim()) {
@@ -697,7 +751,7 @@ export async function fetchHostedApi<T>(
 async function fetchApiForRuntime<T>(
   runtime: AgentRuntime,
   path: string,
-  options?: RequestInit,
+  options?: RequestInit
 ): Promise<T> {
   if (runtime === "hosted") {
     return fetchHostedApi<T>(`/api/hosting/va${path}`, options);
@@ -708,7 +762,7 @@ async function fetchApiForRuntime<T>(
 export async function fetchAgentApi<T>(
   agentId: string,
   path: string,
-  options?: RequestInit,
+  options?: RequestInit
 ): Promise<T> {
   const runtime = getAgentRuntime(agentId);
   return fetchApiForRuntime<T>(runtime, path, options);
@@ -738,13 +792,19 @@ export async function findAvailablePort(
     start: String(start),
     end: String(end),
   });
-  return fetchApi<FindAvailablePortResponse>(`/api/ports/find?${params.toString()}`);
+  return fetchApi<FindAvailablePortResponse>(
+    `/api/ports/find?${params.toString()}`
+  );
 }
 
 // Claude model aliases - these always point to the latest version of each model
 // See: claude --help for more info
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export type CodexModel =
+  | "gpt-5.6"
+  | "gpt-5.6-sol"
+  | "gpt-5.6-terra"
+  | "gpt-5.6-luna"
   | "gpt-5.5"
   | "gpt-5.5-pro"
   | "gpt-5.4"
@@ -762,7 +822,7 @@ export type CodexModel =
   | "o4-mini"
   | "gpt-4.1";
 export type CliType = "claude" | "codex";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AgentOptions {
   model?: ClaudeModel | CodexModel | string;
@@ -776,9 +836,14 @@ export interface AgentOptions {
 }
 
 // Agent APIs
-export async function createAgent(id: string, workingDir: string, options?: AgentOptions): Promise<void> {
+export async function createAgent(
+  id: string,
+  workingDir: string,
+  options?: AgentOptions
+): Promise<void> {
   const cliType = options?.cliType || "claude";
-  const model = options?.model || (cliType === "codex" ? "gpt-5.5" : "sonnet");
+  const model =
+    options?.model || (cliType === "codex" ? "gpt-5.6-sol" : "sonnet");
   const thinkingEnabled = options?.thinkingEnabled || false;
   const reasoningEffort = options?.reasoningEffort || "medium";
   const mcpServers = options?.mcpServers || [];
@@ -787,7 +852,17 @@ export async function createAgent(id: string, workingDir: string, options?: Agen
   const runtime = options?.runtime || "local";
 
   if (isTauri()) {
-    return tauriInvoke("create_agent", { id, workingDir, model, thinkingEnabled, reasoningEffort, mcpServers, cliType, sessionId, specialty });
+    return tauriInvoke("create_agent", {
+      id,
+      workingDir,
+      model,
+      thinkingEnabled,
+      reasoningEffort,
+      mcpServers,
+      cliType,
+      sessionId,
+      specialty,
+    });
   } else {
     setAgentRuntime(id, runtime);
     if (runtime === "local" && wsListeners.size > 0) {
@@ -795,7 +870,7 @@ export async function createAgent(id: string, workingDir: string, options?: Agen
     }
     // Pass the client-generated ID so the server uses it
     await fetchApiForRuntime<void>(runtime, "/api/agents", {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify({
         id,
         name: id,
@@ -817,7 +892,9 @@ export async function killAgent(id: string): Promise<void> {
     return tauriInvoke("kill_agent", { id });
   } else {
     const runtime = getAgentRuntime(id);
-    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}`, { method: "DELETE" });
+    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}`, {
+      method: "DELETE",
+    });
     removeAgentRuntime(id);
   }
 }
@@ -827,7 +904,9 @@ export async function stopAgent(id: string): Promise<void> {
     return tauriInvoke("stop_agent", { id });
   } else {
     const runtime = getAgentRuntime(id);
-    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/stop`, { method: "POST" });
+    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/stop`, {
+      method: "POST",
+    });
   }
 }
 
@@ -868,11 +947,11 @@ async function resizeImageIfNeeded(blob: Blob): Promise<Blob> {
       }
 
       // Create canvas and resize
-      const canvas = document.createElement('canvas');
+      const canvas = document.createElement("canvas");
       canvas.width = newWidth;
       canvas.height = newHeight;
 
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext("2d");
       if (!ctx) {
         resolve(blob); // Fallback to original if canvas fails
         return;
@@ -884,20 +963,22 @@ async function resizeImageIfNeeded(blob: Blob): Promise<Blob> {
       canvas.toBlob(
         (resizedBlob) => {
           if (resizedBlob) {
-            console.log(`[api] Resized image from ${width}x${height} to ${newWidth}x${newHeight}, size: ${blob.size} -> ${resizedBlob.size}`);
+            console.log(
+              `[api] Resized image from ${width}x${height} to ${newWidth}x${newHeight}, size: ${blob.size} -> ${resizedBlob.size}`
+            );
             resolve(resizedBlob);
           } else {
             resolve(blob);
           }
         },
-        blob.type === 'image/png' ? 'image/png' : 'image/jpeg',
+        blob.type === "image/png" ? "image/png" : "image/jpeg",
         0.85 // Quality for JPEG
       );
     };
 
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error('Failed to load image for resizing'));
+      reject(new Error("Failed to load image for resizing"));
     };
 
     img.src = url;
@@ -905,7 +986,9 @@ async function resizeImageIfNeeded(blob: Blob): Promise<Blob> {
 }
 
 // Helper to convert blob URL to base64
-async function blobUrlToBase64(blobUrl: string): Promise<{ base64: string; mimeType: string }> {
+async function blobUrlToBase64(
+  blobUrl: string
+): Promise<{ base64: string; mimeType: string }> {
   const response = await fetch(blobUrl);
   let blob = await response.blob();
 
@@ -918,8 +1001,8 @@ async function blobUrlToBase64(blobUrl: string): Promise<{ base64: string; mimeT
       const base64 = reader.result as string;
       // Return just the base64 data part (after the comma)
       resolve({
-        base64: base64.split(',')[1],
-        mimeType: blob.type || 'image/png'
+        base64: base64.split(",")[1],
+        mimeType: blob.type || "image/png",
       });
     };
     reader.onerror = reject;
@@ -932,7 +1015,7 @@ export async function sendMessage(
   message: string,
   images?: string[],
   clientMessageId?: string,
-  runtimeOverride?: AgentRuntime,
+  runtimeOverride?: AgentRuntime
 ): Promise<void> {
   if (isTauri()) {
     return tauriInvoke("send_message", { id, message, images: images || [] });
@@ -942,22 +1025,22 @@ export async function sendMessage(
     const imageData: Array<{ data: string; mime_type: string }> = [];
     if (images && images.length > 0) {
       for (const imgPath of images) {
-        if (imgPath.startsWith('blob:')) {
+        if (imgPath.startsWith("blob:")) {
           try {
             const { base64, mimeType } = await blobUrlToBase64(imgPath);
             imageData.push({
               data: base64,
-              mime_type: mimeType
+              mime_type: mimeType,
             });
           } catch (err) {
-            console.error('[api] Failed to convert blob to base64:', err);
+            console.error("[api] Failed to convert blob to base64:", err);
           }
         }
       }
     }
 
     await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/messages`, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify({
         message,
         images: imageData,
@@ -969,7 +1052,10 @@ export async function sendMessage(
 
 const INTEGRATIONS_FILE_PATH = ".virtual-agency/integrations.md";
 
-export async function saveIntegrationsMarkdown(id: string, markdown: string): Promise<void> {
+export async function saveIntegrationsMarkdown(
+  id: string,
+  markdown: string
+): Promise<void> {
   if (isTauri()) {
     return tauriInvoke("save_integrations_markdown", { id, markdown });
   }
@@ -991,10 +1077,14 @@ export async function loadIntegrationsMarkdown(id: string): Promise<string> {
 
   try {
     const runtime = getAgentRuntime(id);
-    const response = await fetchApiForRuntime<{ content?: string }>(runtime, `/api/files/read/${id}`, {
-      method: "POST",
-      body: JSON.stringify({ path: INTEGRATIONS_FILE_PATH }),
-    });
+    const response = await fetchApiForRuntime<{ content?: string }>(
+      runtime,
+      `/api/files/read/${id}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ path: INTEGRATIONS_FILE_PATH }),
+      }
+    );
     return typeof response?.content === "string" ? response.content : "";
   } catch {
     // Missing file is expected before first save.
@@ -1036,7 +1126,9 @@ export async function createNangoConnectSession(
   integrationId: string
 ): Promise<NangoConnectSessionResponse> {
   if (isTauri()) {
-    throw new Error("Nango connect flow is only available in browser/server mode.");
+    throw new Error(
+      "Nango connect flow is only available in browser/server mode."
+    );
   }
 
   const runtime = getAgentRuntime(id);
@@ -1059,7 +1151,9 @@ export async function listNangoConnections(
   integrationId?: string
 ): Promise<NangoConnectionsResponse> {
   if (isTauri()) {
-    throw new Error("Nango connection management is only available in browser/server mode.");
+    throw new Error(
+      "Nango connection management is only available in browser/server mode."
+    );
   }
 
   const runtime = getAgentRuntime(id);
@@ -1082,7 +1176,9 @@ export async function deleteNangoConnection(
   integrationId?: string
 ): Promise<NangoDeleteConnectionResponse> {
   if (isTauri()) {
-    throw new Error("Nango connection management is only available in browser/server mode.");
+    throw new Error(
+      "Nango connection management is only available in browser/server mode."
+    );
   }
 
   const runtime = getAgentRuntime(id);
@@ -1100,7 +1196,9 @@ export async function deleteNangoConnection(
   );
 }
 
-export async function listAgents(options: RuntimeQueryOptions = {}): Promise<string[]> {
+export async function listAgents(
+  options: RuntimeQueryOptions = {}
+): Promise<string[]> {
   if (isTauri()) {
     return tauriInvoke("list_agents");
   } else {
@@ -1113,7 +1211,9 @@ export async function listAgents(options: RuntimeQueryOptions = {}): Promise<str
     }
     if (shouldIncludeHosted(options)) {
       try {
-        const hosted = await fetchHostedApi<Array<{ id: string }>>("/api/hosting/va/api/agents");
+        const hosted = await fetchHostedApi<Array<{ id: string }>>(
+          "/api/hosting/va/api/agents"
+        );
         hosted.forEach((agent) => all.add(agent.id));
       } catch (err) {
         if (isHostedAuthBootError(err)) {
@@ -1146,7 +1246,7 @@ export async function updateAgentSettings(
   } else {
     const runtime = getAgentRuntime(id);
     await fetchApiForRuntime<void>(runtime, `/api/agents/${id}`, {
-      method: 'PATCH',
+      method: "PATCH",
       body: JSON.stringify({
         name: options.name,
         model: options.model,
@@ -1183,12 +1283,19 @@ export interface SetAgentTelegramRequest {
   send_updates?: boolean;
 }
 
-export async function getAgentTelegramSettings(id: string): Promise<AgentTelegramSettings> {
+export async function getAgentTelegramSettings(
+  id: string
+): Promise<AgentTelegramSettings> {
   if (isTauri()) {
-    throw new Error("Telegram settings are only available in browser/server mode.");
+    throw new Error(
+      "Telegram settings are only available in browser/server mode."
+    );
   }
   const runtime = getAgentRuntime(id);
-  return fetchApiForRuntime<AgentTelegramSettings>(runtime, `/api/agents/${id}/telegram`);
+  return fetchApiForRuntime<AgentTelegramSettings>(
+    runtime,
+    `/api/agents/${id}/telegram`
+  );
 }
 
 export async function setAgentTelegramSettings(
@@ -1196,18 +1303,26 @@ export async function setAgentTelegramSettings(
   input: SetAgentTelegramRequest
 ): Promise<AgentTelegramSettings> {
   if (isTauri()) {
-    throw new Error("Telegram settings are only available in browser/server mode.");
+    throw new Error(
+      "Telegram settings are only available in browser/server mode."
+    );
   }
   const runtime = getAgentRuntime(id);
-  return fetchApiForRuntime<AgentTelegramSettings>(runtime, `/api/agents/${id}/telegram`, {
-    method: "PUT",
-    body: JSON.stringify(input),
-  });
+  return fetchApiForRuntime<AgentTelegramSettings>(
+    runtime,
+    `/api/agents/${id}/telegram`,
+    {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }
+  );
 }
 
 export async function deleteAgentTelegramSettings(id: string): Promise<void> {
   if (isTauri()) {
-    throw new Error("Telegram settings are only available in browser/server mode.");
+    throw new Error(
+      "Telegram settings are only available in browser/server mode."
+    );
   }
   const runtime = getAgentRuntime(id);
   await fetchApiForRuntime<void>(runtime, `/api/agents/${id}/telegram`, {
@@ -1226,7 +1341,9 @@ export interface CliStatusOptions {
   includePortScan?: boolean;
 }
 
-export async function getCliStatus(options: CliStatusOptions = {}): Promise<CliStatus> {
+export async function getCliStatus(
+  options: CliStatusOptions = {}
+): Promise<CliStatus> {
   if (isTauri()) {
     return tauriInvoke("get_cli_status");
   } else {
@@ -1254,9 +1371,12 @@ export async function getCliStatus(options: CliStatusOptions = {}): Promise<CliS
     }
 
     try {
-      const hosted = await fetchHostedApi<HostedServerStateResponse>("/api/hosting/me", {
-        method: "GET",
-      });
+      const hosted = await fetchHostedApi<HostedServerStateResponse>(
+        "/api/hosting/me",
+        {
+          method: "GET",
+        }
+      );
       if (hosted?.server && hosted.server.status !== "deleted") {
         return { installed: true, path: "hosted-server", version: null };
       }
@@ -1307,22 +1427,31 @@ export interface ServerAgentInfo {
   runtime?: AgentRuntime;
 }
 
-export async function listAgentDetails(options: RuntimeQueryOptions = {}): Promise<ServerAgentInfo[]> {
+export async function listAgentDetails(
+  options: RuntimeQueryOptions = {}
+): Promise<ServerAgentInfo[]> {
   if (isTauri()) {
     return [];
   }
   const result: ServerAgentInfo[] = [];
   try {
     const local = await fetchApi<ServerAgentInfo[]>("/api/agents");
-    result.push(...local.map((agent) => ({ ...agent, runtime: "local" as AgentRuntime })));
+    result.push(
+      ...local.map((agent) => ({ ...agent, runtime: "local" as AgentRuntime }))
+    );
   } catch {
     // ignore local errors
   }
   if (shouldIncludeHosted(options)) {
     try {
-      const hosted = await fetchHostedApi<ServerAgentInfo[]>("/api/hosting/va/api/agents");
+      const hosted = await fetchHostedApi<ServerAgentInfo[]>(
+        "/api/hosting/va/api/agents"
+      );
       result.push(
-        ...hosted.map((agent) => ({ ...agent, runtime: "hosted" as AgentRuntime })),
+        ...hosted.map((agent) => ({
+          ...agent,
+          runtime: "hosted" as AgentRuntime,
+        }))
       );
     } catch (err) {
       if (isHostedAuthBootError(err)) {
@@ -1338,7 +1467,9 @@ export interface ServerTerminalInfo {
   working_dir: string;
 }
 
-export async function listTerminals(options: RuntimeQueryOptions = {}): Promise<ServerTerminalInfo[]> {
+export async function listTerminals(
+  options: RuntimeQueryOptions = {}
+): Promise<ServerTerminalInfo[]> {
   // Browser-only for now; desktop can add a Tauri command later if needed.
   if (isTauri()) return [];
   const result: ServerTerminalInfo[] = [];
@@ -1350,7 +1481,9 @@ export async function listTerminals(options: RuntimeQueryOptions = {}): Promise<
   }
   if (shouldIncludeHosted(options)) {
     try {
-      const hosted = await fetchHostedApi<ServerTerminalInfo[]>("/api/hosting/va/api/terminals");
+      const hosted = await fetchHostedApi<ServerTerminalInfo[]>(
+        "/api/hosting/va/api/terminals"
+      );
       result.push(...hosted);
     } catch (err) {
       if (isHostedAuthBootError(err)) {
@@ -1362,7 +1495,7 @@ export async function listTerminals(options: RuntimeQueryOptions = {}): Promise<
   return result;
 }
 
-const WORKSPACE_STORAGE_KEY = 'virtual-agency-workspace';
+const WORKSPACE_STORAGE_KEY = "virtual-agency-workspace";
 
 export async function saveWorkspace(data: WorkspaceData): Promise<void> {
   if (isTauri()) {
@@ -1385,7 +1518,7 @@ export async function getWorkspacePath(): Promise<string> {
   if (isTauri()) {
     return tauriInvoke("get_workspace_path_str");
   } else {
-    return 'localStorage';
+    return "localStorage";
   }
 }
 
@@ -1399,11 +1532,11 @@ export interface AppSettings {
   default_agent_runtime: AgentRuntime;
 }
 
-const SETTINGS_STORAGE_KEY = 'virtual-agency-settings';
+const SETTINGS_STORAGE_KEY = "virtual-agency-settings";
 
 const DEFAULT_SETTINGS: AppSettings = {
   claude_cli_path: null,
-  theme: 'dark',
+  theme: "dark",
   auto_save_enabled: true,
   auto_save_interval_seconds: 60,
   default_working_directory: null,
@@ -1423,7 +1556,9 @@ export async function loadSettings(): Promise<AppSettings> {
     return tauriInvoke("load_settings");
   } else {
     const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
+    return stored
+      ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) }
+      : DEFAULT_SETTINGS;
   }
 }
 
@@ -1431,7 +1566,7 @@ export async function getSettingsPath(): Promise<string> {
   if (isTauri()) {
     return tauriInvoke("get_settings_path_str");
   } else {
-    return 'localStorage';
+    return "localStorage";
   }
 }
 
@@ -1486,15 +1621,18 @@ export async function getHostedServerState(): Promise<HostedServerStateResponse>
 }
 
 export async function createHostedCheckoutSession(
-  plan: "cloud_25" | "cloud_50" | "cloud_75" = "cloud_25",
+  plan: "cloud_25" | "cloud_50" | "cloud_75" = "cloud_25"
 ): Promise<{ url: string }> {
   if (isTauri()) {
     throw new Error("Hosted checkout is browser-only.");
   }
-  return fetchHostedApi<{ url: string }>("/api/hosting/create-checkout-session", {
-    method: "POST",
-    body: JSON.stringify({ plan }),
-  });
+  return fetchHostedApi<{ url: string }>(
+    "/api/hosting/create-checkout-session",
+    {
+      method: "POST",
+      body: JSON.stringify({ plan }),
+    }
+  );
 }
 
 async function hostedServerAction(path: string): Promise<HostedServerInfo> {
@@ -1534,13 +1672,15 @@ export async function rotateHostedPairingCode(): Promise<{
     {
       method: "POST",
       body: JSON.stringify({}),
-    },
+    }
   );
 }
 
-export async function startHostedCodexAuth(options: {
-  forceRestart?: boolean;
-} = {}): Promise<HostedCodexAuthState> {
+export async function startHostedCodexAuth(
+  options: {
+    forceRestart?: boolean;
+  } = {}
+): Promise<HostedCodexAuthState> {
   const payload = await fetchHostedApi<{ codexAuth: HostedCodexAuthState }>(
     "/api/hosting/server/codex-auth/start",
     {
@@ -1548,7 +1688,7 @@ export async function startHostedCodexAuth(options: {
       body: JSON.stringify({
         force: options.forceRestart === true,
       }),
-    },
+    }
   );
   return payload.codexAuth;
 }
@@ -1558,7 +1698,7 @@ export async function getHostedCodexAuthStatus(): Promise<HostedCodexAuthState> 
     "/api/hosting/server/codex-auth/status",
     {
       method: "GET",
-    },
+    }
   );
   return payload.codexAuth;
 }
@@ -1578,8 +1718,8 @@ export interface BrowseResponse {
 
 export async function browseDirectory(
   path?: string,
-  runtime: AgentRuntime = "local",
+  runtime: AgentRuntime = "local"
 ): Promise<BrowseResponse> {
-  const params = path ? `?path=${encodeURIComponent(path)}` : '';
+  const params = path ? `?path=${encodeURIComponent(path)}` : "";
   return fetchApiForRuntime<BrowseResponse>(runtime, `/api/browse${params}`);
 }

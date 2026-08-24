@@ -21,13 +21,13 @@ const STRIPE_PRICE_ID =
 const STRIPE_HOSTED_PRICE_ID_LEGACY =
   process.env.STRIPE_HOSTED_PRICE_ID || "price_1T2ea3GR9CoMLe1thilBUjZ2";
 const STRIPE_HOSTED_PRICE_ID_25 = String(
-  process.env.STRIPE_HOSTED_PRICE_ID_25 || STRIPE_HOSTED_PRICE_ID_LEGACY,
+  process.env.STRIPE_HOSTED_PRICE_ID_25 || STRIPE_HOSTED_PRICE_ID_LEGACY
 ).trim();
 const STRIPE_HOSTED_PRICE_ID_50 = String(
-  process.env.STRIPE_HOSTED_PRICE_ID_50 || "price_1T6YbeGR9CoMLe1tjB2RkB5d",
+  process.env.STRIPE_HOSTED_PRICE_ID_50 || "price_1T6YbeGR9CoMLe1tjB2RkB5d"
 ).trim();
 const STRIPE_HOSTED_PRICE_ID_75 = String(
-  process.env.STRIPE_HOSTED_PRICE_ID_75 || "price_1T6Yd2GR9CoMLe1t7Pt60jWg",
+  process.env.STRIPE_HOSTED_PRICE_ID_75 || "price_1T6Yd2GR9CoMLe1t7Pt60jWg"
 ).trim();
 
 const HETZNER_API_TOKEN = process.env.HETZNER_API_TOKEN || "";
@@ -36,8 +36,11 @@ const HETZNER_SERVER_TYPE_25 =
 const HETZNER_SERVER_TYPE_50 =
   String(process.env.HETZNER_SERVER_TYPE_50 || "cpx21").trim() || "cpx21";
 const HETZNER_SERVER_TYPE_75 =
-  String(process.env.HETZNER_SERVER_TYPE_75 || process.env.HETZNER_SERVER_TYPE || "cpx31").trim() ||
-  "cpx31";
+  String(
+    process.env.HETZNER_SERVER_TYPE_75 ||
+      process.env.HETZNER_SERVER_TYPE ||
+      "cpx31"
+  ).trim() || "cpx31";
 const HETZNER_LOCATION = process.env.HETZNER_LOCATION || "ash";
 const HETZNER_IMAGE = process.env.HETZNER_IMAGE || "ubuntu-24.04";
 const HETZNER_SSH_KEY_IDS = (process.env.HETZNER_SSH_KEY_IDS || "")
@@ -49,67 +52,91 @@ const HETZNER_SSH_KEY_IDS = (process.env.HETZNER_SSH_KEY_IDS || "")
 
 const HOSTED_SERVER_PORT = Number.parseInt(
   process.env.HOSTED_SERVER_PORT || "1337",
-  10,
+  10
 );
 const HOSTED_CONTROL_PLANE_TOKEN = process.env.HOSTED_CONTROL_PLANE_TOKEN || "";
 const HOSTED_STATE_FILE =
   process.env.HOSTED_STATE_FILE || "/var/lib/virtualagency/hosted-state.json";
 const HOSTED_NANGO_SECRET_KEY = String(
-  process.env.HOSTED_NANGO_SECRET_KEY || process.env.NANGO_SECRET_KEY || "",
+  process.env.HOSTED_NANGO_SECRET_KEY || process.env.NANGO_SECRET_KEY || ""
 ).trim();
 const HOSTED_NANGO_BASE_URL =
-  String(process.env.HOSTED_NANGO_BASE_URL || process.env.NANGO_BASE_URL || "https://api.nango.dev").trim() ||
-  "https://api.nango.dev";
+  String(
+    process.env.HOSTED_NANGO_BASE_URL ||
+      process.env.NANGO_BASE_URL ||
+      "https://api.nango.dev"
+  ).trim() || "https://api.nango.dev";
 const VA_SERVER_NPM_PACKAGE =
   process.env.VA_SERVER_NPM_PACKAGE || "@virtualagency/server";
 const VA_SERVER_NPM_VERSION = process.env.VA_SERVER_NPM_VERSION || "latest";
 const VA_CODEX_NPM_PACKAGE =
-  String(process.env.VA_CODEX_NPM_PACKAGE || "@openai/codex").trim() || "@openai/codex";
+  String(process.env.VA_CODEX_NPM_PACKAGE || "@openai/codex").trim() ||
+  "@openai/codex";
 const VA_CODEX_NPM_VERSION =
-  String(process.env.VA_CODEX_NPM_VERSION || "0.136.0").trim() || "0.136.0";
+  String(process.env.VA_CODEX_NPM_VERSION || "0.149.1").trim() || "0.149.1";
 const HOSTED_AUTO_UPDATE_ENABLED = !["0", "false", "off", "no"].includes(
-  String(process.env.HOSTED_AUTO_UPDATE_ENABLED || "1").trim().toLowerCase(),
+  String(process.env.HOSTED_AUTO_UPDATE_ENABLED || "1")
+    .trim()
+    .toLowerCase()
 );
 const HOSTED_AUTO_UPDATE_INTERVAL_MS = Math.max(
   30_000,
-  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_INTERVAL_MS || "120000", 10) || 120_000,
+  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_INTERVAL_MS || "120000", 10) ||
+    120_000
 );
 const HOSTED_AUTO_UPDATE_CONCURRENCY = Math.max(
   1,
   Math.min(
     6,
-    Number.parseInt(process.env.HOSTED_AUTO_UPDATE_CONCURRENCY || "2", 10) || 2,
-  ),
+    Number.parseInt(process.env.HOSTED_AUTO_UPDATE_CONCURRENCY || "2", 10) || 2
+  )
 );
 const HOSTED_AUTO_UPDATE_RETRY_DELAY_MS = Math.max(
   60_000,
-  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_RETRY_DELAY_MS || "1800000", 10) || 1_800_000,
+  Number.parseInt(
+    process.env.HOSTED_AUTO_UPDATE_RETRY_DELAY_MS || "1800000",
+    10
+  ) || 1_800_000
 );
-const HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED = !["0", "false", "off", "no"].includes(
+const HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED = ![
+  "0",
+  "false",
+  "off",
+  "no",
+].includes(
   String(process.env.HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED || "1")
     .trim()
-    .toLowerCase(),
+    .toLowerCase()
 );
 const HOSTED_AUTO_UPDATE_SSH_USER =
   String(process.env.HOSTED_AUTO_UPDATE_SSH_USER || "root").trim() || "root";
 const HOSTED_AUTO_UPDATE_SSH_KEY_PATH = String(
-  process.env.HOSTED_AUTO_UPDATE_SSH_KEY_PATH || "",
+  process.env.HOSTED_AUTO_UPDATE_SSH_KEY_PATH || ""
 ).trim();
 const HOSTED_AUTO_UPDATE_SSH_PORT = Math.max(
   1,
-  Math.min(65535, Number.parseInt(process.env.HOSTED_AUTO_UPDATE_SSH_PORT || "22", 10) || 22),
+  Math.min(
+    65535,
+    Number.parseInt(process.env.HOSTED_AUTO_UPDATE_SSH_PORT || "22", 10) || 22
+  )
 );
 const HOSTED_AUTO_UPDATE_SSH_CONNECT_TIMEOUT_SEC = Math.max(
   3,
-  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_SSH_CONNECT_TIMEOUT_SEC || "8", 10) || 8,
+  Number.parseInt(
+    process.env.HOSTED_AUTO_UPDATE_SSH_CONNECT_TIMEOUT_SEC || "8",
+    10
+  ) || 8
 );
 const HOSTED_AUTO_UPDATE_SSH_TIMEOUT_MS = Math.max(
   10_000,
-  Number.parseInt(process.env.HOSTED_AUTO_UPDATE_SSH_TIMEOUT_MS || "120000", 10) || 120_000,
+  Number.parseInt(
+    process.env.HOSTED_AUTO_UPDATE_SSH_TIMEOUT_MS || "120000",
+    10
+  ) || 120_000
 );
 const NPM_VIEW_TIMEOUT_MS = Math.max(
   5_000,
-  Number.parseInt(process.env.NPM_VIEW_TIMEOUT_MS || "15000", 10) || 15_000,
+  Number.parseInt(process.env.NPM_VIEW_TIMEOUT_MS || "15000", 10) || 15_000
 );
 const execFileAsync = promisify(execFile);
 
@@ -127,7 +154,9 @@ function buildNpmPackageSpec(packageName, packageVersion) {
 
 function trackedConfiguredPackageVersion(packageVersion) {
   const normalizedVersion = String(packageVersion || "").trim();
-  return normalizedVersion && normalizedVersion !== "latest" ? normalizedVersion : null;
+  return normalizedVersion && normalizedVersion !== "latest"
+    ? normalizedVersion
+    : null;
 }
 
 const stripe = STRIPE_SECRET_KEY
@@ -146,13 +175,18 @@ const hasClerk = missingClerkEnv.length === 0;
 if (hasClerk) {
   app.use(ClerkExpressWithAuth());
 } else {
-  console.warn("[billing] Clerk disabled. Missing env:", missingClerkEnv.join(", "));
+  console.warn(
+    "[billing] Clerk disabled. Missing env:",
+    missingClerkEnv.join(", ")
+  );
 }
 
 const requireAuth = hasClerk
   ? ClerkExpressRequireAuth()
   : (_req, res) =>
-      res.status(503).json({ error: "missing_clerk_env", missing: missingClerkEnv });
+      res
+        .status(503)
+        .json({ error: "missing_clerk_env", missing: missingClerkEnv });
 
 const HETZNER_API_BASE = "https://api.hetzner.cloud/v1";
 
@@ -175,40 +209,53 @@ let hostedAutoUpdateTimer = null;
 let hostedAutoUpdateInFlight = null;
 const codexAuthSessions = new Map();
 const HOSTED_PLAN_VALUES = new Set(["cloud_25", "cloud_50", "cloud_75"]);
-const CODEX_AUTH_ACTIVE_STATUSES = new Set(["starting", "awaiting_user", "authorizing"]);
+const CODEX_AUTH_ACTIVE_STATUSES = new Set([
+  "starting",
+  "awaiting_user",
+  "authorizing",
+]);
 const CODEX_AUTH_POLL_INTERVAL_MS = Math.max(
   500,
-  Number.parseInt(process.env.CODEX_AUTH_POLL_INTERVAL_MS || "1000", 10) || 1000,
+  Number.parseInt(process.env.CODEX_AUTH_POLL_INTERVAL_MS || "1000", 10) || 1000
 );
 const CODEX_AUTH_TIMEOUT_MS = Math.max(
   60_000,
-  Number.parseInt(process.env.CODEX_AUTH_TIMEOUT_MS || "900000", 10) || 900_000,
+  Number.parseInt(process.env.CODEX_AUTH_TIMEOUT_MS || "900000", 10) || 900_000
 );
 const HOSTED_RUNTIME_TIMEOUT_MS = Math.max(
   2_000,
-  Number.parseInt(process.env.HOSTED_RUNTIME_TIMEOUT_MS || "25000", 10) || 25_000,
+  Number.parseInt(process.env.HOSTED_RUNTIME_TIMEOUT_MS || "25000", 10) ||
+    25_000
 );
 const HOSTED_EVENTS_TIMEOUT_MS = Math.max(
   5_000,
-  Number.parseInt(process.env.HOSTED_EVENTS_TIMEOUT_MS || "30000", 10) || 30_000,
+  Number.parseInt(process.env.HOSTED_EVENTS_TIMEOUT_MS || "30000", 10) || 30_000
 );
 const HOSTED_FILE_TREE_TIMEOUT_MS = Math.max(
   10_000,
-  Number.parseInt(process.env.HOSTED_FILE_TREE_TIMEOUT_MS || "120000", 10) || 120_000,
+  Number.parseInt(process.env.HOSTED_FILE_TREE_TIMEOUT_MS || "120000", 10) ||
+    120_000
 );
 const HOSTING_PROXY_JSON_LIMIT =
   (process.env.HOSTING_PROXY_JSON_LIMIT || "50mb").trim() || "50mb";
 const HOSTED_REBUILD_COMMAND_POLL_INTERVAL_MS = Math.max(
   500,
-  Number.parseInt(process.env.HOSTED_REBUILD_COMMAND_POLL_INTERVAL_MS || "1500", 10) || 1_500,
+  Number.parseInt(
+    process.env.HOSTED_REBUILD_COMMAND_POLL_INTERVAL_MS || "1500",
+    10
+  ) || 1_500
 );
 const HOSTED_REBUILD_COMMAND_TIMEOUT_MS = Math.max(
   30_000,
-  Number.parseInt(process.env.HOSTED_REBUILD_COMMAND_TIMEOUT_MS || "600000", 10) || 600_000,
+  Number.parseInt(
+    process.env.HOSTED_REBUILD_COMMAND_TIMEOUT_MS || "600000",
+    10
+  ) || 600_000
 );
 const HOSTED_SSH_KEY_APPLY_TIMEOUT_MS = Math.max(
   10_000,
-  Number.parseInt(process.env.HOSTED_SSH_KEY_APPLY_TIMEOUT_MS || "60000", 10) || 60_000,
+  Number.parseInt(process.env.HOSTED_SSH_KEY_APPLY_TIMEOUT_MS || "60000", 10) ||
+    60_000
 );
 
 function normalizeHostedPlan(value, fallback = null) {
@@ -230,10 +277,14 @@ function getHostedPriceIdForPlan(plan) {
 function getHostedPlanFromPriceId(priceId) {
   const id = String(priceId || "").trim();
   if (!id) return null;
-  if (STRIPE_HOSTED_PRICE_ID_25 && id === STRIPE_HOSTED_PRICE_ID_25) return "cloud_25";
-  if (STRIPE_HOSTED_PRICE_ID_50 && id === STRIPE_HOSTED_PRICE_ID_50) return "cloud_50";
-  if (STRIPE_HOSTED_PRICE_ID_75 && id === STRIPE_HOSTED_PRICE_ID_75) return "cloud_75";
-  if (STRIPE_HOSTED_PRICE_ID_LEGACY && id === STRIPE_HOSTED_PRICE_ID_LEGACY) return "cloud_25";
+  if (STRIPE_HOSTED_PRICE_ID_25 && id === STRIPE_HOSTED_PRICE_ID_25)
+    return "cloud_25";
+  if (STRIPE_HOSTED_PRICE_ID_50 && id === STRIPE_HOSTED_PRICE_ID_50)
+    return "cloud_50";
+  if (STRIPE_HOSTED_PRICE_ID_75 && id === STRIPE_HOSTED_PRICE_ID_75)
+    return "cloud_75";
+  if (STRIPE_HOSTED_PRICE_ID_LEGACY && id === STRIPE_HOSTED_PRICE_ID_LEGACY)
+    return "cloud_25";
   return null;
 }
 
@@ -308,7 +359,7 @@ function stripAnsi(value) {
 function assertHostedNangoConfigured() {
   if (HOSTED_NANGO_SECRET_KEY) return;
   const err = new Error(
-    "HOSTED_NANGO_SECRET_KEY (or NANGO_SECRET_KEY) is not configured on the control plane",
+    "HOSTED_NANGO_SECRET_KEY (or NANGO_SECRET_KEY) is not configured on the control plane"
   );
   err.statusCode = 503;
   throw err;
@@ -341,26 +392,40 @@ function parseHostedNangoConnections(value) {
   return items
     .map((item) => {
       const connection_id = String(
-        item?.connection_id || item?.id || "",
+        item?.connection_id || item?.id || ""
       ).trim();
       if (!connection_id) return null;
       return {
         connection_id,
         integration_id: String(
-          item?.provider_config_key || item?.integration_id || item?.integration || "",
+          item?.provider_config_key ||
+            item?.integration_id ||
+            item?.integration ||
+            ""
         ).trim(),
-        end_user_id: String(
-          item?.end_user?.id || item?.end_user_id || item?.metadata?.end_user_id || "",
-        ).trim() || null,
+        end_user_id:
+          String(
+            item?.end_user?.id ||
+              item?.end_user_id ||
+              item?.metadata?.end_user_id ||
+              ""
+          ).trim() || null,
         status: typeof item?.status === "string" ? item.status : null,
-        created_at: typeof item?.created_at === "string" ? item.created_at : null,
-        updated_at: typeof item?.updated_at === "string" ? item.updated_at : null,
+        created_at:
+          typeof item?.created_at === "string" ? item.created_at : null,
+        updated_at:
+          typeof item?.updated_at === "string" ? item.updated_at : null,
       };
     })
     .filter(Boolean);
 }
 
-function isHostedNangoConnectionMatch(connection, userId, targetAgentId, integrationId) {
+function isHostedNangoConnectionMatch(
+  connection,
+  userId,
+  targetAgentId,
+  integrationId
+) {
   const target = String(targetAgentId || "").trim();
   if (!target) return false;
   const endUserId = String(connection?.end_user_id || "").trim();
@@ -369,25 +434,38 @@ function isHostedNangoConnectionMatch(connection, userId, targetAgentId, integra
   const scoped = normalizeHostedScopedEndUserId(userId, target);
   const targetSuffix = `:${target}`;
   const matchesAgent =
-    endUserId === scoped || endUserId === target || endUserId.endsWith(targetSuffix);
+    endUserId === scoped ||
+    endUserId === target ||
+    endUserId.endsWith(targetSuffix);
   if (!matchesAgent) return false;
 
   if (!integrationId) return true;
-  return String(connection?.integration_id || "").trim().toLowerCase() ===
-    String(integrationId).trim().toLowerCase();
+  return (
+    String(connection?.integration_id || "")
+      .trim()
+      .toLowerCase() === String(integrationId).trim().toLowerCase()
+  );
 }
 
-async function fetchHostedNangoJson(pathname, options = {}, timeoutMs = HOSTED_RUNTIME_TIMEOUT_MS) {
+async function fetchHostedNangoJson(
+  pathname,
+  options = {},
+  timeoutMs = HOSTED_RUNTIME_TIMEOUT_MS
+) {
   assertHostedNangoConfigured();
   const baseUrl = normalizeHostedNangoBaseUrl();
-  const response = await fetchWithTimeout(`${baseUrl}${pathname}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${HOSTED_NANGO_SECRET_KEY}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
+  const response = await fetchWithTimeout(
+    `${baseUrl}${pathname}`,
+    {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${HOSTED_NANGO_SECRET_KEY}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
     },
-  }, timeoutMs);
+    timeoutMs
+  );
 
   const raw = await response.text();
   let parsed = null;
@@ -459,7 +537,8 @@ async function createHostedNangoConnectSession({
     session_token: token,
     integration_id: integration,
     nango_base_url: normalizeHostedNangoBaseUrl(),
-    expires_at: typeof json?.data?.expires_at === "string" ? json.data.expires_at : null,
+    expires_at:
+      typeof json?.data?.expires_at === "string" ? json.data.expires_at : null,
     connect_link:
       typeof json?.data?.connect_link === "string"
         ? json.data.connect_link
@@ -483,7 +562,10 @@ async function deleteHostedNangoConnection(connectionId) {
   }
 
   const encodedId = encodeURIComponent(id);
-  const candidatePaths = [`/connections/${encodedId}`, `/connection/${encodedId}`];
+  const candidatePaths = [
+    `/connections/${encodedId}`,
+    `/connection/${encodedId}`,
+  ];
   let lastError = null;
 
   for (let index = 0; index < candidatePaths.length; index += 1) {
@@ -493,7 +575,10 @@ async function deleteHostedNangoConnection(connectionId) {
       return;
     } catch (err) {
       lastError = err;
-      if (Number(err?.statusCode) !== 404 || index === candidatePaths.length - 1) {
+      if (
+        Number(err?.statusCode) !== 404 ||
+        index === candidatePaths.length - 1
+      ) {
         throw err;
       }
     }
@@ -503,8 +588,15 @@ async function deleteHostedNangoConnection(connectionId) {
 }
 
 function normalizeProxyMethod(method) {
-  const label = String(method || "GET").trim().toUpperCase() || "GET";
-  if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(label)) {
+  const label =
+    String(method || "GET")
+      .trim()
+      .toUpperCase() || "GET";
+  if (
+    !["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(
+      label
+    )
+  ) {
     const err = new Error(`invalid HTTP method: ${label}`);
     err.statusCode = 400;
     throw err;
@@ -513,7 +605,9 @@ function normalizeProxyMethod(method) {
 }
 
 function resolveGoogleAnalyticsBaseUrlOverride(endpoint) {
-  const normalized = String(endpoint || "").trim().replace(/^\/+/, "");
+  const normalized = String(endpoint || "")
+    .trim()
+    .replace(/^\/+/, "");
 
   const isGa4Data =
     normalized.startsWith("v1beta/properties/") &&
@@ -568,10 +662,14 @@ async function callHostedNangoProxy({
     err.statusCode = 400;
     throw err;
   }
-  const normalizedEndpoint = rawEndpoint.startsWith("/") ? rawEndpoint : `/${rawEndpoint}`;
+  const normalizedEndpoint = rawEndpoint.startsWith("/")
+    ? rawEndpoint
+    : `/${rawEndpoint}`;
   const methodLabel = normalizeProxyMethod(method);
 
-  const url = new URL(`${normalizeHostedNangoBaseUrl()}/proxy${normalizedEndpoint}`);
+  const url = new URL(
+    `${normalizeHostedNangoBaseUrl()}/proxy${normalizedEndpoint}`
+  );
   if (query && typeof query === "object") {
     for (const [key, value] of Object.entries(query)) {
       const trimmedKey = String(key || "").trim();
@@ -598,9 +696,12 @@ async function callHostedNangoProxy({
   }
   if (
     integration.toLowerCase() === "google" &&
-    !Object.keys(extraHeaders).some((key) => key.toLowerCase() === "base-url-override")
+    !Object.keys(extraHeaders).some(
+      (key) => key.toLowerCase() === "base-url-override"
+    )
   ) {
-    const baseUrlOverride = resolveGoogleAnalyticsBaseUrlOverride(normalizedEndpoint);
+    const baseUrlOverride =
+      resolveGoogleAnalyticsBaseUrlOverride(normalizedEndpoint);
     if (baseUrlOverride) {
       extraHeaders["Base-Url-Override"] = baseUrlOverride;
     }
@@ -621,7 +722,7 @@ async function callHostedNangoProxy({
       },
       ...(hasRequestBody ? { body: JSON.stringify(body) } : {}),
     },
-    HOSTED_RUNTIME_TIMEOUT_MS,
+    HOSTED_RUNTIME_TIMEOUT_MS
   );
 
   const raw = await response.text();
@@ -640,10 +741,18 @@ async function callHostedNangoProxy({
   };
 }
 
-async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) {
+async function maybeHandleHostedControlPlaneNango(
+  req,
+  res,
+  userId,
+  suffixPath
+) {
   const method = req.method.toUpperCase();
 
-  if (suffixPath === "/api/integrations/nango/connect-session" && method === "POST") {
+  if (
+    suffixPath === "/api/integrations/nango/connect-session" &&
+    method === "POST"
+  ) {
     try {
       const session = await createHostedNangoConnectSession({
         userId,
@@ -654,14 +763,18 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
       });
       res.json(session);
     } catch (err) {
-      res
-        .status(Number(err?.statusCode) || 500)
-        .json({ error: "nango_connect_session_failed", message: err?.message || String(err) });
+      res.status(Number(err?.statusCode) || 500).json({
+        error: "nango_connect_session_failed",
+        message: err?.message || String(err),
+      });
     }
     return true;
   }
 
-  if (suffixPath === "/api/integrations/nango/connections" && method === "POST") {
+  if (
+    suffixPath === "/api/integrations/nango/connections" &&
+    method === "POST"
+  ) {
     const endUserId = String(req.body?.end_user_id || "").trim();
     if (!endUserId) {
       res.status(400).json({
@@ -679,8 +792,8 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
           connection,
           userId,
           endUserId,
-          integrationFilter || null,
-        ),
+          integrationFilter || null
+        )
       );
       res.json({
         end_user_id: endUserId,
@@ -689,14 +802,18 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
         connections: filtered,
       });
     } catch (err) {
-      res
-        .status(Number(err?.statusCode) || 500)
-        .json({ error: "nango_connections_failed", message: err?.message || String(err) });
+      res.status(Number(err?.statusCode) || 500).json({
+        error: "nango_connections_failed",
+        message: err?.message || String(err),
+      });
     }
     return true;
   }
 
-  if (suffixPath === "/api/integrations/nango/connections" && method === "DELETE") {
+  if (
+    suffixPath === "/api/integrations/nango/connections" &&
+    method === "DELETE"
+  ) {
     const endUserId = String(req.body?.end_user_id || "").trim();
     const connectionId = String(req.body?.connection_id || "").trim();
     if (!endUserId) {
@@ -718,7 +835,8 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
     try {
       const all = await listHostedNangoConnections();
       const target = all.find(
-        (connection) => String(connection?.connection_id || "").trim() === connectionId,
+        (connection) =>
+          String(connection?.connection_id || "").trim() === connectionId
       );
       if (!target) {
         res.status(404).json({
@@ -727,7 +845,14 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
         });
         return true;
       }
-      if (!isHostedNangoConnectionMatch(target, userId, endUserId, integrationFilter || null)) {
+      if (
+        !isHostedNangoConnectionMatch(
+          target,
+          userId,
+          endUserId,
+          integrationFilter || null
+        )
+      ) {
         res.status(403).json({
           error: "nango_delete_connection_failed",
           message: `connection_id '${connectionId}' is not accessible for end_user_id '${endUserId}'`,
@@ -738,19 +863,26 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
       await deleteHostedNangoConnection(connectionId);
       res.json({ ok: true, connection_id: connectionId });
     } catch (err) {
-      res
-        .status(Number(err?.statusCode) || 500)
-        .json({ error: "nango_delete_connection_failed", message: err?.message || String(err) });
+      res.status(Number(err?.statusCode) || 500).json({
+        error: "nango_delete_connection_failed",
+        message: err?.message || String(err),
+      });
     }
     return true;
   }
 
-  const connectMatch = suffixPath.match(/^\/api\/agent-tools\/([^/]+)\/nango-connect-session$/);
+  const connectMatch = suffixPath.match(
+    /^\/api\/agent-tools\/([^/]+)\/nango-connect-session$/
+  );
   if (connectMatch && method === "POST") {
     const sourceAgentId = connectMatch[1];
-    const targetAgentId = String(req.body?.target_agent_id || sourceAgentId).trim() || sourceAgentId;
+    const targetAgentId =
+      String(req.body?.target_agent_id || sourceAgentId).trim() ||
+      sourceAgentId;
     if (targetAgentId !== sourceAgentId) {
-      res.status(403).json({ error: "cross-agent nango access is not allowed" });
+      res
+        .status(403)
+        .json({ error: "cross-agent nango access is not allowed" });
       return true;
     }
     try {
@@ -767,17 +899,25 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
         session,
       });
     } catch (err) {
-      res.status(Number(err?.statusCode) || 500).json({ error: err?.message || String(err) });
+      res
+        .status(Number(err?.statusCode) || 500)
+        .json({ error: err?.message || String(err) });
     }
     return true;
   }
 
-  const connectionsMatch = suffixPath.match(/^\/api\/agent-tools\/([^/]+)\/nango-connections$/);
+  const connectionsMatch = suffixPath.match(
+    /^\/api\/agent-tools\/([^/]+)\/nango-connections$/
+  );
   if (connectionsMatch && method === "POST") {
     const sourceAgentId = connectionsMatch[1];
-    const targetAgentId = String(req.body?.target_agent_id || sourceAgentId).trim() || sourceAgentId;
+    const targetAgentId =
+      String(req.body?.target_agent_id || sourceAgentId).trim() ||
+      sourceAgentId;
     if (targetAgentId !== sourceAgentId) {
-      res.status(403).json({ error: "cross-agent nango access is not allowed" });
+      res
+        .status(403)
+        .json({ error: "cross-agent nango access is not allowed" });
       return true;
     }
     const integrationFilter = String(req.body?.integration_id || "").trim();
@@ -788,8 +928,8 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
           connection,
           userId,
           targetAgentId,
-          integrationFilter || null,
-        ),
+          integrationFilter || null
+        )
       );
       res.json({
         ok: true,
@@ -800,17 +940,25 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
         connections: filtered,
       });
     } catch (err) {
-      res.status(Number(err?.statusCode) || 500).json({ error: err?.message || String(err) });
+      res
+        .status(Number(err?.statusCode) || 500)
+        .json({ error: err?.message || String(err) });
     }
     return true;
   }
 
-  const proxyMatch = suffixPath.match(/^\/api\/agent-tools\/([^/]+)\/nango-proxy$/);
+  const proxyMatch = suffixPath.match(
+    /^\/api\/agent-tools\/([^/]+)\/nango-proxy$/
+  );
   if (proxyMatch && method === "POST") {
     const sourceAgentId = proxyMatch[1];
-    const targetAgentId = String(req.body?.target_agent_id || sourceAgentId).trim() || sourceAgentId;
+    const targetAgentId =
+      String(req.body?.target_agent_id || sourceAgentId).trim() ||
+      sourceAgentId;
     if (targetAgentId !== sourceAgentId) {
-      res.status(403).json({ error: "cross-agent nango access is not allowed" });
+      res
+        .status(403)
+        .json({ error: "cross-agent nango access is not allowed" });
       return true;
     }
 
@@ -823,13 +971,19 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
       const availableConnections = await listHostedNangoConnections();
       const connectionId = explicitConnectionId
         ? (() => {
-            const allowed = availableConnections.some((connection) =>
-              connection.connection_id === explicitConnectionId &&
-              isHostedNangoConnectionMatch(connection, userId, targetAgentId, integrationId),
+            const allowed = availableConnections.some(
+              (connection) =>
+                connection.connection_id === explicitConnectionId &&
+                isHostedNangoConnectionMatch(
+                  connection,
+                  userId,
+                  targetAgentId,
+                  integrationId
+                )
             );
             if (!allowed) {
               const err = new Error(
-                `connection_id '${explicitConnectionId}' is not accessible for target agent '${targetAgentId}' and integration '${integrationId}'`,
+                `connection_id '${explicitConnectionId}' is not accessible for target agent '${targetAgentId}' and integration '${integrationId}'`
               );
               err.statusCode = 403;
               throw err;
@@ -838,11 +992,16 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
           })()
         : (() => {
             const found = availableConnections.find((connection) =>
-              isHostedNangoConnectionMatch(connection, userId, targetAgentId, integrationId),
+              isHostedNangoConnectionMatch(
+                connection,
+                userId,
+                targetAgentId,
+                integrationId
+              )
             );
             if (!found) {
               const err = new Error(
-                `no Nango connection found for target agent '${targetAgentId}' and integration '${integrationId}'`,
+                `no Nango connection found for target agent '${targetAgentId}' and integration '${integrationId}'`
               );
               err.statusCode = 404;
               throw err;
@@ -872,7 +1031,9 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
         data: proxyResult.data,
       });
     } catch (err) {
-      res.status(Number(err?.statusCode) || 500).json({ error: err?.message || String(err) });
+      res
+        .status(Number(err?.statusCode) || 500)
+        .json({ error: err?.message || String(err) });
     }
     return true;
   }
@@ -880,7 +1041,11 @@ async function maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath) 
   return false;
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = HOSTED_RUNTIME_TIMEOUT_MS) {
+async function fetchWithTimeout(
+  url,
+  options = {},
+  timeoutMs = HOSTED_RUNTIME_TIMEOUT_MS
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -896,7 +1061,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = HOSTED_RUNTIME_TI
       throw timeoutErr;
     }
     const networkErr = new Error(
-      `hosted_runtime_network_error:${truncateText(err?.message || String(err), 280)}`,
+      `hosted_runtime_network_error:${truncateText(err?.message || String(err), 280)}`
     );
     networkErr.statusCode = 502;
     throw networkErr;
@@ -925,7 +1090,7 @@ function extractCodexUserCode(text) {
     if (!/^[A-Z0-9-]+$/.test(candidate)) return null;
     if (
       /^(AUTHORIZATION|AUTHORIZE|AUTHENTICATE|AUTHENTICATION|VERIFICATION|CONFIRMATION|CONTINUE)$/i.test(
-        candidate,
+        candidate
       )
     ) {
       return null;
@@ -947,7 +1112,9 @@ function extractCodexUserCode(text) {
     }
   }
 
-  for (const match of text.matchAll(/\b([A-Z0-9]{3,8}(?:-[A-Z0-9]{3,8}){1,3})\b/gi)) {
+  for (const match of text.matchAll(
+    /\b([A-Z0-9]{3,8}(?:-[A-Z0-9]{3,8}){1,3})\b/gi
+  )) {
     const dashedCandidate = normalizeCandidate(match?.[1]);
     if (dashedCandidate) return dashedCandidate;
   }
@@ -1026,9 +1193,10 @@ async function hostedRuntimeRequest(server, method, suffix, body) {
 
   if (!response.ok) {
     const errorMessage =
-      (parsed && (parsed.message || parsed.error)) || truncateText(raw || "", 280);
+      (parsed && (parsed.message || parsed.error)) ||
+      truncateText(raw || "", 280);
     const err = new Error(
-      `hosted_runtime_request_failed:${response.status}:${errorMessage || "unknown_error"}`,
+      `hosted_runtime_request_failed:${response.status}:${errorMessage || "unknown_error"}`
     );
     err.statusCode = response.status;
     throw err;
@@ -1039,7 +1207,11 @@ async function hostedRuntimeRequest(server, method, suffix, body) {
 }
 
 function buildCodexTerminalId(userId) {
-  const digest = crypto.createHash("sha256").update(userId).digest("hex").slice(0, 16);
+  const digest = crypto
+    .createHash("sha256")
+    .update(userId)
+    .digest("hex")
+    .slice(0, 16);
   return `codex-auth-${digest}`;
 }
 
@@ -1047,12 +1219,16 @@ async function cleanupCodexAuthTerminal(userId, terminalId) {
   if (!terminalId) return;
   try {
     const server = await ensureHostedServerAccess(userId);
-    await hostedRuntimeRequest(server, "DELETE", `/api/terminals/${encodeURIComponent(terminalId)}`);
+    await hostedRuntimeRequest(
+      server,
+      "DELETE",
+      `/api/terminals/${encodeURIComponent(terminalId)}`
+    );
   } catch (err) {
     if (err?.statusCode === 404) return;
     console.warn(
       `[hosting] failed cleaning codex auth terminal for ${userId}:`,
-      err?.message || err,
+      err?.message || err
     );
   }
 }
@@ -1086,7 +1262,9 @@ async function finishCodexAuthSession(userId, status, overrides = {}) {
     lastMessage:
       overrides.lastMessage ??
       session.lastMessage ??
-      (status === "completed" ? "Codex authentication completed." : "Codex authentication failed."),
+      (status === "completed"
+        ? "Codex authentication completed."
+        : "Codex authentication failed."),
     lastError:
       overrides.lastError !== undefined
         ? overrides.lastError
@@ -1178,7 +1356,7 @@ async function pollHostedCodexAuthSession(userId) {
     const payload = await hostedRuntimeRequest(
       server,
       "GET",
-      `/api/events?since=${encodeURIComponent(String(since))}`,
+      `/api/events?since=${encodeURIComponent(String(since))}`
     );
 
     const latestSeq = Number.isFinite(payload?.latest_seq)
@@ -1200,8 +1378,11 @@ async function pollHostedCodexAuthSession(userId) {
 
       handleCodexAuthOutput(userId, chunk, false);
       const normalizedChunk = stripAnsi(chunk);
-      session.exitBuffer = `${session.exitBuffer || ""}${normalizedChunk}`.slice(-256);
-      const exitMatch = session.exitBuffer.match(/__VA_CODEX_AUTH_EXIT__:(\d+)/);
+      session.exitBuffer =
+        `${session.exitBuffer || ""}${normalizedChunk}`.slice(-256);
+      const exitMatch = session.exitBuffer.match(
+        /__VA_CODEX_AUTH_EXIT__:(\d+)/
+      );
       if (!exitMatch) continue;
 
       const exitCode = Number.parseInt(exitMatch[1], 10);
@@ -1222,7 +1403,8 @@ async function pollHostedCodexAuthSession(userId) {
     session.pollErrors = (session.pollErrors || 0) + 1;
     const message = truncateText(err?.message || String(err), 400);
     session.lastError = message;
-    session.lastMessage = "Unable to read Codex auth status from hosted server.";
+    session.lastMessage =
+      "Unable to read Codex auth status from hosted server.";
     session.updatedAt = nowIso();
     if (session.pollErrors >= 5) {
       await finishCodexAuthSession(userId, "failed", {
@@ -1260,7 +1442,7 @@ async function startHostedCodexDeviceAuth(userId, options = {}) {
 
   const existing = codexAuthSessions.get(userId);
   const existingIsActive = Boolean(
-    existing && CODEX_AUTH_ACTIVE_STATUSES.has(existing.status),
+    existing && CODEX_AUTH_ACTIVE_STATUSES.has(existing.status)
   );
   if (existingIsActive && !forceRestart) {
     return sanitizeCodexAuthForClient(getServerCodexAuth(server));
@@ -1317,12 +1499,12 @@ async function startHostedCodexDeviceAuth(userId, options = {}) {
     });
 
     const command =
-      "export HOME=/home/va; export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; codex login --device-auth; __VA_CODEX_AUTH_EXIT__=$?; printf '\\n__VA_CODEX_AUTH_EXIT__:%s\\n' \"$__VA_CODEX_AUTH_EXIT__\"";
+      "export HOME=/home/va; export PATH=/home/va/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:$PATH; codex login --device-auth; __VA_CODEX_AUTH_EXIT__=$?; printf '\\n__VA_CODEX_AUTH_EXIT__:%s\\n' \"$__VA_CODEX_AUTH_EXIT__\"";
     await hostedRuntimeRequest(
       server,
       "POST",
       `/api/terminals/${encodeURIComponent(terminalId)}/input`,
-      { data: `${command}\n` },
+      { data: `${command}\n` }
     );
 
     session.status = "authorizing";
@@ -1366,7 +1548,8 @@ function sanitizeServerForClient(server) {
     id: server.id,
     name: server.name,
     provisionedForPlan: normalizeHostedPlan(server.provisionedForPlan),
-    serverType: typeof server.serverType === "string" ? server.serverType : null,
+    serverType:
+      typeof server.serverType === "string" ? server.serverType : null,
     status: server.status,
     ipAddress: server.ipAddress || null,
     runtimeBaseUrl: server.runtimeBaseUrl || null,
@@ -1403,15 +1586,22 @@ function normalizeHostedRolloutState(value) {
         ? source.lastRolledOutPackageVersion
         : null,
     lastRolloutStartedAt:
-      typeof source.lastRolloutStartedAt === "string" ? source.lastRolloutStartedAt : null,
+      typeof source.lastRolloutStartedAt === "string"
+        ? source.lastRolloutStartedAt
+        : null,
     lastRolloutCompletedAt:
       typeof source.lastRolloutCompletedAt === "string"
         ? source.lastRolloutCompletedAt
         : null,
     lastRolloutReason:
-      typeof source.lastRolloutReason === "string" ? source.lastRolloutReason : null,
+      typeof source.lastRolloutReason === "string"
+        ? source.lastRolloutReason
+        : null,
     lastRolloutSummary: source.lastRolloutSummary || null,
-    lastRolloutError: typeof source.lastRolloutError === "string" ? source.lastRolloutError : null,
+    lastRolloutError:
+      typeof source.lastRolloutError === "string"
+        ? source.lastRolloutError
+        : null,
   };
 }
 
@@ -1428,7 +1618,8 @@ function normalizeHostedServerState(server) {
         ? server.packageVersionUpdatedAt
         : null,
     codexPackageVersion:
-      typeof server.codexPackageVersion === "string" && server.codexPackageVersion.trim()
+      typeof server.codexPackageVersion === "string" &&
+      server.codexPackageVersion.trim()
         ? server.codexPackageVersion.trim()
         : null,
     codexPackageVersionUpdatedAt:
@@ -1440,7 +1631,9 @@ function normalizeHostedServerState(server) {
         ? server.lastAutoUpdateAttemptAt
         : null,
     lastAutoUpdateError:
-      typeof server.lastAutoUpdateError === "string" ? server.lastAutoUpdateError : null,
+      typeof server.lastAutoUpdateError === "string"
+        ? server.lastAutoUpdateError
+        : null,
     codexAuth: sanitizeCodexAuthForClient(server.codexAuth),
   };
 }
@@ -1452,7 +1645,10 @@ function normalizeHostedUsersState(users) {
     if (!userState || typeof userState !== "object") continue;
     normalized[userId] = {
       ...userState,
-      updatedAt: typeof userState.updatedAt === "string" ? userState.updatedAt : nowIso(),
+      updatedAt:
+        typeof userState.updatedAt === "string"
+          ? userState.updatedAt
+          : nowIso(),
       server: normalizeHostedServerState(userState.server || null),
     };
   }
@@ -1568,7 +1764,9 @@ async function refreshBillingSubscriptionMetadataIfStale(userId, meta) {
     const updates = {
       subscriptionStatus: sub.status || null,
       currentPeriodEnd:
-        typeof sub.current_period_end === "number" ? sub.current_period_end : null,
+        typeof sub.current_period_end === "number"
+          ? sub.current_period_end
+          : null,
       cancelAtPeriodEnd: Boolean(sub.cancel_at_period_end),
     };
     await updateUserPrivateMetadata(userId, updates);
@@ -1576,7 +1774,7 @@ async function refreshBillingSubscriptionMetadataIfStale(userId, meta) {
   } catch (err) {
     console.warn(
       `[billing] failed to refresh subscription metadata for ${userId}:`,
-      err?.message || err,
+      err?.message || err
     );
     return meta;
   }
@@ -1653,7 +1851,8 @@ async function hetznerRequest(method, pathname, body) {
   const payload = text ? safeJsonParse(text) : null;
 
   if (!response.ok) {
-    const message = payload?.error?.message || text || `Hetzner API ${response.status}`;
+    const message =
+      payload?.error?.message || text || `Hetzner API ${response.status}`;
     throw new Error(message);
   }
 
@@ -1695,6 +1894,33 @@ function buildHostedRuntimeHostedApiEnvSyncScript(pythonPrefix = "") {
   ];
 }
 
+function buildHostedRuntimeCodexEnvSyncScript(pythonPrefix = "") {
+  return [
+    `${pythonPrefix}python3 - <<'PY' || true`,
+    "from pathlib import Path",
+    `codex_package = ${JSON.stringify(VA_CODEX_NPM_PACKAGE)}`,
+    `codex_version = ${JSON.stringify(VA_CODEX_NPM_VERSION)}`,
+    "managed_path = '/home/va/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin'",
+    "path = Path('/etc/virtualagency/server.env')",
+    "lines = path.read_text().splitlines() if path.exists() else []",
+    "drop = ('VA_CODEX_NPM_PACKAGE=', 'VA_CODEX_NPM_VERSION=', 'PATH=')",
+    "lines = [ln for ln in lines if not ln.startswith(drop)]",
+    "lines.append(f'VA_CODEX_NPM_PACKAGE={codex_package}')",
+    "lines.append(f'VA_CODEX_NPM_VERSION={codex_version}')",
+    "lines.append(f'PATH={managed_path}')",
+    "path.write_text('\\n'.join(lines) + '\\n')",
+    "PY",
+  ];
+}
+
+function buildHostedRuntimeManagedCodexInstallScript(commandPrefix = "") {
+  return [
+    "mkdir -p /home/va/.npm-global",
+    'npm install --prefix /home/va/.npm-global -g "$CODEX_PKG"',
+    "chown -R va:va /home/va/.npm-global",
+  ].map((line) => `${commandPrefix}${line}`);
+}
+
 async function runHostedRootSshUpgrade(server, packageSpecifier) {
   if (!HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED) {
     throw new Error("hosted_root_ssh_upgrade_disabled");
@@ -1709,8 +1935,14 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
     throw new Error("hosted_root_ssh_upgrade_missing_key_path");
   }
 
-  const remoteServerPackage = buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, packageSpecifier);
-  const remoteCodexPackage = buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION);
+  const remoteServerPackage = buildNpmPackageSpec(
+    VA_SERVER_NPM_PACKAGE,
+    packageSpecifier
+  );
+  const remoteCodexPackage = buildNpmPackageSpec(
+    VA_CODEX_NPM_PACKAGE,
+    VA_CODEX_NPM_VERSION
+  );
   const quotedServerPackage = shellSingleQuote(remoteServerPackage);
   const quotedCodexPackage = shellSingleQuote(remoteCodexPackage);
   const remoteCommandLines = [
@@ -1718,12 +1950,14 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
     `SERVER_PKG=${quotedServerPackage}`,
     `CODEX_PKG=${quotedCodexPackage}`,
     "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
-    "  /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\"",
-    "  npm install -g \"$CODEX_PKG\"",
+    '  /usr/local/bin/virtualagency-upgrade.sh "$SERVER_PKG" "$CODEX_PKG"',
+    '  npm install -g "$CODEX_PKG"',
     "else",
-    "  npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\"",
+    '  npm install -g "$SERVER_PKG" "$CODEX_PKG"',
     "fi",
+    ...buildHostedRuntimeManagedCodexInstallScript(),
   ];
+  remoteCommandLines.push(...buildHostedRuntimeCodexEnvSyncScript());
   remoteCommandLines.push(...buildHostedRuntimeHostedApiEnvSyncScript());
   remoteCommandLines.push(...buildHostedRuntimeNangoEnvCleanupScript());
   remoteCommandLines.push("systemctl restart virtualagency-server");
@@ -1752,11 +1986,23 @@ async function runHostedRootSshUpgrade(server, packageSpecifier) {
       maxBuffer: 1024 * 1024,
     });
   } catch (err) {
-    const stdout = truncateText(stripAnsi(String(err?.stdout || "")).replace(/\s+/g, " ").trim(), 220);
-    const stderr = truncateText(stripAnsi(String(err?.stderr || "")).replace(/\s+/g, " ").trim(), 220);
+    const stdout = truncateText(
+      stripAnsi(String(err?.stdout || ""))
+        .replace(/\s+/g, " ")
+        .trim(),
+      220
+    );
+    const stderr = truncateText(
+      stripAnsi(String(err?.stderr || ""))
+        .replace(/\s+/g, " ")
+        .trim(),
+      220
+    );
     const reason = truncateText(err?.message || String(err), 220);
     const details = [reason, stderr, stdout].filter(Boolean).join(" | ");
-    throw new Error(`hosted_root_ssh_upgrade_failed:${details || "ssh_command_failed"}`);
+    throw new Error(
+      `hosted_root_ssh_upgrade_failed:${details || "ssh_command_failed"}`
+    );
   }
 }
 
@@ -1771,19 +2017,37 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
   try {
     await execFileAsync(
       "ssh-keygen",
-      ["-q", "-t", "ed25519", "-f", keyPath, "-N", "", "-C", `va-rollout-${randomToken(6)}`],
-      { timeout: 15_000, maxBuffer: 1024 * 1024 },
+      [
+        "-q",
+        "-t",
+        "ed25519",
+        "-f",
+        keyPath,
+        "-N",
+        "",
+        "-C",
+        `va-rollout-${randomToken(6)}`,
+      ],
+      { timeout: 15_000, maxBuffer: 1024 * 1024 }
     );
 
-    const publicKey = String(await fs.readFile(`${keyPath}.pub`, "utf8")).trim();
+    const publicKey = String(
+      await fs.readFile(`${keyPath}.pub`, "utf8")
+    ).trim();
     if (!isLikelySshPublicKey(publicKey)) {
       throw new Error("generated_invalid_public_key");
     }
 
     await addHostedAuthorizedKey(server, publicKey);
 
-    const remoteServerPackage = buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, packageSpecifier);
-    const remoteCodexPackage = buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION);
+    const remoteServerPackage = buildNpmPackageSpec(
+      VA_SERVER_NPM_PACKAGE,
+      packageSpecifier
+    );
+    const remoteCodexPackage = buildNpmPackageSpec(
+      VA_CODEX_NPM_PACKAGE,
+      VA_CODEX_NPM_VERSION
+    );
     const quotedServerPackage = shellSingleQuote(remoteServerPackage);
     const quotedCodexPackage = shellSingleQuote(remoteCodexPackage);
     const remoteCommandLines = [
@@ -1791,16 +2055,24 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
       `SERVER_PKG=${quotedServerPackage}`,
       `CODEX_PKG=${quotedCodexPackage}`,
       "if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
-      "  sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\"",
-      "  sudo -n npm install -g \"$CODEX_PKG\"",
+      '  sudo -n /usr/local/bin/virtualagency-upgrade.sh "$SERVER_PKG" "$CODEX_PKG"',
+      '  sudo -n npm install -g "$CODEX_PKG"',
       "else",
-      "  sudo -n npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\"",
+      '  sudo -n npm install -g "$SERVER_PKG" "$CODEX_PKG"',
       "fi",
+      ...buildHostedRuntimeManagedCodexInstallScript("sudo -n "),
     ];
-    remoteCommandLines.push(...buildHostedRuntimeHostedApiEnvSyncScript("sudo -n "));
-    remoteCommandLines.push(...buildHostedRuntimeNangoEnvCleanupScript("sudo -n "));
     remoteCommandLines.push(
-      "( sudo -n systemctl restart virtualagency-server || pkill -f '^virtual-agency-server( |$)' || true )",
+      ...buildHostedRuntimeCodexEnvSyncScript("sudo -n ")
+    );
+    remoteCommandLines.push(
+      ...buildHostedRuntimeHostedApiEnvSyncScript("sudo -n ")
+    );
+    remoteCommandLines.push(
+      ...buildHostedRuntimeNangoEnvCleanupScript("sudo -n ")
+    );
+    remoteCommandLines.push(
+      "( sudo -n systemctl restart virtualagency-server || pkill -f '^virtual-agency-server( |$)' || true )"
     );
     const remoteCommand = remoteCommandLines.join("\n");
 
@@ -1826,11 +2098,23 @@ async function runHostedVaSshUpgrade(server, packageSpecifier) {
       maxBuffer: 1024 * 1024,
     });
   } catch (err) {
-    const stdout = truncateText(stripAnsi(String(err?.stdout || "")).replace(/\s+/g, " ").trim(), 220);
-    const stderr = truncateText(stripAnsi(String(err?.stderr || "")).replace(/\s+/g, " ").trim(), 220);
+    const stdout = truncateText(
+      stripAnsi(String(err?.stdout || ""))
+        .replace(/\s+/g, " ")
+        .trim(),
+      220
+    );
+    const stderr = truncateText(
+      stripAnsi(String(err?.stderr || ""))
+        .replace(/\s+/g, " ")
+        .trim(),
+      220
+    );
     const reason = truncateText(err?.message || String(err), 220);
     const details = [reason, stderr, stdout].filter(Boolean).join(" | ");
-    throw new Error(`hosted_va_ssh_upgrade_failed:${details || "ssh_command_failed"}`);
+    throw new Error(
+      `hosted_va_ssh_upgrade_failed:${details || "ssh_command_failed"}`
+    );
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -1840,7 +2124,7 @@ function isLikelySshPublicKey(value) {
   const text = String(value || "").trim();
   if (text.length < 40 || text.length > 8192) return false;
   return /^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,3}(?: .*)?$/.test(
-    text,
+    text
   );
 }
 
@@ -1856,11 +2140,11 @@ async function addHostedAuthorizedKey(server, publicKey) {
   const quotedKey = shellSingleQuote(key);
   const command = [
     `KEY=${quotedKey}`,
-    "mkdir -p \"$HOME/.ssh\"",
-    "chmod 700 \"$HOME/.ssh\"",
-    "touch \"$HOME/.ssh/authorized_keys\"",
-    "chmod 600 \"$HOME/.ssh/authorized_keys\"",
-    "grep -qxF \"$KEY\" \"$HOME/.ssh/authorized_keys\" || echo \"$KEY\" >> \"$HOME/.ssh/authorized_keys\"",
+    'mkdir -p "$HOME/.ssh"',
+    'chmod 700 "$HOME/.ssh"',
+    'touch "$HOME/.ssh/authorized_keys"',
+    'chmod 600 "$HOME/.ssh/authorized_keys"',
+    'grep -qxF "$KEY" "$HOME/.ssh/authorized_keys" || echo "$KEY" >> "$HOME/.ssh/authorized_keys"',
     "STATUS=$?",
     `echo '${marker}:'\"$STATUS\"`,
   ].join("; ");
@@ -1872,8 +2156,14 @@ async function addHostedAuthorizedKey(server, publicKey) {
   let lastPollError = null;
 
   try {
-    const snapshot = await hostedRuntimeRequest(server, "GET", "/api/events?since=0");
-    since = Number.isFinite(snapshot?.latest_seq) ? Number(snapshot.latest_seq) : 0;
+    const snapshot = await hostedRuntimeRequest(
+      server,
+      "GET",
+      "/api/events?since=0"
+    );
+    since = Number.isFinite(snapshot?.latest_seq)
+      ? Number(snapshot.latest_seq)
+      : 0;
 
     await hostedRuntimeRequest(server, "POST", "/api/terminals", {
       id: terminalId,
@@ -1885,7 +2175,7 @@ async function addHostedAuthorizedKey(server, publicKey) {
       server,
       "POST",
       `/api/terminals/${encodeURIComponent(terminalId)}/input`,
-      { data: `${command}\n` },
+      { data: `${command}\n` }
     );
 
     const startedAt = Date.now();
@@ -1897,7 +2187,7 @@ async function addHostedAuthorizedKey(server, publicKey) {
         payload = await hostedRuntimeRequest(
           server,
           "GET",
-          `/api/events?since=${encodeURIComponent(String(since))}`,
+          `/api/events?since=${encodeURIComponent(String(since))}`
         );
         lastPollError = null;
       } catch (err) {
@@ -1937,7 +2227,7 @@ async function addHostedAuthorizedKey(server, publicKey) {
       await hostedRuntimeRequest(
         server,
         "DELETE",
-        `/api/terminals/${encodeURIComponent(terminalId)}`,
+        `/api/terminals/${encodeURIComponent(terminalId)}`
       );
     } catch {
       // ignore cleanup failures
@@ -1945,23 +2235,35 @@ async function addHostedAuthorizedKey(server, publicKey) {
   }
 
   if (!sawCompletion || !Number.isFinite(exitCode)) {
-    const detail = lastPollError?.message || "timed_out_waiting_for_ssh_key_apply_marker";
+    const detail =
+      lastPollError?.message || "timed_out_waiting_for_ssh_key_apply_marker";
     throw new Error(`hosted_ssh_key_apply_timeout:${detail}`);
   }
 
   if (exitCode !== 0) {
     const compact = stripAnsi(outputTail).replace(/\s+/g, " ").trim();
     const tail = compact.length > 320 ? `...${compact.slice(-320)}` : compact;
-    throw new Error(`hosted_ssh_key_apply_failed:exit_${exitCode}:${tail || "no_output"}`);
+    throw new Error(
+      `hosted_ssh_key_apply_failed:exit_${exitCode}:${tail || "no_output"}`
+    );
   }
 }
 
-async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VERSION) {
+async function runHostedInPlaceRebuild(
+  server,
+  packageVersion = VA_SERVER_NPM_VERSION
+) {
   const terminalId = `hosted-rebuild-${randomToken(6)}`;
   const marker = `__VA_REBUILD_DONE_${randomToken(4)}__`;
   const permissionMarker = "__VA_REBUILD_PERM__:missing_sudo_upgrade_privilege";
-  const serverPackageSpec = buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, packageVersion);
-  const codexPackageSpec = buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION);
+  const serverPackageSpec = buildNpmPackageSpec(
+    VA_SERVER_NPM_PACKAGE,
+    packageVersion
+  );
+  const codexPackageSpec = buildNpmPackageSpec(
+    VA_CODEX_NPM_PACKAGE,
+    VA_CODEX_NPM_VERSION
+  );
   const quotedServerPackageSpec = shellSingleQuote(serverPackageSpec);
   const quotedCodexPackageSpec = shellSingleQuote(codexPackageSpec);
   const markerRegex = new RegExp(`${marker}:(\\d+)`);
@@ -1976,31 +2278,32 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
     "INSTALL_DONE=0",
     "if command -v sudo >/dev/null 2>&1; then",
     "  if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
-    "    sudo -n /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\" && sudo -n npm install -g \"$CODEX_PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
+    '    sudo -n /usr/local/bin/virtualagency-upgrade.sh "$SERVER_PKG" "$CODEX_PKG" && sudo -n npm install -g "$CODEX_PKG" && sudo -n mkdir -p /home/va/.npm-global && sudo -n npm install --prefix /home/va/.npm-global -g "$CODEX_PKG" && sudo -n chown -R va:va /home/va/.npm-global && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?',
     "  else",
-    "    sudo -n npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\" && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?",
+    '    sudo -n npm install -g "$SERVER_PKG" "$CODEX_PKG" && sudo -n mkdir -p /home/va/.npm-global && sudo -n npm install --prefix /home/va/.npm-global -g "$CODEX_PKG" && sudo -n chown -R va:va /home/va/.npm-global && CAN_SUDO=1 && INSTALL_DONE=1 || STATUS=$?',
     "  fi",
     "fi",
-    "if [ \"$INSTALL_DONE\" -eq 0 ]; then",
+    'if [ "$INSTALL_DONE" -eq 0 ]; then',
     "  PREFIX=$(npm config get prefix 2>/dev/null || true)",
-    "  if [ -n \"$PREFIX\" ] && [ -w \"$PREFIX\" ]; then",
+    '  if [ -n "$PREFIX" ] && [ -w "$PREFIX" ]; then',
     "    if [ -x /usr/local/bin/virtualagency-upgrade.sh ]; then",
-    "      /usr/local/bin/virtualagency-upgrade.sh \"$SERVER_PKG\" \"$CODEX_PKG\" && npm install -g \"$CODEX_PKG\" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?",
+    '      /usr/local/bin/virtualagency-upgrade.sh "$SERVER_PKG" "$CODEX_PKG" && npm install -g "$CODEX_PKG" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?',
     "    else",
-    "      npm install -g \"$SERVER_PKG\" \"$CODEX_PKG\" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?",
+    '      npm install -g "$SERVER_PKG" "$CODEX_PKG" && STATUS=0 && INSTALL_DONE=1 || STATUS=$?',
     "    fi",
     "  else",
     "    STATUS=243",
-    "    echo '" + permissionMarker + " prefix='\"${PREFIX:-unknown}\"",
+    "    echo '" + permissionMarker + ' prefix=\'"${PREFIX:-unknown}"',
     "  fi",
     "fi",
     'if [ "$STATUS" -eq 0 ] && [ "$CAN_SUDO" -eq 1 ]; then',
+    ...buildHostedRuntimeCodexEnvSyncScript("sudo -n "),
     ...buildHostedRuntimeHostedApiEnvSyncScript("sudo -n "),
     ...buildHostedRuntimeNangoEnvCleanupScript("sudo -n "),
     "fi",
     `echo '${marker}:'\"$STATUS\"`,
     "sleep 1",
-    "if [ \"$STATUS\" -eq 0 ]; then ( ( [ \"$CAN_SUDO\" -eq 1 ] && sudo -n systemctl restart virtualagency-server ) || pkill -f '^virtual-agency-server( |$)' || true ); fi",
+    'if [ "$STATUS" -eq 0 ]; then ( ( [ "$CAN_SUDO" -eq 1 ] && sudo -n systemctl restart virtualagency-server ) || pkill -f \'^virtual-agency-server( |$)\' || true ); fi',
   ].join("\n");
 
   let since = 0;
@@ -2010,8 +2313,14 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
   let lastPollError = null;
 
   try {
-    const snapshot = await hostedRuntimeRequest(server, "GET", "/api/events?since=0");
-    since = Number.isFinite(snapshot?.latest_seq) ? Number(snapshot.latest_seq) : 0;
+    const snapshot = await hostedRuntimeRequest(
+      server,
+      "GET",
+      "/api/events?since=0"
+    );
+    since = Number.isFinite(snapshot?.latest_seq)
+      ? Number(snapshot.latest_seq)
+      : 0;
 
     await hostedRuntimeRequest(server, "POST", "/api/terminals", {
       id: terminalId,
@@ -2023,7 +2332,7 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
       server,
       "POST",
       `/api/terminals/${encodeURIComponent(terminalId)}/input`,
-      { data: `${command}\n` },
+      { data: `${command}\n` }
     );
 
     const startedAt = Date.now();
@@ -2035,7 +2344,7 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
         payload = await hostedRuntimeRequest(
           server,
           "GET",
-          `/api/events?since=${encodeURIComponent(String(since))}`,
+          `/api/events?since=${encodeURIComponent(String(since))}`
         );
         lastPollError = null;
       } catch (err) {
@@ -2076,7 +2385,7 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
       await hostedRuntimeRequest(
         server,
         "DELETE",
-        `/api/terminals/${encodeURIComponent(terminalId)}`,
+        `/api/terminals/${encodeURIComponent(terminalId)}`
       );
     } catch {
       // ignore cleanup failures
@@ -2085,7 +2394,8 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
 
   if (!sawCompletion || !Number.isFinite(exitCode)) {
     const detail =
-      lastPollError?.message || "timed_out_waiting_for_rebuild_completion_marker";
+      lastPollError?.message ||
+      "timed_out_waiting_for_rebuild_completion_marker";
     throw new Error(`hosted_in_place_rebuild_timeout:${detail}`);
   }
 
@@ -2093,11 +2403,13 @@ async function runHostedInPlaceRebuild(server, packageVersion = VA_SERVER_NPM_VE
     const compact = stripAnsi(outputTail).replace(/\s+/g, " ").trim();
     if (compact.includes(permissionMarker)) {
       throw new Error(
-        "hosted_in_place_rebuild_failed:missing_sudo_upgrade_privilege:run_one_time_root_repair",
+        "hosted_in_place_rebuild_failed:missing_sudo_upgrade_privilege:run_one_time_root_repair"
       );
     }
     const tail = compact.length > 320 ? `...${compact.slice(-320)}` : compact;
-    throw new Error(`hosted_in_place_rebuild_failed:exit_${exitCode}:${tail || "no_output"}`);
+    throw new Error(
+      `hosted_in_place_rebuild_failed:exit_${exitCode}:${tail || "no_output"}`
+    );
   }
 }
 
@@ -2107,7 +2419,9 @@ function parseNpmViewVersionOutput(stdout) {
   const parsed = safeJsonParse(raw);
   if (typeof parsed === "string" && parsed.trim()) return parsed.trim();
   if (Array.isArray(parsed)) {
-    const first = parsed.find((value) => typeof value === "string" && value.trim());
+    const first = parsed.find(
+      (value) => typeof value === "string" && value.trim()
+    );
     if (typeof first === "string") return first.trim();
   }
   const unquoted = raw.replace(/^"+|"+$/g, "").trim();
@@ -2118,7 +2432,7 @@ async function fetchLatestPublishedServerPackageVersion() {
   const { stdout } = await execFileAsync(
     "npm",
     ["view", VA_SERVER_NPM_PACKAGE, "version", "--json"],
-    { timeout: NPM_VIEW_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+    { timeout: NPM_VIEW_TIMEOUT_MS, maxBuffer: 1024 * 1024 }
   );
   const version = parseNpmViewVersionOutput(stdout);
   if (!version) {
@@ -2127,7 +2441,9 @@ async function fetchLatestPublishedServerPackageVersion() {
   return version;
 }
 
-async function resolveDesiredHostedPackageTarget({ allowLatestFallback = false } = {}) {
+async function resolveDesiredHostedPackageTarget({
+  allowLatestFallback = false,
+} = {}) {
   if (VA_SERVER_NPM_VERSION !== "latest") {
     return {
       packageSpecifier: VA_SERVER_NPM_VERSION,
@@ -2142,7 +2458,7 @@ async function resolveDesiredHostedPackageTarget({ allowLatestFallback = false }
     if (allowLatestFallback) {
       console.warn(
         "[hosting] failed to resolve latest npm version; falling back to npm tag latest:",
-        err?.message || err,
+        err?.message || err
       );
       return { packageSpecifier: "latest", trackedVersion: null };
     }
@@ -2154,13 +2470,22 @@ function isHostedServerAutoUpdateCandidate(server) {
   if (!server || !server.runtimeBaseUrl) return false;
   const status = String(server.status || "").toLowerCase();
   if (!status) return false;
-  if (["deleted", "stopped", "stopping", "provisioning", "starting"].includes(status)) {
+  if (
+    ["deleted", "stopped", "stopping", "provisioning", "starting"].includes(
+      status
+    )
+  ) {
     return false;
   }
   return true;
 }
 
-async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersion, reason) {
+async function rebuildHostedServerForUser(
+  userId,
+  packageSpecifier,
+  trackedVersion,
+  reason
+) {
   const userState = await getHostedUserState(userId);
   const server = userState.server;
   if (!server) throw new Error("server_not_provisioned");
@@ -2190,17 +2515,20 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
       try {
         await runHostedVaSshUpgrade(server, packageSpecifier);
       } catch (vaSshErr) {
-        if (HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED && HOSTED_AUTO_UPDATE_SSH_KEY_PATH) {
+        if (
+          HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED &&
+          HOSTED_AUTO_UPDATE_SSH_KEY_PATH
+        ) {
           try {
             await runHostedRootSshUpgrade(server, packageSpecifier);
           } catch (rootSshErr) {
             throw new Error(
-              `hosted_upgrade_fallback_failed:runtime=${truncateText(message, 180)} | va=${truncateText(vaSshErr?.message || String(vaSshErr), 180)} | root=${truncateText(rootSshErr?.message || String(rootSshErr), 180)}`,
+              `hosted_upgrade_fallback_failed:runtime=${truncateText(message, 180)} | va=${truncateText(vaSshErr?.message || String(vaSshErr), 180)} | root=${truncateText(rootSshErr?.message || String(rootSshErr), 180)}`
             );
           }
         } else {
           throw new Error(
-            `hosted_upgrade_fallback_failed:runtime=${truncateText(message, 180)} | va=${truncateText(vaSshErr?.message || String(vaSshErr), 180)}`,
+            `hosted_upgrade_fallback_failed:runtime=${truncateText(message, 180)} | va=${truncateText(vaSshErr?.message || String(vaSshErr), 180)}`
           );
         }
       }
@@ -2212,7 +2540,8 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
       server.packageVersion = null;
       server.packageVersionUpdatedAt = nowIso();
     }
-    server.codexPackageVersion = trackedConfiguredPackageVersion(VA_CODEX_NPM_VERSION);
+    server.codexPackageVersion =
+      trackedConfiguredPackageVersion(VA_CODEX_NPM_VERSION);
     server.codexPackageVersionUpdatedAt = nowIso();
     server.lastError = null;
     server.lastAutoUpdateError = null;
@@ -2225,7 +2554,9 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
     return { userId, ok: true };
   } catch (err) {
     server.status =
-      statusBeforeUpdate && statusBeforeUpdate !== "working" ? statusBeforeUpdate : "ready";
+      statusBeforeUpdate && statusBeforeUpdate !== "working"
+        ? statusBeforeUpdate
+        : "ready";
     server.lastAutoUpdateError = truncateText(err?.message || String(err), 500);
     server.lastError = truncateText(err?.message || String(err), 500);
     server.updatedAt = nowIso();
@@ -2240,11 +2571,16 @@ async function rebuildHostedServerForUser(userId, packageSpecifier, trackedVersi
   }
 }
 
-async function runHostedAutoUpdateRollout({ force = false, reason = "interval" } = {}) {
+async function runHostedAutoUpdateRollout({
+  force = false,
+  reason = "interval",
+} = {}) {
   await ensureHostedStateLoaded();
   const rolloutState = getHostedRolloutState();
 
-  const target = await resolveDesiredHostedPackageTarget({ allowLatestFallback: false });
+  const target = await resolveDesiredHostedPackageTarget({
+    allowLatestFallback: false,
+  });
   rolloutState.lastObservedPackageVersion = target.trackedVersion;
   rolloutState.lastRolloutTargetVersion = target.trackedVersion;
   rolloutState.lastRolloutReason = reason;
@@ -2282,7 +2618,11 @@ async function runHostedAutoUpdateRollout({ force = false, reason = "interval" }
       }
     }
 
-    if (!force && server.packageVersion && server.packageVersion === target.trackedVersion) {
+    if (
+      !force &&
+      server.packageVersion &&
+      server.packageVersion === target.trackedVersion
+    ) {
       upToDate += 1;
       continue;
     }
@@ -2307,7 +2647,7 @@ async function runHostedAutoUpdateRollout({ force = false, reason = "interval" }
               userId,
               target.packageSpecifier,
               target.trackedVersion,
-              reason,
+              reason
             );
             updated += 1;
           } catch (err) {
@@ -2317,7 +2657,7 @@ async function runHostedAutoUpdateRollout({ force = false, reason = "interval" }
             });
           }
         }
-      },
+      }
     );
     await Promise.all(workers);
   }
@@ -2355,7 +2695,10 @@ async function triggerHostedAutoUpdateRollout(options = {}) {
     } catch (err) {
       const rolloutState = getHostedRolloutState();
       rolloutState.lastRolloutCompletedAt = nowIso();
-      rolloutState.lastRolloutError = truncateText(err?.message || String(err), 500);
+      rolloutState.lastRolloutError = truncateText(
+        err?.message || String(err),
+        500
+      );
       await queueHostedStatePersist();
       throw err;
     } finally {
@@ -2373,12 +2716,17 @@ function startHostedAutoUpdateScheduler() {
   const tick = async () => {
     hostedAutoUpdateTimer = null;
     try {
-      const summary = await triggerHostedAutoUpdateRollout({ reason: "interval" });
+      const summary = await triggerHostedAutoUpdateRollout({
+        reason: "interval",
+      });
       if (summary?.updated > 0 || summary?.failed > 0) {
         console.log("[hosting] auto-update rollout:", summary);
       }
     } catch (err) {
-      console.error("[hosting] auto-update rollout failed:", err?.message || err);
+      console.error(
+        "[hosting] auto-update rollout failed:",
+        err?.message || err
+      );
     } finally {
       hostedAutoUpdateTimer = setTimeout(tick, HOSTED_AUTO_UPDATE_INTERVAL_MS);
     }
@@ -2386,7 +2734,7 @@ function startHostedAutoUpdateScheduler() {
 
   hostedAutoUpdateTimer = setTimeout(tick, 20_000);
   console.log(
-    `[hosting] auto-update scheduler enabled (interval=${HOSTED_AUTO_UPDATE_INTERVAL_MS}ms, concurrency=${HOSTED_AUTO_UPDATE_CONCURRENCY}, retryDelay=${HOSTED_AUTO_UPDATE_RETRY_DELAY_MS}ms, sshFallback=${HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED ? "on" : "off"}, sshKey=${HOSTED_AUTO_UPDATE_SSH_KEY_PATH ? "configured" : "missing"})`,
+    `[hosting] auto-update scheduler enabled (interval=${HOSTED_AUTO_UPDATE_INTERVAL_MS}ms, concurrency=${HOSTED_AUTO_UPDATE_CONCURRENCY}, retryDelay=${HOSTED_AUTO_UPDATE_RETRY_DELAY_MS}ms, sshFallback=${HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED ? "on" : "off"}, sshKey=${HOSTED_AUTO_UPDATE_SSH_KEY_PATH ? "configured" : "missing"})`
   );
 }
 
@@ -2400,10 +2748,10 @@ function safeJsonParse(value) {
 
 function buildCloudInit({ bootstrapToken, proxyToken, userId }) {
   const escapedPackage = shellSingleQuote(
-    buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, VA_SERVER_NPM_VERSION),
+    buildNpmPackageSpec(VA_SERVER_NPM_PACKAGE, VA_SERVER_NPM_VERSION)
   );
   const escapedCodexPackage = shellSingleQuote(
-    buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION),
+    buildNpmPackageSpec(VA_CODEX_NPM_PACKAGE, VA_CODEX_NPM_VERSION)
   );
   const callbackUrl = `${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/bootstrap-report`;
 
@@ -2427,9 +2775,13 @@ fi
 
 mkdir -p /opt/virtualagency/workspace
 mkdir -p /etc/virtualagency
+mkdir -p /home/va/.npm-global
 chown -R va:va /opt/virtualagency
+chown -R va:va /home/va/.npm-global
 
 npm install -g ${escapedPackage} ${escapedCodexPackage} @anthropic-ai/claude-code
+npm install --prefix /home/va/.npm-global -g ${escapedCodexPackage}
+chown -R va:va /home/va/.npm-global
 
 cat > /usr/local/bin/virtualagency-upgrade.sh << 'UPGRADE_EOF'
 #!/bin/bash
@@ -2461,6 +2813,8 @@ case "$CODEX_PKG" in
 esac
 
 npm install -g "$PKG" "$CODEX_PKG"
+npm install --prefix /home/va/.npm-global -g "$CODEX_PKG"
+chown -R va:va /home/va/.npm-global
 UPGRADE_EOF
 
 chmod 755 /usr/local/bin/virtualagency-upgrade.sh
@@ -2478,6 +2832,9 @@ cat > /etc/virtualagency/server.env << 'ENV_EOF'
 WORKSPACE_DIR=/opt/virtualagency/workspace
 VIRTUAL_AGENCY_PORT=${HOSTED_SERVER_PORT}
 VIRTUAL_AGENCY_BIND_HOST=0.0.0.0
+VA_CODEX_NPM_PACKAGE=${VA_CODEX_NPM_PACKAGE}
+VA_CODEX_NPM_VERSION=${VA_CODEX_NPM_VERSION}
+PATH=/home/va/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin
 VA_HOSTED_PROXY_TOKEN=${proxyToken}
 VA_HOSTED_API_BASE_URL=${BILLING_PUBLIC_URL.replace(/\/$/, "")}/api/hosting/internal/va
 ENV_EOF
@@ -2620,10 +2977,13 @@ async function createHostedServerForUser(userId, metaOverride = null) {
     pairingCode,
     pairingExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     codexAuth: defaultCodexAuthState(),
-    packageVersion: VA_SERVER_NPM_VERSION === "latest" ? null : VA_SERVER_NPM_VERSION,
+    packageVersion:
+      VA_SERVER_NPM_VERSION === "latest" ? null : VA_SERVER_NPM_VERSION,
     packageVersionUpdatedAt: VA_SERVER_NPM_VERSION === "latest" ? null : now,
     codexPackageVersion: trackedConfiguredPackageVersion(VA_CODEX_NPM_VERSION),
-    codexPackageVersionUpdatedAt: trackedConfiguredPackageVersion(VA_CODEX_NPM_VERSION)
+    codexPackageVersionUpdatedAt: trackedConfiguredPackageVersion(
+      VA_CODEX_NPM_VERSION
+    )
       ? now
       : null,
     lastAutoUpdateAttemptAt: null,
@@ -2649,7 +3009,9 @@ async function syncHostedServerStatus(userId) {
     const ipv4 = remote?.public_net?.ipv4?.ip || null;
 
     server.ipAddress = ipv4;
-    server.runtimeBaseUrl = ipv4 ? `http://${ipv4}:${HOSTED_SERVER_PORT}` : null;
+    server.runtimeBaseUrl = ipv4
+      ? `http://${ipv4}:${HOSTED_SERVER_PORT}`
+      : null;
 
     const remoteStatus = String(remote?.status || "unknown");
     if (remoteStatus === "running" && server.status !== "ready") {
@@ -2683,7 +3045,9 @@ async function hostedServerAction(userId, action) {
   }
 
   if (action === "rebuild") {
-    const target = await resolveDesiredHostedPackageTarget({ allowLatestFallback: true });
+    const target = await resolveDesiredHostedPackageTarget({
+      allowLatestFallback: true,
+    });
     stopCodexAuthSession(userId, "server_rebuild");
     server.status = "working";
     server.updatedAt = nowIso();
@@ -2726,11 +3090,7 @@ async function hostedServerAction(userId, action) {
   }
 
   const apiAction =
-    action === "start"
-      ? "poweron"
-      : action === "stop"
-        ? "poweroff"
-        : null;
+    action === "start" ? "poweron" : action === "stop" ? "poweroff" : null;
 
   if (!apiAction) {
     throw new Error("unsupported_action");
@@ -2745,7 +3105,10 @@ async function hostedServerAction(userId, action) {
   return sanitizeServerForClient(server);
 }
 
-async function destroyHostedServerIfProvisioned(userId, reason = "subscription_inactive") {
+async function destroyHostedServerIfProvisioned(
+  userId,
+  reason = "subscription_inactive"
+) {
   const userState = await getHostedUserState(userId);
   if (!userState?.server?.id || userState.server.status === "deleted") {
     return false;
@@ -2758,7 +3121,7 @@ async function destroyHostedServerIfProvisioned(userId, reason = "subscription_i
   } catch (err) {
     const message = err?.message || String(err);
     console.error(
-      `[hosting] failed to auto-destroy server for ${userId} (${reason}): ${message}`,
+      `[hosting] failed to auto-destroy server for ${userId} (${reason}): ${message}`
     );
     return false;
   }
@@ -2804,7 +3167,9 @@ function findHostedUserIdByProxyToken(proxyToken) {
 
   for (const [userId, userState] of Object.entries(hostedState.users || {})) {
     const candidate = String(userState?.server?.proxyToken || "").trim();
-    const status = String(userState?.server?.status || "").trim().toLowerCase();
+    const status = String(userState?.server?.status || "")
+      .trim()
+      .toLowerCase();
     if (!candidate || status === "deleted") continue;
     if (candidate === token) return userId;
   }
@@ -2842,111 +3207,183 @@ const HOSTING_PROXY_ALLOWED_PATH_PREFIXES = [
 
 function isAllowedHostingProxyPath(pathname) {
   return HOSTING_PROXY_ALLOWED_PATH_PREFIXES.some(
-    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
 }
 
 // Stripe webhook must use raw body (must come before json() for this route)
-app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  if (!stripe) {
-    return res.status(500).send("Missing STRIPE_SECRET_KEY");
-  }
-  if (!STRIPE_WEBHOOK_SECRET) {
-    return res.status(500).send("Missing STRIPE_WEBHOOK_SECRET");
-  }
-  if (!hasClerk) {
-    return res.status(500).send(`Missing ${missingClerkEnv.join(" / ")}`);
-  }
+app.post(
+  "/api/billing/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    if (!stripe) {
+      return res.status(500).send("Missing STRIPE_SECRET_KEY");
+    }
+    if (!STRIPE_WEBHOOK_SECRET) {
+      return res.status(500).send("Missing STRIPE_WEBHOOK_SECRET");
+    }
+    if (!hasClerk) {
+      return res.status(500).send(`Missing ${missingClerkEnv.join(" / ")}`);
+    }
 
-  const sig = req.headers["stripe-signature"];
-  if (!sig || typeof sig !== "string") {
-    return res.status(400).send("Missing Stripe signature");
-  }
+    const sig = req.headers["stripe-signature"];
+    if (!sig || typeof sig !== "string") {
+      return res.status(400).send("Missing Stripe signature");
+    }
 
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    console.error("[billing] webhook signature verification failed:", err?.message || err);
-    return res.status(400).send("Invalid signature");
-  }
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error(
+        "[billing] webhook signature verification failed:",
+        err?.message || err
+      );
+      return res.status(400).send("Invalid signature");
+    }
 
-  try {
-    switch (event.type) {
-      case "checkout.session.completed": {
-        const session = event.data.object;
-        const clerkUserId = session.client_reference_id || session.metadata?.clerkUserId;
-        const customerId = session.customer;
-        const subscriptionId = session.subscription;
-        const plan = session.metadata?.plan;
+    try {
+      switch (event.type) {
+        case "checkout.session.completed": {
+          const session = event.data.object;
+          const clerkUserId =
+            session.client_reference_id || session.metadata?.clerkUserId;
+          const customerId = session.customer;
+          const subscriptionId = session.subscription;
+          const plan = session.metadata?.plan;
 
-        if (!clerkUserId || typeof clerkUserId !== "string") break;
-        if (!customerId || typeof customerId !== "string") break;
+          if (!clerkUserId || typeof clerkUserId !== "string") break;
+          if (!customerId || typeof customerId !== "string") break;
 
-        await stripe.customers.update(customerId, {
-          metadata: { clerkUserId },
-        });
-
-        let subscription = null;
-        if (subscriptionId && typeof subscriptionId === "string") {
-          subscription = await stripe.subscriptions.retrieve(subscriptionId);
-        }
-        const hostedPlanFromSession = normalizeHostedPlan(
-          session.metadata?.hostedPlan,
-          "cloud_25",
-        );
-        const resolvedHostedPlan = resolveHostedPlanFromSubscription(
-          subscription,
-          hostedPlanFromSession,
-        );
-        const resolvedHostedPriceId =
-          resolveHostedPriceIdFromSubscription(subscription) ||
-          getHostedPriceIdForPlan(resolvedHostedPlan) ||
-          null;
-
-        if (plan === "hosted_server") {
-          await updateUserPrivateMetadata(clerkUserId, {
-            hostedServerStripeCustomerId: customerId,
-            hostedServerSubscriptionId:
-              typeof subscriptionId === "string" ? subscriptionId : null,
-            hostedServerSubscriptionStatus: subscription?.status || "active",
-            hostedServerCurrentPeriodEnd: subscription?.current_period_end || null,
-            hostedServerCancelAtPeriodEnd:
-              subscription?.cancel_at_period_end || false,
-            hostedServerPlan: resolvedHostedPlan,
-            hostedServerPriceId: resolvedHostedPriceId,
+          await stripe.customers.update(customerId, {
+            metadata: { clerkUserId },
           });
-        } else {
-          await updateUserPrivateMetadata(clerkUserId, {
-            stripeCustomerId: customerId,
-            stripeSubscriptionId: typeof subscriptionId === "string" ? subscriptionId : null,
-            subscriptionStatus: subscription?.status || "active",
-            currentPeriodEnd: subscription?.current_period_end || null,
-            cancelAtPeriodEnd: subscription?.cancel_at_period_end || false,
-          });
+
+          let subscription = null;
+          if (subscriptionId && typeof subscriptionId === "string") {
+            subscription = await stripe.subscriptions.retrieve(subscriptionId);
+          }
+          const hostedPlanFromSession = normalizeHostedPlan(
+            session.metadata?.hostedPlan,
+            "cloud_25"
+          );
+          const resolvedHostedPlan = resolveHostedPlanFromSubscription(
+            subscription,
+            hostedPlanFromSession
+          );
+          const resolvedHostedPriceId =
+            resolveHostedPriceIdFromSubscription(subscription) ||
+            getHostedPriceIdForPlan(resolvedHostedPlan) ||
+            null;
+
+          if (plan === "hosted_server") {
+            await updateUserPrivateMetadata(clerkUserId, {
+              hostedServerStripeCustomerId: customerId,
+              hostedServerSubscriptionId:
+                typeof subscriptionId === "string" ? subscriptionId : null,
+              hostedServerSubscriptionStatus: subscription?.status || "active",
+              hostedServerCurrentPeriodEnd:
+                subscription?.current_period_end || null,
+              hostedServerCancelAtPeriodEnd:
+                subscription?.cancel_at_period_end || false,
+              hostedServerPlan: resolvedHostedPlan,
+              hostedServerPriceId: resolvedHostedPriceId,
+            });
+          } else {
+            await updateUserPrivateMetadata(clerkUserId, {
+              stripeCustomerId: customerId,
+              stripeSubscriptionId:
+                typeof subscriptionId === "string" ? subscriptionId : null,
+              subscriptionStatus: subscription?.status || "active",
+              currentPeriodEnd: subscription?.current_period_end || null,
+              cancelAtPeriodEnd: subscription?.cancel_at_period_end || false,
+            });
+          }
+
+          break;
         }
 
-        break;
-      }
+        case "customer.subscription.updated":
+        case "customer.subscription.deleted": {
+          const sub = event.data.object;
+          const customerId = sub.customer;
+          if (!customerId || typeof customerId !== "string") break;
 
-      case "customer.subscription.updated":
-      case "customer.subscription.deleted": {
-        const sub = event.data.object;
-        const customerId = sub.customer;
-        if (!customerId || typeof customerId !== "string") break;
+          const customer = await stripe.customers.retrieve(customerId);
+          const clerkUserId =
+            customer && !customer.deleted
+              ? customer.metadata?.clerkUserId
+              : null;
 
-        const customer = await stripe.customers.retrieve(customerId);
-        const clerkUserId =
-          customer && !customer.deleted ? customer.metadata?.clerkUserId : null;
+          if (!clerkUserId || typeof clerkUserId !== "string") break;
 
-        if (!clerkUserId || typeof clerkUserId !== "string") break;
+          if (isHostedSubscriptionPlan(sub)) {
+            const resolvedHostedPlan = resolveHostedPlanFromSubscription(
+              sub,
+              "cloud_25"
+            );
+            const resolvedHostedPriceId =
+              resolveHostedPriceIdFromSubscription(sub) ||
+              getHostedPriceIdForPlan(resolvedHostedPlan) ||
+              null;
+            await updateUserPrivateMetadata(clerkUserId, {
+              hostedServerStripeCustomerId: customerId,
+              hostedServerSubscriptionId: sub.id,
+              hostedServerSubscriptionStatus: sub.status,
+              hostedServerCurrentPeriodEnd: sub.current_period_end,
+              hostedServerCancelAtPeriodEnd: sub.cancel_at_period_end,
+              hostedServerPlan: resolvedHostedPlan,
+              hostedServerPriceId: resolvedHostedPriceId,
+            });
 
-        if (isHostedSubscriptionPlan(sub)) {
-          const resolvedHostedPlan = resolveHostedPlanFromSubscription(sub, "cloud_25");
+            if (!isSubscriptionStatusActive(sub.status)) {
+              await destroyHostedServerIfProvisioned(
+                clerkUserId,
+                `stripe_${event.type}:${sub.status}`
+              );
+            }
+          } else {
+            await updateUserPrivateMetadata(clerkUserId, {
+              stripeCustomerId: customerId,
+              stripeSubscriptionId: sub.id,
+              subscriptionStatus: sub.status,
+              currentPeriodEnd: sub.current_period_end,
+              cancelAtPeriodEnd: sub.cancel_at_period_end,
+            });
+          }
+
+          break;
+        }
+
+        case "invoice.payment_failed": {
+          const invoice = event.data.object;
+          const customerId = invoice.customer;
+          const subscriptionId = invoice.subscription;
+          if (!customerId || typeof customerId !== "string") break;
+          if (!subscriptionId || typeof subscriptionId !== "string") break;
+
+          const customer = await stripe.customers.retrieve(customerId);
+          const clerkUserId =
+            customer && !customer.deleted
+              ? customer.metadata?.clerkUserId
+              : null;
+          if (!clerkUserId || typeof clerkUserId !== "string") break;
+
+          const sub = await stripe.subscriptions.retrieve(subscriptionId);
+          if (!isHostedSubscriptionPlan(sub)) break;
+          const resolvedHostedPlan = resolveHostedPlanFromSubscription(
+            sub,
+            "cloud_25"
+          );
           const resolvedHostedPriceId =
             resolveHostedPriceIdFromSubscription(sub) ||
             getHostedPriceIdForPlan(resolvedHostedPlan) ||
             null;
+
           await updateUserPrivateMetadata(clerkUserId, {
             hostedServerStripeCustomerId: customerId,
             hostedServerSubscriptionId: sub.id,
@@ -2957,72 +3394,24 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
             hostedServerPriceId: resolvedHostedPriceId,
           });
 
-          if (!isSubscriptionStatusActive(sub.status)) {
-            await destroyHostedServerIfProvisioned(
-              clerkUserId,
-              `stripe_${event.type}:${sub.status}`,
-            );
-          }
-        } else {
-          await updateUserPrivateMetadata(clerkUserId, {
-            stripeCustomerId: customerId,
-            stripeSubscriptionId: sub.id,
-            subscriptionStatus: sub.status,
-            currentPeriodEnd: sub.current_period_end,
-            cancelAtPeriodEnd: sub.cancel_at_period_end,
-          });
+          await destroyHostedServerIfProvisioned(
+            clerkUserId,
+            `stripe_invoice.payment_failed:${sub.status}`
+          );
+          break;
         }
 
-        break;
+        default:
+          break;
       }
-
-      case "invoice.payment_failed": {
-        const invoice = event.data.object;
-        const customerId = invoice.customer;
-        const subscriptionId = invoice.subscription;
-        if (!customerId || typeof customerId !== "string") break;
-        if (!subscriptionId || typeof subscriptionId !== "string") break;
-
-        const customer = await stripe.customers.retrieve(customerId);
-        const clerkUserId =
-          customer && !customer.deleted ? customer.metadata?.clerkUserId : null;
-        if (!clerkUserId || typeof clerkUserId !== "string") break;
-
-        const sub = await stripe.subscriptions.retrieve(subscriptionId);
-        if (!isHostedSubscriptionPlan(sub)) break;
-        const resolvedHostedPlan = resolveHostedPlanFromSubscription(sub, "cloud_25");
-        const resolvedHostedPriceId =
-          resolveHostedPriceIdFromSubscription(sub) ||
-          getHostedPriceIdForPlan(resolvedHostedPlan) ||
-          null;
-
-        await updateUserPrivateMetadata(clerkUserId, {
-          hostedServerStripeCustomerId: customerId,
-          hostedServerSubscriptionId: sub.id,
-          hostedServerSubscriptionStatus: sub.status,
-          hostedServerCurrentPeriodEnd: sub.current_period_end,
-          hostedServerCancelAtPeriodEnd: sub.cancel_at_period_end,
-          hostedServerPlan: resolvedHostedPlan,
-          hostedServerPriceId: resolvedHostedPriceId,
-        });
-
-        await destroyHostedServerIfProvisioned(
-          clerkUserId,
-          `stripe_invoice.payment_failed:${sub.status}`,
-        );
-        break;
-      }
-
-      default:
-        break;
+    } catch (err) {
+      console.error("[billing] webhook handler error:", err);
+      return res.status(500).send("Webhook handler error");
     }
-  } catch (err) {
-    console.error("[billing] webhook handler error:", err);
-    return res.status(500).send("Webhook handler error");
-  }
 
-  res.json({ received: true });
-});
+    res.json({ received: true });
+  }
+);
 
 app.use(express.json({ limit: HOSTING_PROXY_JSON_LIMIT }));
 
@@ -3031,7 +3420,10 @@ app.get("/api/billing/me", requireAuth, async (req, res) => {
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
   const { meta } = await getUserWithMeta(userId);
-  const effectiveMeta = await refreshBillingSubscriptionMetadataIfStale(userId, meta);
+  const effectiveMeta = await refreshBillingSubscriptionMetadataIfStale(
+    userId,
+    meta
+  );
 
   res.json({
     userId,
@@ -3043,8 +3435,10 @@ app.get("/api/billing/me", requireAuth, async (req, res) => {
     stripeSubscriptionId: effectiveMeta.stripeSubscriptionId || null,
     hostedServerActive: isHostedSubscriptionActive(effectiveMeta),
     hostedServerStatus: effectiveMeta.hostedServerSubscriptionStatus || null,
-    hostedServerCurrentPeriodEnd: effectiveMeta.hostedServerCurrentPeriodEnd || null,
-    hostedServerCancelAtPeriodEnd: effectiveMeta.hostedServerCancelAtPeriodEnd || false,
+    hostedServerCurrentPeriodEnd:
+      effectiveMeta.hostedServerCurrentPeriodEnd || null,
+    hostedServerCancelAtPeriodEnd:
+      effectiveMeta.hostedServerCancelAtPeriodEnd || false,
     hostedServerPlan: resolveHostedPlanFromMeta(effectiveMeta, "cloud_25"),
     hostedServerPriceId:
       typeof effectiveMeta.hostedServerPriceId === "string"
@@ -3053,137 +3447,150 @@ app.get("/api/billing/me", requireAuth, async (req, res) => {
   });
 });
 
-app.post("/api/billing/create-checkout-session", requireAuth, async (req, res) => {
-  if (!stripe) {
-    return res.status(500).json({ error: "missing_stripe_secret_key" });
-  }
-  const userId = req.auth?.userId;
-  if (!userId) return res.status(401).json({ error: "unauthorized" });
+app.post(
+  "/api/billing/create-checkout-session",
+  requireAuth,
+  async (req, res) => {
+    if (!stripe) {
+      return res.status(500).json({ error: "missing_stripe_secret_key" });
+    }
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-  const user = await clerkClient.users.getUser(userId);
-  const meta = user.privateMetadata || {};
-  const existingCustomerId = meta.stripeCustomerId;
+    const user = await clerkClient.users.getUser(userId);
+    const meta = user.privateMetadata || {};
+    const existingCustomerId = meta.stripeCustomerId;
 
-  let customerId = typeof existingCustomerId === "string" ? existingCustomerId : null;
+    let customerId =
+      typeof existingCustomerId === "string" ? existingCustomerId : null;
 
-  if (!customerId) {
-    const email = user.primaryEmailAddress?.emailAddress || undefined;
-    const customer = await stripe.customers.create({
-      email,
-      metadata: { clerkUserId: userId },
+    if (!customerId) {
+      const email = user.primaryEmailAddress?.emailAddress || undefined;
+      const customer = await stripe.customers.create({
+        email,
+        metadata: { clerkUserId: userId },
+      });
+      customerId = customer.id;
+      await updateUserPrivateMetadata(userId, {
+        stripeCustomerId: customerId,
+      });
+    } else {
+      await stripe.customers.update(customerId, {
+        metadata: { clerkUserId: userId },
+      });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: customerId,
+      client_reference_id: userId,
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      success_url: `${APP_URL}/?checkout=success`,
+      cancel_url: `${APP_URL}/?checkout=cancel`,
+      subscription_data: {
+        metadata: { clerkUserId: userId, plan: "core" },
+      },
+      metadata: {
+        clerkUserId: userId,
+        plan: "core",
+      },
     });
-    customerId = customer.id;
+
+    res.json({ url: session.url });
+  }
+);
+
+app.post(
+  "/api/billing/create-portal-session",
+  requireAuth,
+  async (req, res) => {
+    if (!stripe) {
+      return res.status(500).json({ error: "missing_stripe_secret_key" });
+    }
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+    const user = await clerkClient.users.getUser(userId);
+    const customerId = user.privateMetadata?.stripeCustomerId;
+    if (!customerId || typeof customerId !== "string") {
+      return res.status(400).json({ error: "no_customer" });
+    }
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: `${APP_URL}/`,
+    });
+
+    res.json({ url: session.url });
+  }
+);
+
+app.post(
+  "/api/hosting/create-checkout-session",
+  requireAuth,
+  async (req, res) => {
+    if (!stripe) {
+      return res.status(500).json({ error: "missing_stripe_secret_key" });
+    }
+
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
+    const hostedPlan = normalizeHostedPlan(req.body?.plan, "cloud_25");
+    const hostedPriceId = getHostedPriceIdForPlan(hostedPlan);
+    if (!hostedPriceId) {
+      return res.status(400).json({
+        error: "missing_hosted_price_id_for_plan",
+        plan: hostedPlan,
+      });
+    }
+
+    const user = await clerkClient.users.getUser(userId);
+    const meta = user.privateMetadata || {};
+    const existingCustomerId =
+      (typeof meta.hostedServerStripeCustomerId === "string" &&
+        meta.hostedServerStripeCustomerId) ||
+      (typeof meta.stripeCustomerId === "string" && meta.stripeCustomerId) ||
+      null;
+
+    let customerId = existingCustomerId;
+    if (!customerId) {
+      const email = user.primaryEmailAddress?.emailAddress || undefined;
+      const customer = await stripe.customers.create({
+        email,
+        metadata: { clerkUserId: userId },
+      });
+      customerId = customer.id;
+    } else {
+      await stripe.customers.update(customerId, {
+        metadata: { clerkUserId: userId },
+      });
+    }
+
     await updateUserPrivateMetadata(userId, {
-      stripeCustomerId: customerId,
+      hostedServerStripeCustomerId: customerId,
+      hostedServerPlanIntent: hostedPlan,
     });
-  } else {
-    await stripe.customers.update(customerId, {
-      metadata: { clerkUserId: userId },
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: customerId,
+      client_reference_id: userId,
+      line_items: [{ price: hostedPriceId, quantity: 1 }],
+      success_url: `${APP_URL}/?hostedCheckout=success`,
+      cancel_url: `${APP_URL}/?hostedCheckout=cancel`,
+      subscription_data: {
+        metadata: { clerkUserId: userId, plan: "hosted_server", hostedPlan },
+      },
+      metadata: {
+        clerkUserId: userId,
+        plan: "hosted_server",
+        hostedPlan,
+      },
     });
+
+    res.json({ url: session.url });
   }
-
-  const session = await stripe.checkout.sessions.create({
-    mode: "subscription",
-    customer: customerId,
-    client_reference_id: userId,
-    line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
-    success_url: `${APP_URL}/?checkout=success`,
-    cancel_url: `${APP_URL}/?checkout=cancel`,
-    subscription_data: {
-      metadata: { clerkUserId: userId, plan: "core" },
-    },
-    metadata: {
-      clerkUserId: userId,
-      plan: "core",
-    },
-  });
-
-  res.json({ url: session.url });
-});
-
-app.post("/api/billing/create-portal-session", requireAuth, async (req, res) => {
-  if (!stripe) {
-    return res.status(500).json({ error: "missing_stripe_secret_key" });
-  }
-  const userId = req.auth?.userId;
-  if (!userId) return res.status(401).json({ error: "unauthorized" });
-
-  const user = await clerkClient.users.getUser(userId);
-  const customerId = user.privateMetadata?.stripeCustomerId;
-  if (!customerId || typeof customerId !== "string") {
-    return res.status(400).json({ error: "no_customer" });
-  }
-
-  const session = await stripe.billingPortal.sessions.create({
-    customer: customerId,
-    return_url: `${APP_URL}/`,
-  });
-
-  res.json({ url: session.url });
-});
-
-app.post("/api/hosting/create-checkout-session", requireAuth, async (req, res) => {
-  if (!stripe) {
-    return res.status(500).json({ error: "missing_stripe_secret_key" });
-  }
-
-  const userId = req.auth?.userId;
-  if (!userId) return res.status(401).json({ error: "unauthorized" });
-  const hostedPlan = normalizeHostedPlan(req.body?.plan, "cloud_25");
-  const hostedPriceId = getHostedPriceIdForPlan(hostedPlan);
-  if (!hostedPriceId) {
-    return res.status(400).json({
-      error: "missing_hosted_price_id_for_plan",
-      plan: hostedPlan,
-    });
-  }
-
-  const user = await clerkClient.users.getUser(userId);
-  const meta = user.privateMetadata || {};
-  const existingCustomerId =
-    (typeof meta.hostedServerStripeCustomerId === "string" &&
-      meta.hostedServerStripeCustomerId) ||
-    (typeof meta.stripeCustomerId === "string" && meta.stripeCustomerId) ||
-    null;
-
-  let customerId = existingCustomerId;
-  if (!customerId) {
-    const email = user.primaryEmailAddress?.emailAddress || undefined;
-    const customer = await stripe.customers.create({
-      email,
-      metadata: { clerkUserId: userId },
-    });
-    customerId = customer.id;
-  } else {
-    await stripe.customers.update(customerId, {
-      metadata: { clerkUserId: userId },
-    });
-  }
-
-  await updateUserPrivateMetadata(userId, {
-    hostedServerStripeCustomerId: customerId,
-    hostedServerPlanIntent: hostedPlan,
-  });
-
-  const session = await stripe.checkout.sessions.create({
-    mode: "subscription",
-    customer: customerId,
-    client_reference_id: userId,
-    line_items: [{ price: hostedPriceId, quantity: 1 }],
-    success_url: `${APP_URL}/?hostedCheckout=success`,
-    cancel_url: `${APP_URL}/?hostedCheckout=cancel`,
-    subscription_data: {
-      metadata: { clerkUserId: userId, plan: "hosted_server", hostedPlan },
-    },
-    metadata: {
-      clerkUserId: userId,
-      plan: "hosted_server",
-      hostedPlan,
-    },
-  });
-
-  res.json({ url: session.url });
-});
+);
 
 app.get("/api/hosting/me", requireAuth, async (req, res) => {
   const userId = req.auth?.userId;
@@ -3204,7 +3611,9 @@ app.get("/api/hosting/me", requireAuth, async (req, res) => {
     hostedSubscriptionPeriodEnd: meta.hostedServerCurrentPeriodEnd || null,
     hostedSubscriptionPlan: resolveHostedPlanFromMeta(meta, "cloud_25"),
     hostedSubscriptionPriceId:
-      typeof meta.hostedServerPriceId === "string" ? meta.hostedServerPriceId : null,
+      typeof meta.hostedServerPriceId === "string"
+        ? meta.hostedServerPriceId
+        : null,
   });
 });
 
@@ -3269,7 +3678,9 @@ app.post("/api/hosting/server/pairing-code", requireAuth, async (req, res) => {
   }
 
   userState.server.pairingCode = randomCode(8);
-  userState.server.pairingExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  userState.server.pairingExpiresAt = new Date(
+    Date.now() + 15 * 60 * 1000
+  ).toISOString();
   userState.server.updatedAt = nowIso();
   await queueHostedStatePersist();
 
@@ -3289,76 +3700,92 @@ app.get("/api/hosting/server/ssh-public-key", requireAuth, async (req, res) => {
   });
 });
 
-app.post("/api/hosting/server/ssh-authorized-key", requireAuth, async (req, res) => {
-  const userId = req.auth?.userId;
-  if (!userId) return res.status(401).json({ error: "unauthorized" });
+app.post(
+  "/api/hosting/server/ssh-authorized-key",
+  requireAuth,
+  async (req, res) => {
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-  const publicKey =
-    typeof req.body?.publicKey === "string" ? req.body.publicKey.trim() : "";
-  if (!isLikelySshPublicKey(publicKey)) {
-    return res.status(400).json({ error: "invalid_ssh_public_key" });
+    const publicKey =
+      typeof req.body?.publicKey === "string" ? req.body.publicKey.trim() : "";
+    if (!isLikelySshPublicKey(publicKey)) {
+      return res.status(400).json({ error: "invalid_ssh_public_key" });
+    }
+
+    try {
+      const server = await ensureHostedServerAccess(userId);
+      await addHostedAuthorizedKey(server, publicKey);
+      return res.json({ ok: true });
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (message === "server_not_provisioned") {
+        return res.status(404).json({ error: "server_not_provisioned" });
+      }
+      if (message === "server_deleted") {
+        return res.status(404).json({ error: "server_deleted" });
+      }
+      if (message === "server_not_ready") {
+        return res.status(409).json({ error: "server_not_ready" });
+      }
+      return res.status(500).json({
+        error: "ssh_authorized_key_apply_failed",
+        message: truncateText(message, 320),
+      });
+    }
   }
+);
 
-  try {
-    const server = await ensureHostedServerAccess(userId);
-    await addHostedAuthorizedKey(server, publicKey);
-    return res.json({ ok: true });
-  } catch (err) {
-    const message = err?.message || String(err);
-    if (message === "server_not_provisioned") {
+app.post(
+  "/api/hosting/server/codex-auth/start",
+  requireAuth,
+  async (req, res) => {
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+    ensureHostedEnabled();
+    const forceRestart = req.body?.force === true;
+
+    try {
+      const codexAuth = await startHostedCodexDeviceAuth(userId, {
+        forceRestart,
+      });
+      return res.json({ codexAuth });
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (message === "server_not_provisioned") {
+        return res.status(404).json({ error: "server_not_provisioned" });
+      }
+      if (message === "server_deleted") {
+        return res.status(404).json({ error: "server_deleted" });
+      }
+      if (message === "server_not_ready") {
+        return res.status(409).json({ error: "server_not_ready" });
+      }
+      console.error("[hosting] codex auth start error:", err);
+      return res
+        .status(500)
+        .json({ error: "codex_auth_start_failed", message });
+    }
+  }
+);
+
+app.get(
+  "/api/hosting/server/codex-auth/status",
+  requireAuth,
+  async (req, res) => {
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+    const userState = await getHostedUserState(userId);
+    if (!userState.server) {
       return res.status(404).json({ error: "server_not_provisioned" });
     }
-    if (message === "server_deleted") {
-      return res.status(404).json({ error: "server_deleted" });
-    }
-    if (message === "server_not_ready") {
-      return res.status(409).json({ error: "server_not_ready" });
-    }
-    return res.status(500).json({
-      error: "ssh_authorized_key_apply_failed",
-      message: truncateText(message, 320),
-    });
-  }
-});
 
-app.post("/api/hosting/server/codex-auth/start", requireAuth, async (req, res) => {
-  const userId = req.auth?.userId;
-  if (!userId) return res.status(401).json({ error: "unauthorized" });
-
-  ensureHostedEnabled();
-  const forceRestart = req.body?.force === true;
-
-  try {
-    const codexAuth = await startHostedCodexDeviceAuth(userId, { forceRestart });
+    const codexAuth = sanitizeCodexAuthForClient(userState.server.codexAuth);
     return res.json({ codexAuth });
-  } catch (err) {
-    const message = err?.message || String(err);
-    if (message === "server_not_provisioned") {
-      return res.status(404).json({ error: "server_not_provisioned" });
-    }
-    if (message === "server_deleted") {
-      return res.status(404).json({ error: "server_deleted" });
-    }
-    if (message === "server_not_ready") {
-      return res.status(409).json({ error: "server_not_ready" });
-    }
-    console.error("[hosting] codex auth start error:", err);
-    return res.status(500).json({ error: "codex_auth_start_failed", message });
   }
-});
-
-app.get("/api/hosting/server/codex-auth/status", requireAuth, async (req, res) => {
-  const userId = req.auth?.userId;
-  if (!userId) return res.status(401).json({ error: "unauthorized" });
-
-  const userState = await getHostedUserState(userId);
-  if (!userState.server) {
-    return res.status(404).json({ error: "server_not_provisioned" });
-  }
-
-  const codexAuth = sanitizeCodexAuthForClient(userState.server.codexAuth);
-  return res.json({ codexAuth });
-});
+);
 
 app.get("/api/hosting/internal/rollout-status", async (req, res) => {
   if (!hasValidControlPlaneToken(req)) {
@@ -3414,7 +3841,8 @@ app.post("/api/hosting/internal/set-ssh-key", async (req, res) => {
     return res.status(403).json({ error: "forbidden" });
   }
 
-  const userId = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
+  const userId =
+    typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
   const publicKey =
     typeof req.body?.publicKey === "string" ? req.body.publicKey.trim() : "";
 
@@ -3499,22 +3927,28 @@ app.use("/api/hosting/internal/va", async (req, res) => {
     userId = await resolveHostedUserIdFromProxyToken(req);
   } catch (err) {
     const statusCode = Number(err?.statusCode) || 401;
-    return res.status(statusCode).json({ error: err?.message || "unauthorized" });
+    return res
+      .status(statusCode)
+      .json({ error: err?.message || "unauthorized" });
   }
 
-  const suffix = req.originalUrl.replace(/^\/api\/hosting\/internal\/va/, "") || "/";
+  const suffix =
+    req.originalUrl.replace(/^\/api\/hosting\/internal\/va/, "") || "/";
   const suffixPath = suffix.split("?")[0] || "/";
 
   try {
-    if (await maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath)) {
+    if (
+      await maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath)
+    ) {
       return;
     }
     return res.status(404).json({ error: "hosting_internal_route_not_found" });
   } catch (err) {
     console.error("[hosting] internal proxy error:", err);
-    return res
-      .status(Number(err?.statusCode) || 500)
-      .json({ error: "hosting_internal_proxy_failed", message: err?.message || String(err) });
+    return res.status(Number(err?.statusCode) || 500).json({
+      error: "hosting_internal_proxy_failed",
+      message: err?.message || String(err),
+    });
   }
 });
 
@@ -3527,7 +3961,9 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
 
     const suffix = req.originalUrl.replace(/^\/api\/hosting\/va/, "") || "/";
     const suffixPath = suffix.split("?")[0] || "/";
-    if (await maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath)) {
+    if (
+      await maybeHandleHostedControlPlaneNango(req, res, userId, suffixPath)
+    ) {
       return;
     }
     if (!isAllowedHostingProxyPath(suffixPath)) {
@@ -3558,17 +3994,20 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
       }
     }
 
-    const timeoutMs =
-      suffix.startsWith("/api/events")
-        ? HOSTED_EVENTS_TIMEOUT_MS
-        : suffix.startsWith("/api/files/tree/")
-          ? HOSTED_FILE_TREE_TIMEOUT_MS
-          : HOSTED_RUNTIME_TIMEOUT_MS;
-    const upstreamResponse = await fetchWithTimeout(targetUrl, {
-      method: req.method,
-      headers,
-      body: hasBody ? JSON.stringify(upstreamBody) : undefined,
-    }, timeoutMs);
+    const timeoutMs = suffix.startsWith("/api/events")
+      ? HOSTED_EVENTS_TIMEOUT_MS
+      : suffix.startsWith("/api/files/tree/")
+        ? HOSTED_FILE_TREE_TIMEOUT_MS
+        : HOSTED_RUNTIME_TIMEOUT_MS;
+    const upstreamResponse = await fetchWithTimeout(
+      targetUrl,
+      {
+        method: req.method,
+        headers,
+        body: hasBody ? JSON.stringify(upstreamBody) : undefined,
+      },
+      timeoutMs
+    );
 
     const contentType = upstreamResponse.headers.get("content-type") || "";
     const text = await upstreamResponse.text();
@@ -3577,9 +4016,14 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     // Any upstream failure here should degrade gracefully instead of surfacing
     // hard 5xx errors in hosted UI.
     if (!upstreamResponse.ok && suffixPath.startsWith("/api/files/read_git/")) {
-      const reason = truncateText(String(text || "").replace(/\s+/g, " ").trim(), 220);
+      const reason = truncateText(
+        String(text || "")
+          .replace(/\s+/g, " ")
+          .trim(),
+        220
+      );
       console.warn(
-        `[hosting] read_git fallback for user=${userId} path=${suffixPath} status=${upstreamResponse.status} reason=${reason}`,
+        `[hosting] read_git fallback for user=${userId} path=${suffixPath} status=${upstreamResponse.status} reason=${reason}`
       );
       return res.status(200).json({ content: "" });
     }
@@ -3600,7 +4044,7 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
     const suffixPath = suffix.split("?")[0] || "/";
     if (suffixPath.startsWith("/api/files/read_git/")) {
       console.warn(
-        `[hosting] read_git fallback from proxy exception for user=${userId} path=${suffixPath} reason=${truncateText(message, 220)}`,
+        `[hosting] read_git fallback from proxy exception for user=${userId} path=${suffixPath} reason=${truncateText(message, 220)}`
       );
       return res.status(200).json({ content: "" });
     }
@@ -3611,9 +4055,10 @@ app.use("/api/hosting/va", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "server_deleted" });
     }
     if (typeof err?.statusCode === "number" && err.statusCode === 504) {
-      return res
-        .status(504)
-        .json({ error: "hosting_runtime_timeout", message: "Hosted server request timed out" });
+      return res.status(504).json({
+        error: "hosting_runtime_timeout",
+        message: "Hosted server request timed out",
+      });
     }
     console.error("[hosting] proxy error:", err);
     return res.status(502).json({ error: "hosting_proxy_failed", message });
@@ -3624,7 +4069,7 @@ app.get("/api/billing/health", (_req, res) =>
   res.json({
     ok: true,
     hostingEnabled: Boolean(HETZNER_API_TOKEN),
-  }),
+  })
 );
 
 // eslint-disable-next-line no-unused-vars
@@ -3639,7 +4084,11 @@ app.use((err, _req, res, _next) => {
         "Request payload is too large. Reduce attachment size or increase HOSTING_PROXY_JSON_LIMIT.",
     });
   }
-  if (status === 401 || message.includes("unauthenticated") || message.includes("signed out")) {
+  if (
+    status === 401 ||
+    message.includes("unauthenticated") ||
+    message.includes("signed out")
+  ) {
     return res.status(401).json({ error: "unauthorized" });
   }
   if (status === 403 || message.includes("forbidden")) {
@@ -3669,14 +4118,17 @@ app.listen(PORT, "127.0.0.1", () => {
   if (missing.length > 0) {
     console.warn(`[billing] missing env: ${missing.join(", ")}`);
   }
-  if (HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED && !HOSTED_AUTO_UPDATE_SSH_KEY_PATH) {
+  if (
+    HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED &&
+    !HOSTED_AUTO_UPDATE_SSH_KEY_PATH
+  ) {
     console.warn(
-      "[hosting] HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED=1 but HOSTED_AUTO_UPDATE_SSH_KEY_PATH is not set; fallback upgrades will fail when sudo is unavailable.",
+      "[hosting] HOSTED_AUTO_UPDATE_SSH_FALLBACK_ENABLED=1 but HOSTED_AUTO_UPDATE_SSH_KEY_PATH is not set; fallback upgrades will fail when sudo is unavailable."
     );
   }
   if (!HOSTED_NANGO_SECRET_KEY) {
     console.warn(
-      "[hosting] HOSTED_NANGO_SECRET_KEY/NANGO_SECRET_KEY is not set; hosted Nango connect sessions will fail until it is configured.",
+      "[hosting] HOSTED_NANGO_SECRET_KEY/NANGO_SECRET_KEY is not set; hosted Nango connect sessions will fail until it is configured."
     );
   }
   console.log(`[billing] listening on http://127.0.0.1:${PORT}`);
@@ -3684,7 +4136,10 @@ app.listen(PORT, "127.0.0.1", () => {
     void ensureHostedStateLoaded()
       .then(() => startHostedAutoUpdateScheduler())
       .catch((err) =>
-        console.error("[hosting] failed initializing auto-update scheduler:", err),
+        console.error(
+          "[hosting] failed initializing auto-update scheduler:",
+          err
+        )
       );
   } else {
     console.log("[hosting] auto-update scheduler disabled");

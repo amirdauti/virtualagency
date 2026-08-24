@@ -242,8 +242,11 @@ fn find_claude_cli() -> Result<PathBuf, String> {
 }
 
 fn find_codex_cli() -> Result<PathBuf, String> {
-    if let Some(path) = find_on_path("codex") {
-        return Ok(path);
+    if let Ok(path) = env::var("VA_CODEX_BIN") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(path);
+        }
     }
 
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -269,10 +272,10 @@ fn find_codex_cli() -> Result<PathBuf, String> {
     {
         let home = env::var("HOME").unwrap_or_default();
         candidates.extend([
-            PathBuf::from("/opt/homebrew/bin/codex"),
-            PathBuf::from("/usr/local/bin/codex"),
             PathBuf::from(format!("{}/.npm-global/bin/codex", home)),
             PathBuf::from(format!("{}/node_modules/.bin/codex", home)),
+            PathBuf::from("/opt/homebrew/bin/codex"),
+            PathBuf::from("/usr/local/bin/codex"),
             PathBuf::from(format!("{}/.nvm/versions/node/*/bin/codex", home)),
             PathBuf::from("./node_modules/.bin/codex"),
         ]);
@@ -286,6 +289,10 @@ fn find_codex_cli() -> Result<PathBuf, String> {
 
     #[cfg(windows)]
     if let Some(path) = find_cli_via_npm_prefix("codex") {
+        return Ok(path);
+    }
+
+    if let Some(path) = find_on_path("codex") {
         return Ok(path);
     }
 

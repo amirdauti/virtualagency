@@ -3,6 +3,10 @@ import { MCPServerId } from "./mcpServers";
 export type AgentStatus = "idle" | "thinking" | "working" | "error";
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export type CodexModel =
+  | "gpt-5.6"
+  | "gpt-5.6-sol"
+  | "gpt-5.6-terra"
+  | "gpt-5.6-luna"
   | "gpt-5.5"
   | "gpt-5.5-pro"
   | "gpt-5.4"
@@ -21,7 +25,7 @@ export type CodexModel =
   | "gpt-4.1";
 export type CliType = "claude" | "codex";
 export type AgentRuntime = "local" | "hosted";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type AgentSpecialty = "normal" | "roblox_builder";
 
 export interface AgentAutomation {
@@ -46,13 +50,13 @@ export interface AvatarConfig {
   id: string;
   name: string;
   path: string | null;
-  scale?: number;        // Scale factor (default 1.0)
-  yOffset?: number;      // Y position offset to place feet on ground
+  scale?: number; // Scale factor (default 1.0)
+  yOffset?: number; // Y position offset to place feet on ground
   disableFootprintClamp?: boolean; // Disable width/depth clamp (use with care)
-  pose?: "armsDown";     // Optional pose fix for models that load in T-pose
+  pose?: "armsDown"; // Optional pose fix for models that load in T-pose
   poseOnlyIfNoAnimations?: boolean; // Apply pose fix only when no animations are present
-  idleAnims?: string[];  // Animation name patterns for idle
-  walkAnims?: string[];  // Animation name patterns for walking
+  idleAnims?: string[]; // Animation name patterns for idle
+  walkAnims?: string[]; // Animation name patterns for walking
 }
 
 // Available avatar models with configuration
@@ -103,7 +107,7 @@ export const AVATAR_OPTIONS: AvatarConfig[] = [
   },
 ];
 
-export type AvatarId = typeof AVATAR_OPTIONS[number]["id"];
+export type AvatarId = (typeof AVATAR_OPTIONS)[number]["id"];
 
 export interface Agent {
   id: string;
