@@ -1,3 +1,9 @@
+## [1.12.1](https://github.com/amirdauti/virtualagency/compare/v1.12.0...v1.12.1) (2026-08-24)
+
+### Bug Fixes
+
+* **server:** mirror completed Codex messages to Telegram ([2ec28cd](https://github.com/amirdauti/virtualagency/commit/2ec28cdba152ef24d565800d3f9837d3060d4f9e))
+
 ## [1.12.0](https://github.com/amirdauti/virtualagency/compare/v1.11.1...v1.12.0) (2026-08-24)
 
 ### Features
