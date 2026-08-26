@@ -1,3 +1,9 @@
+## [1.12.2](https://github.com/amirdauti/virtualagency/compare/v1.12.1...v1.12.2) (2026-08-26)
+
+### Bug Fixes
+
+* **server:** group Telegram album attachments ([7a7ae45](https://github.com/amirdauti/virtualagency/commit/7a7ae4528038ea978a85c7d7f2819ffc2b5267b7))
+
 ## [1.12.1](https://github.com/amirdauti/virtualagency/compare/v1.12.0...v1.12.1) (2026-08-24)
 
 ### Bug Fixes
