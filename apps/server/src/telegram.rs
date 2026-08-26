@@ -8,6 +8,7 @@ use tokio::sync::{mpsc, watch};
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
 const TELEGRAM_FILE_BASE: &str = "https://api.telegram.org/file";
 const TELEGRAM_POLL_TIMEOUT_SECS: i64 = 25;
+const TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS: u64 = 750;
 const TELEGRAM_TYPING_THROTTLE_SECS: u64 = 4;
 const TELEGRAM_MAX_MEDIA_BYTES: usize = 20 * 1024 * 1024; // 20MB
 const TELEGRAM_MESSAGE_CHUNK: usize = 3900;
@@ -95,6 +96,145 @@ struct TelegramQueuedTurn {
     chat_id: i64,
     text: String,
     media: Vec<TelegramInboundMedia>,
+}
+
+#[derive(Debug)]
+struct PendingTelegramMediaGroup {
+    message: TelegramInboundMessage,
+    last_updated_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct TelegramMediaGroupBuffer {
+    pending: HashMap<(i64, String), PendingTelegramMediaGroup>,
+}
+
+impl TelegramMediaGroupBuffer {
+    fn push(
+        &mut self,
+        media_group_id: String,
+        mut message: TelegramInboundMessage,
+        now: Instant,
+    ) -> Vec<TelegramInboundMessage> {
+        let chat_id = message.chat_id;
+        let mut ready = self.flush_chat_except(chat_id, &media_group_id);
+        let key = (chat_id, media_group_id);
+
+        if let Some(group) = self.pending.get_mut(&key) {
+            group.message.update_id = group.message.update_id.max(message.update_id);
+            if group.message.from_handle.is_none() {
+                group.message.from_handle = message.from_handle.take();
+            }
+            merge_telegram_group_text(&mut group.message.text, &message.text);
+            group.message.media.append(&mut message.media);
+            group.last_updated_at = now;
+        } else {
+            self.pending.insert(
+                key,
+                PendingTelegramMediaGroup {
+                    message,
+                    last_updated_at: now,
+                },
+            );
+        }
+
+        ready.sort_by_key(|message| message.update_id);
+        ready
+    }
+
+    fn flush_expired(&mut self, now: Instant) -> Vec<TelegramInboundMessage> {
+        self.drain_matching(|_, group| {
+            now.saturating_duration_since(group.last_updated_at)
+                >= Duration::from_millis(TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS)
+        })
+    }
+
+    fn flush_chat(&mut self, chat_id: i64) -> Vec<TelegramInboundMessage> {
+        self.drain_matching(|_, group| group.message.chat_id == chat_id)
+    }
+
+    fn flush_chat_except(
+        &mut self,
+        chat_id: i64,
+        media_group_id: &str,
+    ) -> Vec<TelegramInboundMessage> {
+        self.drain_matching(|key, group| {
+            group.message.chat_id == chat_id && key.1 != media_group_id
+        })
+    }
+
+    fn next_flush_delay(&self, now: Instant) -> Option<Duration> {
+        self.pending
+            .values()
+            .map(|group| {
+                let elapsed = now.saturating_duration_since(group.last_updated_at);
+                Duration::from_millis(TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS).saturating_sub(elapsed)
+            })
+            .min()
+    }
+
+    fn drain_matching<F>(&mut self, mut predicate: F) -> Vec<TelegramInboundMessage>
+    where
+        F: FnMut(&(i64, String), &PendingTelegramMediaGroup) -> bool,
+    {
+        let keys: Vec<(i64, String)> = self
+            .pending
+            .iter()
+            .filter(|(key, group)| predicate(key, group))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut ready: Vec<TelegramInboundMessage> = keys
+            .into_iter()
+            .filter_map(|key| self.pending.remove(&key))
+            .map(|group| normalize_telegram_inbound(group.message))
+            .collect();
+        ready.sort_by_key(|message| message.update_id);
+        ready
+    }
+}
+
+fn merge_telegram_group_text(existing: &mut String, incoming: &str) {
+    let incoming = incoming.trim();
+    if incoming.is_empty() || existing.trim() == incoming {
+        return;
+    }
+    if !existing.trim().is_empty() {
+        existing.push_str("\n\n");
+    }
+    existing.push_str(incoming);
+}
+
+fn normalize_telegram_inbound(mut message: TelegramInboundMessage) -> TelegramInboundMessage {
+    message.text = message.text.trim().to_string();
+    if message.text.is_empty() {
+        message.text = "(media attached)".to_string();
+    }
+    message
+}
+
+fn route_telegram_inbound(
+    media_groups: &mut TelegramMediaGroupBuffer,
+    media_group_id: Option<String>,
+    message: TelegramInboundMessage,
+    now: Instant,
+) -> Vec<TelegramInboundMessage> {
+    if let Some(media_group_id) = media_group_id {
+        return media_groups.push(media_group_id, message, now);
+    }
+
+    let mut ready = media_groups.flush_chat(message.chat_id);
+    ready.push(normalize_telegram_inbound(message));
+    ready.sort_by_key(|message| message.update_id);
+    ready
+}
+
+fn forward_telegram_inbound(
+    inbound_tx: &mpsc::UnboundedSender<TelegramInboundMessage>,
+    messages: Vec<TelegramInboundMessage>,
+) {
+    for message in messages {
+        let _ = inbound_tx.send(message);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1924,21 +2064,32 @@ fn spawn_polling_worker(
     tokio::spawn(async move {
         let client = reqwest::Client::new();
         let mut offset: i64 = initial_offset;
+        let mut media_groups = TelegramMediaGroupBuffer::default();
 
         loop {
             if *stop_rx.borrow() {
                 break;
             }
 
+            let next_flush_delay = media_groups
+                .next_flush_delay(Instant::now())
+                .unwrap_or_default();
+            let has_pending_media_group = !media_groups.pending.is_empty();
             let poll_fut = poll_once(&client, &bot_token, offset);
             let updates = tokio::select! {
-                _ = stop_rx.changed() => {
-                    if *stop_rx.borrow() {
+                biased;
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() {
                         break;
                     }
                     continue;
                 }
-                result = poll_fut => result
+                result = poll_fut => result,
+                _ = tokio::time::sleep(next_flush_delay), if has_pending_media_group => {
+                    let ready = media_groups.flush_expired(Instant::now());
+                    forward_telegram_inbound(&inbound_tx, ready);
+                    continue;
+                }
             };
 
             match updates {
@@ -1950,6 +2101,7 @@ fn spawn_polling_worker(
                                 continue;
                             }
 
+                            let media_group_id = msg.media_group_id.clone();
                             let text = msg
                                 .text
                                 .as_deref()
@@ -1963,26 +2115,43 @@ fn spawn_polling_worker(
                                 continue;
                             }
 
-                            let normalized_text = if text.is_empty() {
-                                "(media attached)".to_string()
-                            } else {
-                                text
-                            };
-
-                            let _ = inbound_tx.send(TelegramInboundMessage {
+                            let inbound = TelegramInboundMessage {
                                 agent_id: agent_id.clone(),
                                 update_id: update.update_id,
                                 chat_id: msg.chat.id,
                                 from_handle: msg.from.and_then(|u| u.username),
-                                text: normalized_text,
+                                text,
                                 media,
-                            });
+                            };
+                            let ready = route_telegram_inbound(
+                                &mut media_groups,
+                                media_group_id,
+                                inbound,
+                                Instant::now(),
+                            );
+                            forward_telegram_inbound(&inbound_tx, ready);
                         }
                     }
+
+                    let ready = media_groups.flush_expired(Instant::now());
+                    forward_telegram_inbound(&inbound_tx, ready);
                 }
                 Err(err) => {
                     tracing::warn!("[telegram] Polling error for agent {}: {}", agent_id, err);
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let retry_delay = media_groups
+                        .next_flush_delay(Instant::now())
+                        .map(|delay| delay.min(Duration::from_secs(2)))
+                        .unwrap_or_else(|| Duration::from_secs(2));
+                    tokio::select! {
+                        changed = stop_rx.changed() => {
+                            if changed.is_err() || *stop_rx.borrow() {
+                                break;
+                            }
+                        }
+                        _ = tokio::time::sleep(retry_delay) => {}
+                    }
+                    let ready = media_groups.flush_expired(Instant::now());
+                    forward_telegram_inbound(&inbound_tx, ready);
                 }
             }
         }
@@ -2293,6 +2462,7 @@ struct TelegramMessage {
     from: Option<TelegramUser>,
     text: Option<String>,
     caption: Option<String>,
+    media_group_id: Option<String>,
     photo: Option<Vec<TelegramPhotoSize>>,
     document: Option<TelegramDocument>,
     video: Option<TelegramVideo>,
@@ -2408,6 +2578,103 @@ mod tests {
             passive_turn: None,
             worker_stop: None,
         }
+    }
+
+    fn make_inbound_with_photo(
+        update_id: i64,
+        chat_id: i64,
+        text: &str,
+        marker: u8,
+    ) -> TelegramInboundMessage {
+        TelegramInboundMessage {
+            agent_id: "agent-1".to_string(),
+            update_id,
+            chat_id,
+            from_handle: Some("alice".to_string()),
+            text: text.to_string(),
+            media: vec![TelegramInboundMedia {
+                kind: "photo".to_string(),
+                mime_type: Some("image/jpeg".to_string()),
+                file_name: Some("photo.jpg".to_string()),
+                bytes: vec![marker],
+            }],
+        }
+    }
+
+    #[test]
+    fn telegram_message_deserializes_media_group_id() {
+        let message: TelegramMessage = serde_json::from_value(serde_json::json!({
+            "chat": { "id": 42 },
+            "media_group_id": "album-123",
+            "photo": [{ "file_id": "photo-1", "file_size": 100 }]
+        }))
+        .expect("telegram message should deserialize");
+
+        assert_eq!(message.media_group_id.as_deref(), Some("album-123"));
+    }
+
+    #[test]
+    fn telegram_album_is_dispatched_as_one_turn_with_all_photos() {
+        let started_at = Instant::now();
+        let mut media_groups = TelegramMediaGroupBuffer::default();
+
+        let first = route_telegram_inbound(
+            &mut media_groups,
+            Some("album-123".to_string()),
+            make_inbound_with_photo(10, 42, "Compare these photos", 1),
+            started_at,
+        );
+        let second = route_telegram_inbound(
+            &mut media_groups,
+            Some("album-123".to_string()),
+            make_inbound_with_photo(11, 42, "", 2),
+            started_at + Duration::from_millis(100),
+        );
+
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+        assert!(media_groups
+            .flush_expired(started_at + Duration::from_millis(849))
+            .is_empty());
+
+        let ready = media_groups.flush_expired(started_at + Duration::from_millis(850));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].update_id, 11);
+        assert_eq!(ready[0].text, "Compare these photos");
+        assert_eq!(ready[0].media.len(), 2);
+        assert_eq!(ready[0].media[0].bytes, vec![1]);
+        assert_eq!(ready[0].media[1].bytes, vec![2]);
+    }
+
+    #[test]
+    fn text_after_album_flushes_album_before_text_turn() {
+        let started_at = Instant::now();
+        let mut media_groups = TelegramMediaGroupBuffer::default();
+
+        let album = route_telegram_inbound(
+            &mut media_groups,
+            Some("album-123".to_string()),
+            make_inbound_with_photo(10, 42, "", 1),
+            started_at,
+        );
+        assert!(album.is_empty());
+
+        let text = TelegramInboundMessage {
+            agent_id: "agent-1".to_string(),
+            update_id: 11,
+            chat_id: 42,
+            from_handle: Some("alice".to_string()),
+            text: "Now compare them".to_string(),
+            media: Vec::new(),
+        };
+        let ready = route_telegram_inbound(&mut media_groups, None, text, started_at);
+
+        assert_eq!(ready.len(), 2);
+        assert_eq!(ready[0].update_id, 10);
+        assert_eq!(ready[0].text, "(media attached)");
+        assert_eq!(ready[0].media.len(), 1);
+        assert_eq!(ready[1].update_id, 11);
+        assert_eq!(ready[1].text, "Now compare them");
     }
 
     #[test]
