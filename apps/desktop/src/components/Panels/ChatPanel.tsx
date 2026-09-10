@@ -14,13 +14,19 @@ import {
   isTauri,
   updateAgentSettings,
   ClaudeModel,
-  CodexModel,
-  ReasoningEffort,
 } from "../../lib/api";
 import { useChatStore } from "../../stores/chatStore";
 import { useAgentStore } from "../../stores/agentStore";
 import { useChatUIStore, DraftImageAttachment } from "../../stores/chatUIStore";
-import type { AgentAutomation } from "@virtual-agency/shared";
+import {
+  CODEX_MODELS,
+  DEFAULT_CODEX_MODEL,
+  getCodexReasoningEfforts,
+  isSupportedCodexModel,
+  normalizeCodexReasoningEffort,
+  type AgentAutomation,
+  type ReasoningEffort,
+} from "@virtual-agency/shared";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { writeFile, mkdir, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { join, tempDir } from "@tauri-apps/api/path";
@@ -39,37 +45,6 @@ const CLAUDE_MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
   { value: "sonnet", label: "Sonnet 4.5 (Latest)" },
   { value: "opus", label: "Opus 4.6 (Latest)" },
   { value: "haiku", label: "Haiku" },
-];
-
-const CODEX_MODEL_OPTIONS: { value: CodexModel; label: string }[] = [
-  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-  { value: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-  { value: "gpt-5.6", label: "GPT-5.6 Alias" },
-  { value: "gpt-5.5", label: "GPT-5.5" },
-  { value: "gpt-5.5-pro", label: "GPT-5.5 Pro" },
-  { value: "gpt-5.4", label: "GPT-5.4" },
-  { value: "gpt-5.4-pro", label: "GPT-5.4 Pro" },
-  { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
-  { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
-  { value: "gpt-5.2", label: "GPT-5.2" },
-  { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
-  { value: "gpt-5.1-codex", label: "GPT-5.1 Codex" },
-  { value: "gpt-5.1", label: "GPT-5.1" },
-  { value: "gpt-5-codex", label: "GPT-5 Codex" },
-  { value: "gpt-5", label: "GPT-5" },
-  { value: "gpt-5-mini", label: "GPT-5 Mini" },
-  { value: "o3", label: "o3" },
-  { value: "o4-mini", label: "o4-mini" },
-  { value: "gpt-4.1", label: "GPT-4.1" },
-];
-
-const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "Extra High" },
-  { value: "max", label: "Max" },
 ];
 
 const SCHEDULED_TASK_EXAMPLES = [
@@ -148,7 +123,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const isCodexAgent = agent?.cliType === "codex";
 
   // Local state for model and thinking/reasoning, initialized from agent
-  const defaultModel = isCodexAgent ? "gpt-5.6-sol" : "sonnet";
+  const defaultModel = isCodexAgent ? DEFAULT_CODEX_MODEL : "sonnet";
   const [selectedModel, setSelectedModel] = useState<string>(
     agent?.model || defaultModel
   );
@@ -158,6 +133,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
     agent?.reasoningEffort || "medium"
   );
+  const codexReasoningEfforts = getCodexReasoningEfforts(selectedModel);
   const [promptKind, setPromptKind] = useState<PromptKind>("one_off");
   const [scheduledTaskDescription, setScheduledTaskDescription] =
     useState<string>(SCHEDULED_TASK_EXAMPLES[0]);
@@ -181,9 +157,18 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       if (agent.model) setSelectedModel(agent.model);
       if (agent.thinkingEnabled !== undefined)
         setThinkingEnabled(agent.thinkingEnabled);
-      if (agent.reasoningEffort) setReasoningEffort(agent.reasoningEffort);
+      if (agent.reasoningEffort) {
+        setReasoningEffort(
+          isCodexAgent
+            ? normalizeCodexReasoningEffort(
+                agent.model || DEFAULT_CODEX_MODEL,
+                agent.reasoningEffort
+              )
+            : agent.reasoningEffort
+        );
+      }
     }
-  }, [agent?.model, agent?.thinkingEnabled, agent?.reasoningEffort]);
+  }, [agent?.model, agent?.thinkingEnabled, agent?.reasoningEffort, isCodexAgent]);
 
   // Load draft when agentId changes (switching between agents)
   useEffect(() => {
@@ -198,15 +183,25 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
   const handleModelChange = useCallback(
     async (newModel: string) => {
+      const nextReasoningEffort = isCodexAgent
+        ? normalizeCodexReasoningEffort(newModel, reasoningEffort)
+        : reasoningEffort;
       setSelectedModel(newModel);
-      updateAgent(agentId, { model: newModel });
+      setReasoningEffort(nextReasoningEffort);
+      updateAgent(agentId, {
+        model: newModel,
+        reasoningEffort: isCodexAgent ? nextReasoningEffort : undefined,
+      });
       try {
-        await updateAgentSettings(agentId, { model: newModel });
+        await updateAgentSettings(agentId, {
+          model: newModel,
+          reasoningEffort: isCodexAgent ? nextReasoningEffort : undefined,
+        });
       } catch (err) {
         console.error("[ChatPanel] Failed to update model:", err);
       }
     },
-    [agentId, updateAgent, isCodexAgent]
+    [agentId, updateAgent, isCodexAgent, reasoningEffort]
   );
 
   const handleThinkingToggle = useCallback(async () => {
@@ -867,13 +862,16 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               fontSize: isMobile ? 13 : 12,
             }}
           >
-            {(isCodexAgent ? CODEX_MODEL_OPTIONS : CLAUDE_MODEL_OPTIONS).map(
-              (opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              )
+            {isCodexAgent && !isSupportedCodexModel(selectedModel) && (
+              <option value={selectedModel} disabled>
+                {selectedModel} (unsupported)
+              </option>
             )}
+            {(isCodexAgent ? CODEX_MODELS : CLAUDE_MODEL_OPTIONS).map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {"name" in opt ? opt.name : opt.label}
+              </option>
+            ))}
           </select>
         </div>
         {isCodexAgent ? (
@@ -899,9 +897,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
                 fontSize: isMobile ? 13 : 12,
               }}
             >
-              {REASONING_EFFORT_OPTIONS.map((opt) => (
+              {codexReasoningEfforts.map((opt) => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}
+                  {opt.name}
                 </option>
               ))}
             </select>

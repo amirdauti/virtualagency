@@ -11,7 +11,14 @@ use tokio::sync::mpsc;
 use crate::BroadcastMessage;
 
 const DEFAULT_CODEX_NPM_PACKAGE: &str = "@openai/codex";
-const DEFAULT_CODEX_NPM_VERSION: &str = "0.149.1";
+const DEFAULT_CODEX_NPM_VERSION: &str = "0.154.0";
+
+fn codex_model_supports_reasoning(model: &str) -> bool {
+    model.starts_with("gpt-5")
+        || model.starts_with("gpt-6")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+}
 
 fn get_mcp_server_package(id: &str) -> Option<&'static str> {
     match id {
@@ -655,7 +662,7 @@ pub struct AgentProcess {
     pub working_dir: String,
     pub model: String,
     pub thinking_enabled: bool,
-    pub reasoning_effort: String, // For Codex: "low", "medium", "high"
+    pub reasoning_effort: String, // Codex model_reasoning_effort config value
     pub specialty: AgentSpecialty,
     pub mcp_servers: Vec<String>,
     pub cli_type: CliType,
@@ -1060,10 +1067,7 @@ impl AgentProcess {
                 // before the last element (the prompt) and session_id if present
 
                 // Add reasoning effort via config flag for models that support it
-                // GPT-5.x models and o-series models all support reasoning effort
-                let supports_reasoning = self.model.starts_with("gpt-5")
-                    || self.model.starts_with("o3")
-                    || self.model.starts_with("o4");
+                let supports_reasoning = codex_model_supports_reasoning(&self.model);
                 if supports_reasoning && !self.reasoning_effort.is_empty() {
                     // Insert before prompt (last element) or before session_id+prompt (last 2 elements for resume)
                     let insert_pos = if session_id_opt.is_some() {
@@ -1437,6 +1441,24 @@ impl AgentProcess {
             self.thinking_enabled,
             self.mcp_servers.clone(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_model_supports_reasoning;
+
+    #[test]
+    fn recognizes_current_codex_reasoning_models() {
+        assert!(codex_model_supports_reasoning("gpt-6-astra"));
+        assert!(codex_model_supports_reasoning("gpt-5.6-sol"));
+        assert!(codex_model_supports_reasoning("gpt-5.3-codex-spark"));
+    }
+
+    #[test]
+    fn rejects_non_reasoning_model_names() {
+        assert!(!codex_model_supports_reasoning("gpt-4.1"));
+        assert!(!codex_model_supports_reasoning("unknown"));
     }
 }
 

@@ -73,7 +73,7 @@ const VA_CODEX_NPM_PACKAGE =
   String(process.env.VA_CODEX_NPM_PACKAGE || "@openai/codex").trim() ||
   "@openai/codex";
 const VA_CODEX_NPM_VERSION =
-  String(process.env.VA_CODEX_NPM_VERSION || "0.149.1").trim() || "0.149.1";
+  String(process.env.VA_CODEX_NPM_VERSION || "0.154.0").trim() || "0.154.0";
 const HOSTED_AUTO_UPDATE_ENABLED = !["0", "false", "off", "no"].includes(
   String(process.env.HOSTED_AUTO_UPDATE_ENABLED || "1")
     .trim()

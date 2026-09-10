@@ -6,9 +6,7 @@ import {
   browseDirectory,
   BrowseResponse,
   ClaudeModel,
-  CodexModel,
   CliType,
-  ReasoningEffort,
 } from "../../lib/api";
 import { useAgentStore } from "../../stores/agentStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -20,6 +18,12 @@ import {
   MCPServerId,
   AgentSpecialty,
   AgentRuntime,
+  CODEX_MODELS,
+  DEFAULT_CODEX_MODEL,
+  getCodexReasoningEfforts,
+  normalizeCodexReasoningEffort,
+  CodexModel,
+  ReasoningEffort,
 } from "@virtual-agency/shared";
 
 // CLI type configurations
@@ -102,123 +106,6 @@ const CLAUDE_MODELS: {
     name: "Haiku",
     description: "Fastest responses, simple tasks",
   },
-];
-
-// Codex model configurations
-const CODEX_MODELS: {
-  value: CodexModel;
-  name: string;
-  description: string;
-  badge?: string;
-}[] = [
-  {
-    value: "gpt-5.6-sol",
-    name: "GPT-5.6 Sol",
-    description: "Flagship GPT-5.6 model for highest capability",
-    badge: "Recommended",
-  },
-  {
-    value: "gpt-5.6-terra",
-    name: "GPT-5.6 Terra",
-    description: "Strong GPT-5.6 capability at lower cost",
-    badge: "New",
-  },
-  {
-    value: "gpt-5.6-luna",
-    name: "GPT-5.6 Luna",
-    description: "Efficient GPT-5.6 model for high-volume work",
-    badge: "New",
-  },
-  {
-    value: "gpt-5.6",
-    name: "GPT-5.6 Alias",
-    description: "Alias that routes to GPT-5.6 Sol",
-  },
-  {
-    value: "gpt-5.5",
-    name: "GPT-5.5",
-    description: "Previous GPT-5.5 frontier tier",
-  },
-  {
-    value: "gpt-5.5-pro",
-    name: "GPT-5.5 Pro",
-    description: "Previous highest capability GPT-5.5 tier",
-  },
-  {
-    value: "gpt-5.4",
-    name: "GPT-5.4",
-    description: "Previous GPT-5 frontier tier",
-  },
-  {
-    value: "gpt-5.4-pro",
-    name: "GPT-5.4 Pro",
-    description: "Previous GPT-5.4 Pro tier",
-  },
-  {
-    value: "gpt-5.3-codex",
-    name: "GPT-5.3 Codex",
-    description: "Codex-tuned model for legacy compatibility",
-  },
-  {
-    value: "gpt-5.2-codex",
-    name: "GPT-5.2 Codex",
-    description: "Legacy Codex model",
-  },
-  {
-    value: "gpt-5.2",
-    name: "GPT-5.2",
-    description: "Legacy GPT-5.2 general model",
-  },
-  {
-    value: "gpt-5.1-codex-max",
-    name: "GPT-5.1 Codex Max",
-    description: "Frontier agentic coding model",
-  },
-  {
-    value: "gpt-5.1-codex",
-    name: "GPT-5.1 Codex",
-    description: "Intelligent coding model",
-  },
-  { value: "gpt-5.1", name: "GPT-5.1", description: "GPT-5.1 general model" },
-  {
-    value: "gpt-5-codex",
-    name: "GPT-5 Codex",
-    description: "GPT-5 coding model",
-  },
-  { value: "gpt-5", name: "GPT-5", description: "GPT-5 general model" },
-  {
-    value: "gpt-5-mini",
-    name: "GPT-5 Mini",
-    description: "Compact GPT-5 model",
-  },
-  { value: "o3", name: "o3", description: "Reasoning model (legacy)" },
-  {
-    value: "o4-mini",
-    name: "o4-mini",
-    description: "Compact reasoning model (legacy)",
-  },
-  {
-    value: "gpt-4.1",
-    name: "GPT-4.1",
-    description: "High performance (legacy)",
-  },
-];
-
-// Reasoning effort configurations for Codex
-const REASONING_EFFORTS: {
-  value: ReasoningEffort;
-  name: string;
-  description: string;
-}[] = [
-  { value: "low", name: "Low", description: "Faster, less thorough reasoning" },
-  { value: "medium", name: "Medium", description: "Balanced speed and depth" },
-  { value: "high", name: "High", description: "More thorough reasoning" },
-  {
-    value: "xhigh",
-    name: "Extra High",
-    description: "Very deep reasoning for difficult work",
-  },
-  { value: "max", name: "Max", description: "Maximum GPT-5.6 reasoning depth" },
 ];
 
 // Memoized Directory Browser component
@@ -419,7 +306,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const [specialty, setSpecialty] = useState<AgentSpecialty>("normal");
   const [cliType, setCliType] = useState<CliType>("claude");
   const [claudeModel, setClaudeModel] = useState<ClaudeModel>("sonnet");
-  const [codexModel, setCodexModel] = useState<CodexModel>("gpt-5.6-sol");
+  const [codexModel, setCodexModel] = useState<CodexModel>(DEFAULT_CODEX_MODEL);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [reasoningEffort, setReasoningEffort] =
     useState<ReasoningEffort>("medium");
@@ -430,6 +317,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [browserData, setBrowserData] = useState<BrowseResponse | null>(null);
   const [browserLoading, setBrowserLoading] = useState(false);
+  const codexReasoningEfforts = getCodexReasoningEfforts(codexModel);
 
   const addAgent = useAgentStore((state) => state.addAgent);
   const selectAgent = useAgentStore((state) => state.selectAgent);
@@ -572,7 +460,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
     setSpecialty("normal");
     setCliType("claude");
     setClaudeModel("sonnet");
-    setCodexModel("gpt-5.6-sol");
+    setCodexModel(DEFAULT_CODEX_MODEL);
     setThinkingEnabled(false);
     setReasoningEffort("medium");
     setAvatarId("default");
@@ -753,7 +641,12 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
                   key={m.value}
                   model={m}
                   selected={codexModel === m.value}
-                  onClick={() => setCodexModel(m.value as CodexModel)}
+                  onClick={() => {
+                    setCodexModel(m.value);
+                    setReasoningEffort((current) =>
+                      normalizeCodexReasoningEffort(m.value, current)
+                    );
+                  }}
                 />
               ))}
             </div>
@@ -791,7 +684,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
                   gap: 8,
                 }}
               >
-                {REASONING_EFFORTS.map((effort) => (
+                {codexReasoningEfforts.map((effort) => (
                   <button
                     key={effort.value}
                     onClick={() => setReasoningEffort(effort.value)}

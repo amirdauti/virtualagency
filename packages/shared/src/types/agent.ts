@@ -3,30 +3,126 @@ import { MCPServerId } from "./mcpServers";
 export type AgentStatus = "idle" | "thinking" | "working" | "error";
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
 export type CodexModel =
-  | "gpt-5.6"
+  | "gpt-6-astra"
   | "gpt-5.6-sol"
   | "gpt-5.6-terra"
   | "gpt-5.6-luna"
   | "gpt-5.5"
-  | "gpt-5.5-pro"
-  | "gpt-5.4"
-  | "gpt-5.4-pro"
-  | "gpt-5.3-codex"
-  | "gpt-5.2-codex"
-  | "gpt-5.2"
-  | "gpt-5.1-codex-max"
-  | "gpt-5.1-codex"
-  | "gpt-5.1"
-  | "gpt-5-codex"
-  | "gpt-5"
-  | "gpt-5-mini"
-  | "o3"
-  | "o4-mini"
-  | "gpt-4.1";
+  | "gpt-5.3-codex-spark";
 export type CliType = "claude" | "codex";
 export type AgentRuntime = "local" | "hosted";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type ReasoningEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
 export type AgentSpecialty = "normal" | "roblox_builder";
+
+export interface CodexModelDefinition {
+  value: CodexModel;
+  name: string;
+  description: string;
+  badge?: string;
+  defaultReasoningEffort: ReasoningEffort;
+  supportedReasoningEfforts: readonly ReasoningEffort[];
+}
+
+export interface ReasoningEffortDefinition {
+  value: ReasoningEffort;
+  name: string;
+  description: string;
+}
+
+export const DEFAULT_CODEX_MODEL: CodexModel = "gpt-6-astra";
+
+export const CODEX_MODELS: readonly CodexModelDefinition[] = [
+  {
+    value: "gpt-6-astra",
+    name: "GPT-6 Astra",
+    description: "Most capable model for complex, demanding work",
+    badge: "Recommended",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+  },
+  {
+    value: "gpt-5.6-sol",
+    name: "GPT-5.6 Sol",
+    description: "Reliable agentic workhorse for everyday tasks",
+    defaultReasoningEffort: "low",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+  },
+  {
+    value: "gpt-5.6-terra",
+    name: "GPT-5.6 Terra",
+    description: "Balanced agentic model for everyday work",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+  },
+  {
+    value: "gpt-5.6-luna",
+    name: "GPT-5.6 Luna",
+    description: "Fast and affordable agentic model",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    value: "gpt-5.5",
+    name: "GPT-5.5",
+    description: "Proven previous-generation model",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+  },
+  {
+    value: "gpt-5.3-codex-spark",
+    name: "GPT-5.3 Codex Spark",
+    description: "Ultra-fast coding model",
+    badge: "Fast",
+    defaultReasoningEffort: "high",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+  },
+];
+
+export const CODEX_REASONING_EFFORTS: readonly ReasoningEffortDefinition[] = [
+  { value: "low", name: "Low", description: "Fast responses with lighter reasoning" },
+  { value: "medium", name: "Medium", description: "Balanced speed and reasoning depth" },
+  { value: "high", name: "High", description: "Greater depth for complex problems" },
+  { value: "xhigh", name: "Extra High", description: "Very deep reasoning for difficult work" },
+  { value: "max", name: "Max", description: "Maximum reasoning depth" },
+  { value: "ultra", name: "Ultra", description: "Maximum reasoning with automatic delegation" },
+];
+
+export function getCodexModelDefinition(
+  model: string
+): CodexModelDefinition | undefined {
+  return CODEX_MODELS.find((candidate) => candidate.value === model);
+}
+
+export function isSupportedCodexModel(model: string): model is CodexModel {
+  return Boolean(getCodexModelDefinition(model));
+}
+
+export function getCodexReasoningEfforts(
+  model: string
+): readonly ReasoningEffortDefinition[] {
+  const definition = getCodexModelDefinition(model);
+  const supported = new Set(
+    definition?.supportedReasoningEfforts || ["low", "medium", "high", "xhigh"]
+  );
+  return CODEX_REASONING_EFFORTS.filter((effort) => supported.has(effort.value));
+}
+
+export function normalizeCodexReasoningEffort(
+  model: string,
+  effort: ReasoningEffort
+): ReasoningEffort {
+  const definition = getCodexModelDefinition(model);
+  if (!definition) return effort;
+  return definition.supportedReasoningEfforts.includes(effort)
+    ? effort
+    : definition.defaultReasoningEffort;
+}
 
 export interface AgentAutomation {
   id: string;

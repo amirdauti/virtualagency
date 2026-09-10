@@ -60,6 +60,13 @@ fn build_codex_mcp_overrides(mcp_servers: &[String]) -> Vec<String> {
     overrides
 }
 
+fn codex_model_supports_reasoning(model: &str) -> bool {
+    model.starts_with("gpt-5")
+        || model.starts_with("gpt-6")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CliType {
@@ -101,7 +108,7 @@ pub struct AgentProcess {
     pub working_dir: String,
     pub model: String,
     pub thinking_enabled: bool,
-    pub reasoning_effort: String, // For Codex: "low", "medium", "high"
+    pub reasoning_effort: String, // Codex model_reasoning_effort config value
     pub specialty: AgentSpecialty,
     pub mcp_servers: Vec<String>,
     pub cli_type: CliType,
@@ -563,10 +570,7 @@ impl AgentProcess {
                 };
 
                 // Add reasoning effort via config flag for models that support it
-                // GPT-5.x models and o-series models all support reasoning effort
-                let supports_reasoning = self.model.starts_with("gpt-5")
-                    || self.model.starts_with("o3")
-                    || self.model.starts_with("o4");
+                let supports_reasoning = codex_model_supports_reasoning(&self.model);
                 if supports_reasoning && !self.reasoning_effort.is_empty() {
                     let insert_pos = if session_id_opt.is_some() {
                         args.len() - 2 // before session_id and prompt

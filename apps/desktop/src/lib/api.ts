@@ -7,7 +7,12 @@ import type {
   AgentAutomation,
   AgentSpecialty,
   AgentRuntime,
+  CodexModel,
+  ReasoningEffort,
 } from "@virtual-agency/shared";
+import { DEFAULT_CODEX_MODEL } from "@virtual-agency/shared";
+
+export type { CodexModel, ReasoningEffort } from "@virtual-agency/shared";
 
 // Server URL for browser mode (resolved dynamically when env vars are not provided).
 const ENV_SERVER_URL = import.meta.env.VITE_SERVER_URL as string | undefined;
@@ -800,29 +805,7 @@ export async function findAvailablePort(
 // Claude model aliases - these always point to the latest version of each model
 // See: claude --help for more info
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
-export type CodexModel =
-  | "gpt-5.6"
-  | "gpt-5.6-sol"
-  | "gpt-5.6-terra"
-  | "gpt-5.6-luna"
-  | "gpt-5.5"
-  | "gpt-5.5-pro"
-  | "gpt-5.4"
-  | "gpt-5.4-pro"
-  | "gpt-5.3-codex"
-  | "gpt-5.2-codex"
-  | "gpt-5.2"
-  | "gpt-5.1-codex-max"
-  | "gpt-5.1-codex"
-  | "gpt-5.1"
-  | "gpt-5-codex"
-  | "gpt-5"
-  | "gpt-5-mini"
-  | "o3"
-  | "o4-mini"
-  | "gpt-4.1";
 export type CliType = "claude" | "codex";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AgentOptions {
   model?: ClaudeModel | CodexModel | string;
@@ -843,7 +826,7 @@ export async function createAgent(
 ): Promise<void> {
   const cliType = options?.cliType || "claude";
   const model =
-    options?.model || (cliType === "codex" ? "gpt-5.6-sol" : "sonnet");
+    options?.model || (cliType === "codex" ? DEFAULT_CODEX_MODEL : "sonnet");
   const thinkingEnabled = options?.thinkingEnabled || false;
   const reasoningEffort = options?.reasoningEffort || "medium";
   const mcpServers = options?.mcpServers || [];

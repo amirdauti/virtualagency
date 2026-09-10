@@ -44,7 +44,7 @@ use telegram::{
 
 type SharedState = Arc<AppState>;
 
-const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
+const DEFAULT_CODEX_MODEL: &str = "gpt-6-astra";
 static WHISPER_INSTALL_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 const AGENTS_STATE_VERSION: u32 = 1;
 const PUBLISHED_APPS_STATE_VERSION: u32 = 1;
@@ -1093,7 +1093,7 @@ struct CreateAgentRequest {
     #[serde(default)]
     thinking_enabled: bool,
     #[serde(default = "default_reasoning_effort")]
-    reasoning_effort: String, // For Codex: "low", "medium", "high"
+    reasoning_effort: String, // Codex model_reasoning_effort config value
     #[serde(default)]
     specialty: Option<String>,
     #[serde(default)]
