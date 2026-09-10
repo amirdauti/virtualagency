@@ -1,3 +1,9 @@
+## [1.13.0](https://github.com/amirdauti/virtualagency/compare/v1.12.2...v1.13.0) (2026-09-10)
+
+### Features
+
+* **server:** support Codex CLI 0.154 models ([56322cb](https://github.com/amirdauti/virtualagency/commit/56322cbfb83f5f4191d9e6d50ab5f1454ec113d5))
+
 ## [1.12.2](https://github.com/amirdauti/virtualagency/compare/v1.12.1...v1.12.2) (2026-08-26)
 
 ### Bug Fixes
