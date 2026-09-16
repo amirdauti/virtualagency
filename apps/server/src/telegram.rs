@@ -1522,7 +1522,7 @@ fn format_codex_item_started_update(
     turn: &mut TelegramActiveTurn,
 ) -> Option<String> {
     let item_type = json_get_str(item, "type")?;
-    if item_type == "agent_message" || item_type == "file_change" {
+    if matches!(item_type, "agent_message" | "reasoning" | "file_change") {
         return None;
     }
 
@@ -1536,11 +1536,6 @@ fn format_codex_item_started_update(
     }
 
     match item_type {
-        "reasoning" => {
-            let summary = json_get_first_str(item, &["text", "summary", "reasoning"])
-                .unwrap_or("Thinking...");
-            Some(format!("Reasoning: {}", truncate_text(summary, 240)))
-        }
         "command_execution" => {
             let command =
                 json_get_first_str(item, &["command", "cmd", "shell_command", "shellCommand"])
@@ -1557,44 +1552,6 @@ fn format_codex_item_started_update(
     }
 }
 
-fn format_progress_update(
-    raw: &str,
-    turn: &mut TelegramActiveTurn,
-    prefix: &str,
-    key_prefix: &str,
-) -> Option<String> {
-    let text = raw.trim();
-    if text.is_empty() {
-        return None;
-    }
-
-    turn.pending_progress_text.push_str(text);
-
-    let should_flush = turn.pending_progress_text.contains('\n')
-        || turn.pending_progress_text.chars().count() >= 180
-        || text.ends_with('.')
-        || text.ends_with('!')
-        || text.ends_with('?')
-        || text.ends_with(':');
-
-    if !should_flush {
-        return None;
-    }
-
-    let summary = truncate_text(turn.pending_progress_text.trim(), 320);
-    turn.pending_progress_text.clear();
-    if summary.is_empty() {
-        return None;
-    }
-
-    let key = format!("{}:{}", key_prefix, stable_hash(&summary));
-    if !turn.sent_update_ids.insert(key) {
-        return None;
-    }
-
-    Some(format!("{}{}", prefix, summary))
-}
-
 fn format_codex_item_updated_update(
     event: &serde_json::Value,
     turn: &mut TelegramActiveTurn,
@@ -1603,49 +1560,9 @@ fn format_codex_item_updated_update(
     let item_type = json_get_str(item, "type")?;
 
     match item_type {
-        "agent_message" => {
-            let direct_text = json_get_first_str(
-                item,
-                &[
-                    "text",
-                    "message",
-                    "content",
-                    "summary",
-                    "reasoning",
-                    "delta",
-                ],
-            )
-            .or_else(|| {
-                event
-                    .get("delta")
-                    .and_then(|delta| json_get_first_str(delta, &["text", "content", "message"]))
-            })
-            .or_else(|| {
-                event
-                    .get("delta")
-                    .and_then(|delta| delta.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-            })?;
-
-            format_progress_update(direct_text, turn, "Update: ", "codex-agent-update")
-        }
-        "reasoning" => {
-            let summary = json_get_first_str(item, &["text", "summary", "reasoning", "message"])
-                .or_else(|| {
-                    event
-                        .get("delta")
-                        .and_then(|delta| json_get_first_str(delta, &["text", "content"]))
-                })?;
-
-            let item_id = get_codex_item_id(item).unwrap_or_else(|| "reasoning".to_string());
-            format_progress_update(
-                summary,
-                turn,
-                "Update: ",
-                &format!("codex-update:{}", item_id),
-            )
-        }
+        // These are cumulative snapshots, not deltas. Send each completed
+        // message once; commentary completes while the turn is still running.
+        "agent_message" | "reasoning" => None,
         "todo_list" => {
             let item_id = get_codex_item_id(item).unwrap_or_else(|| "todo_list".to_string());
             let key = format!("codex-update:{}:todos", item_id);
@@ -3715,6 +3632,95 @@ mod tests {
         assert_eq!(ready[0].media.len(), 1);
         assert_eq!(ready[1].update_id, 11);
         assert_eq!(ready[1].text, "Now compare them");
+    }
+
+    #[test]
+    fn cumulative_codex_stream_sends_one_reply_per_item_before_the_turn_finishes() {
+        for send_updates in [true, false] {
+            let mut manager =
+                make_manager_with_state("agent-1", make_enabled_state(42, send_updates));
+            manager.handle_broadcast(&crate::BroadcastMessage::AgentStatus(AgentStatusChange {
+                agent_id: "agent-1".into(),
+                status: AgentStatus::Working,
+            }));
+            manager.handle_inbound_with_steering(text_inbound(1, "How is it going?"), true);
+            let mut broadcast = |kind: &str, item: serde_json::Value| {
+                manager
+                    .handle_broadcast(&crate::BroadcastMessage::AgentOutput(AgentOutput {
+                        agent_id: "agent-1".into(),
+                        stream: OutputStream::Stdout,
+                        data: serde_json::json!({"type":kind,"item":item}).to_string(),
+                    }))
+                    .into_iter()
+                    .filter_map(|action| match action {
+                        TelegramAction::SendMessage { text, .. } => Some(text),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for (id, phase, text) in [
+                (
+                    "progress",
+                    "commentary",
+                    "The update is built. I am checking deployment now.",
+                ),
+                ("answer", "final_answer", "The update is live and verified."),
+            ] {
+                assert!(broadcast(
+                    "item.started",
+                    serde_json::json!({"id":id,"type":"agent_message","phase":phase,"text":""})
+                )
+                .is_empty());
+                for end in 1..=text.len() {
+                    assert!(broadcast("item.updated", serde_json::json!({"id":id,"type":"agent_message","phase":phase,"text":&text[..end]})).is_empty());
+                }
+                let completed =
+                    serde_json::json!({"id":id,"type":"agent_message","phase":phase,"text":text});
+                assert_eq!(broadcast("item.completed", completed.clone()), vec![text]);
+                assert!(broadcast("item.completed", completed).is_empty());
+                assert!(broadcast(
+                    "item.updated",
+                    serde_json::json!({"id":id,"type":"agent_message","text":"late snapshot"})
+                )
+                .is_empty());
+            }
+            assert!(
+                manager.agents["agent-1"].status_active,
+                "replies must arrive while work is still active"
+            );
+            let idle = manager.handle_broadcast(&crate::BroadcastMessage::AgentStatus(
+                AgentStatusChange {
+                    agent_id: "agent-1".into(),
+                    status: AgentStatus::Idle,
+                },
+            ));
+            assert!(
+                !idle
+                    .iter()
+                    .any(|action| matches!(action, TelegramAction::SendMessage { .. })),
+                "idle must not repeat the final message"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_reasoning_waits_for_nonempty_completion_without_stream_spam() {
+        let mut turn = make_turn();
+        for kind in ["item.started", "item.updated", "item.completed"] {
+            let empty = serde_json::json!({"type":kind,"item":{"id":"empty","type":"reasoning","text":"","summary":[],"content":[]}}).to_string();
+            assert!(collect_incremental_updates(&empty, &mut turn).is_empty());
+        }
+        let text = "Checking the deployment. Verifying the result.";
+        for end in 1..=text.len() {
+            let partial = serde_json::json!({"type":"item.updated","item":{"id":"summary","type":"reasoning","text":&text[..end]}}).to_string();
+            assert!(collect_incremental_updates(&partial, &mut turn).is_empty());
+        }
+        let completed = serde_json::json!({"type":"item.completed","item":{"id":"summary","type":"reasoning","text":text}}).to_string();
+        assert_eq!(
+            collect_incremental_updates(&completed, &mut turn),
+            vec![format!("Update: {text}")]
+        );
+        assert!(collect_incremental_updates(&completed, &mut turn).is_empty());
     }
 
     #[test]

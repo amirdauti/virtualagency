@@ -113,6 +113,27 @@ export function useChatMessages() {
               addActivity(agentId, "");
               return;
             }
+            if (json.item?.type === "reasoning") {
+              const complete = json.type === "item.completed";
+              const completeKey = itemId ? `codex-complete:${itemId}` : undefined;
+              if (completeKey && state.processedToolIds.has(completeKey)) return;
+              if (complete && completeKey) state.processedToolIds.add(completeKey);
+              const activity = getCodexItemActivityInfo(json.item);
+              if (activity) {
+                const id = messageId || addActivityMessage(agentId, activity.text, "thinking");
+                updateMessage(id, {
+                  activityDetails: activity.details,
+                  thinkingContent: activity.thinkingContent,
+                  isStreaming: !complete,
+                });
+                if (itemId) messageIds.set(itemId, id);
+              } else if (messageId && complete) {
+                // An empty terminal item must not erase a streamed summary.
+                updateMessage(messageId, { isStreaming: false });
+              }
+              addActivity(agentId, complete ? "" : "Reasoning");
+              return;
+            }
             const activity = codexDelegationActivity(json.item, previousMessage?.delegation);
             if (activity) {
               if (messageId) {
@@ -964,10 +985,12 @@ function getCodexItemActivityInfo(
   if (type === "agent_message") return null;
 
   if (type === "reasoning") {
-    const summary =
-      (anyItem.text as string | undefined) ||
-      (anyItem.summary as string | undefined) ||
-      (anyItem.reasoning as string | undefined);
+    // The app-server uses string arrays for public summaries. Empty arrays
+    // are truthy, but must not create empty cards. Never use raw content here.
+    const summary = [anyItem.text, anyItem.summary, anyItem.reasoning]
+      .map((value) => typeof value === "string" ? value.trim()
+        : Array.isArray(value) ? value.filter((part): part is string => typeof part === "string" && !!part.trim()).join("\n").trim() : "")
+      .find(Boolean);
     if (!summary) return null;
     return {
       text: "Reasoning",

@@ -31,6 +31,11 @@ const ACTIVITY_COLORS = {
 } as const;
 
 export function ChatHistory({ messages, agentId, scrollContainerRef }: ChatHistoryProps) {
+  // Older clients persisted empty summary arrays as thinkingContent. Keep
+  // those blank cards out of restored history as well as new output.
+  messages = messages.filter((message) => message.role !== "activity"
+    || message.activityType !== "thinking"
+    || (typeof message.thinkingContent === "string" && !!message.thinkingContent.trim()));
   const fallbackRef = useRef<HTMLDivElement>(null);
   const containerRef = scrollContainerRef || fallbackRef;
   const isUserAtBottom = useChatUIStore((state) => state.isUserAtBottomByAgent[agentId] ?? true);

@@ -261,7 +261,7 @@ impl CodexTransport {
                     .active_effort = Some(settings.effort.to_string());
                 let response = match self.inner.request("turn/start", json!({
                     "threadId":thread,"input":input,"model":settings.model,"effort":settings.effort,
-                    "cwd":settings.cwd,"approvalPolicy":"never"
+                    "cwd":settings.cwd,"approvalPolicy":"never","summary":"auto"
                 })) {
                     Ok(response) => response,
                     Err(error) => {
@@ -516,13 +516,22 @@ impl Inner {
             match method {
                 "turn/started" | "turn/completed" => self.observe_turn(&params["turn"], true),
                 "item/started" | "item/completed" => {
-                    let item = normalize_item(params["item"].clone());
-                    if let Some(id) = item["id"].as_str() {
+                    let mut item = normalize_item(params["item"].clone());
+                    if let Some(id) = item["id"].as_str().map(str::to_string) {
                         let mut state = self.state.lock().unwrap();
                         if method == "item/completed" {
-                            state.items.remove(id);
+                            if let Some(streamed) = state.items.remove(&id) {
+                                // Some providers omit the public summary from
+                                // the terminal item after streaming it.
+                                if item["type"] == "reasoning"
+                                    && item["text"].as_str().unwrap_or("").trim().is_empty()
+                                {
+                                    item["text"] = streamed["text"].clone();
+                                    item["summary"] = streamed["summary"].clone();
+                                }
+                            }
                         } else {
-                            state.items.insert(id.to_string(), item.clone());
+                            state.items.insert(id, item.clone());
                         }
                     }
                     (self.emit)(Event::Output(
@@ -542,9 +551,30 @@ impl Inner {
                     } else {
                         "text"
                     };
-                    let mut text = item[key].as_str().unwrap_or("").to_string();
-                    text.push_str(params["delta"].as_str().unwrap_or(""));
-                    item[key] = json!(text);
+                    if method == "item/reasoning/summaryTextDelta" {
+                        let index = params["summaryIndex"].as_u64().unwrap_or(0);
+                        // Bound allocation for a malformed protocol index.
+                        if index > 1024 {
+                            return;
+                        }
+                        if !item["summary"].is_array() {
+                            item["summary"] = json!([]);
+                        }
+                        let parts = item["summary"].as_array_mut().unwrap();
+                        parts.resize(parts.len().max(index as usize + 1), json!(""));
+                        let mut part = parts[index as usize].as_str().unwrap_or("").to_string();
+                        part.push_str(params["delta"].as_str().unwrap_or(""));
+                        parts[index as usize] = json!(part);
+                        item["text"] = json!(parts
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("\n"));
+                    } else {
+                        let mut text = item[key].as_str().unwrap_or("").to_string();
+                        text.push_str(params["delta"].as_str().unwrap_or(""));
+                        item[key] = json!(text);
+                    }
                     let item = item.clone();
                     drop(state);
                     (self.emit)(Event::Output(json!({"type":"item.updated","item":item})));
@@ -662,6 +692,7 @@ for line in sys.stdin:
         result(req,{'thread':{'id':thread,'turns':[]},'reasoningEffort':'ultra'})
     elif method=='turn/start':
         assert p['threadId']==thread
+        assert p['summary']=='auto'
         if mode=='reject':
             emit({'id':req['id'],'error':{'code':-32600,'message':'synthetic rejected model'}});continue
         turn+=1
@@ -669,6 +700,15 @@ for line in sys.stdin:
         turn_event('inProgress')
         if mode=='fast': turn_event('completed')
         result(req,{'turn':{'id':'turn-'+str(turn),'status':'inProgress'}})
+        if mode=='summaries':
+            event('item/started',{'item':{'id':'summary-1','type':'reasoning','summary':[],'content':[]}})
+            for index,delta in [(0,'Checking'),(0,' the request.'),(1,'Validating the result.')]:
+                event('item/reasoning/summaryTextDelta',{'itemId':'summary-1','summaryIndex':index,'delta':delta})
+            event('item/reasoning/textDelta',{'itemId':'summary-1','contentIndex':0,'delta':'raw content must not be displayed'})
+            event('item/completed',{'item':{'id':'summary-1','type':'reasoning','summary':[],'content':[]}})
+            event('item/started',{'item':{'id':'summary-2','type':'reasoning','summary':[],'content':[]}})
+            event('item/completed',{'item':{'id':'summary-2','type':'reasoning','summary':[],'content':[]}})
+            turn_event('completed')
         if mode=='failed':
             turn_event('failed');sys.exit(4)
     elif method=='turn/steer':
@@ -740,6 +780,49 @@ for line in sys.stdin:
             cwd: "/tmp",
             sandbox: "workspace-write",
         }
+    }
+
+    #[test]
+    fn public_summaries_stream_by_part_and_survive_an_empty_terminal_item() {
+        let f = Fixture::new("summaries");
+        f.send("Check the request").unwrap();
+        f.wait(|events| {
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Status(Status::Idle)))
+        });
+        let events = f.events.lock().unwrap();
+        let updates: Vec<&Value> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Output(v) if v["type"] == "item.updated" => Some(&v["item"]["text"]),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            updates,
+            vec![
+                &json!("Checking"),
+                &json!("Checking the request."),
+                &json!("Checking the request.\nValidating the result.")
+            ]
+        );
+        let completed: Vec<&Value> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Output(v) if v["type"] == "item.completed" => Some(&v["item"]),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            completed[0]["text"],
+            "Checking the request.\nValidating the result."
+        );
+        assert_eq!(
+            completed[0]["summary"],
+            json!(["Checking the request.", "Validating the result."])
+        );
+        assert_eq!(completed[1]["text"], "");
     }
 
     #[test]

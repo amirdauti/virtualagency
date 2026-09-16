@@ -242,6 +242,54 @@ test("streamed commentary and final response update their own item and finish ex
   ]);
 });
 
+test("empty public reasoning summaries never create cards or expose raw content", () => {
+  const chat = chatHarness();
+  for (const summary of [[], "", ["", "  "], null, {}, [null, {}]]) {
+    const item = { id: `empty-${JSON.stringify(summary)}`, type: "reasoning", text: "", summary, content: ["raw content must not be displayed"] };
+    for (const type of ["item.started", "item.updated", "item.completed"]) chat.emit({ type, item });
+  }
+  assert.deepEqual(chat.messages, []);
+});
+
+test("reasoning summaries coalesce by item, preserve streamed text, and ignore late snapshots", () => {
+  const chat = chatHarness();
+  const item = { id: "summary-1", type: "reasoning", summary: [] };
+  chat.emit({ type: "item.started", item });
+  chat.emit({ type: "item.updated", item: { ...item, text: "Checking" } });
+  chat.emit({ type: "item.updated", item: { ...item, text: "Checking the request." } });
+  chat.emit({ type: "item.completed", item: { id: "summary-2", type: "reasoning", summary: ["Validating", "the result."] } });
+  chat.emit({ type: "item.completed", item });
+  chat.emit({ type: "item.updated", item: { ...item, text: "stale text" } });
+  chat.emit({ type: "item.completed", item });
+  assert.deepEqual(chat.messages.map(({ thinkingContent, isStreaming }) => ({ thinkingContent, isStreaming })), [
+    { thinkingContent: "Checking the request.", isStreaming: false },
+    { thinkingContent: "Validating\nthe result.", isStreaming: false },
+  ]);
+});
+
+test("restored chat history hides legacy blank reasoning cards and keeps populated cards", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { ChatHistory } = loadTs("../components/Panels/ChatHistory.tsx", {
+    "react-markdown": ({ children }) => React.createElement("div", null, children),
+    "remark-gfm": () => {},
+    "../../stores/chatStore": { useChatStore: (selector) => selector({ activities: {} }) },
+    "../../stores/agentStore": { useAgentStore: (selector) => selector({ agents: [{ id: "parent", cliType: "codex" }] }) },
+    "../../stores/chatUIStore": { useChatUIStore: (selector) => selector({ isUserAtBottomByAgent: {}, setIsUserAtBottom() {}, setScrollTop() {} }) },
+    "@tauri-apps/api/core": { convertFileSrc: (value) => value },
+    "../../lib/api": { isTauri: () => false },
+  });
+  const base = { agentId: "parent", role: "activity", activityType: "thinking", timestamp: Date.now() };
+  const messages = [
+    { ...base, id: "blank-array", content: "Blank array", thinkingContent: [] },
+    { ...base, id: "blank-string", content: "Blank string", thinkingContent: "  " },
+    { ...base, id: "valid", content: "Populated summary", thinkingContent: "Checking the request." },
+  ];
+  const markup = renderToStaticMarkup(React.createElement(ChatHistory, { messages, agentId: "parent" }));
+  assert.doesNotMatch(markup, /Blank array|Blank string/);
+  assert.match(markup, /Populated summary/);
+});
+
 test("working-agent composer renders both Send and Stop", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
