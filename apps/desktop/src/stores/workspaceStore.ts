@@ -18,6 +18,7 @@ import {
 } from "../lib/api";
 import { MCP_SERVERS } from "@virtual-agency/shared";
 import type { Agent, MCPServerId, AgentRuntime } from "@virtual-agency/shared";
+import { reconcileAgentSettings } from "../lib/agentSettings";
 
 interface WorkspaceState {
   isLoading: boolean;
@@ -120,6 +121,7 @@ function serverToAgent(server: ServerAgentInfo, index: number): Agent {
     createdAt: new Date().toISOString(),
     model: server.model,
     thinkingEnabled: server.thinking_enabled,
+    reasoningEffort: server.reasoning_effort,
     mcpServers: coerceMcpServers(server.mcp_servers),
     cliType: server.cli_type === "codex" ? "codex" : "claude",
     specialty: server.specialty === "roblox_builder" ? "roblox_builder" : "normal",
@@ -254,7 +256,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
             const nextStatus = toClientStatus(server.status);
             const nextSessionId = server.session_id || undefined;
             const nextRuntime = server.runtime === "hosted" ? "hosted" : "local";
-            const updates: Partial<Agent> = {};
+            const updates: Partial<Agent> = reconcileAgentSettings(agent, server);
             if (nextStatus && nextStatus !== agent.status) updates.status = nextStatus;
             if (nextSessionId && nextSessionId !== agent.sessionId) updates.sessionId = nextSessionId;
             if (nextRuntime !== (agent.runtime || "local")) updates.runtime = nextRuntime;

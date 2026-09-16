@@ -2,6 +2,7 @@ mod agents;
 mod files;
 mod pty;
 mod telegram;
+mod telegram_dispatch;
 
 use axum::{
     body::Bytes,
@@ -118,6 +119,10 @@ struct AppState {
     agent_manager: RwLock<AgentManager>,
     terminal_manager: RwLock<TerminalManager>,
     telegram_manager: RwLock<TelegramManager>,
+    telegram_outbound_tx: mpsc::UnboundedSender<TelegramAction>,
+    telegram_dispatcher: telegram_dispatch::Dispatcher<TelegramDispatch>,
+    telegram_dispatch_changed: tokio::sync::Notify,
+    event_tx: mpsc::UnboundedSender<BroadcastMessage>,
     broadcast_tx: broadcast::Sender<BroadcastEnvelope>,
     events: RwLock<EventStore>,
     published_apps: RwLock<HashMap<String, PublishedApp>>,
@@ -146,6 +151,9 @@ struct PublishedApp {
 #[derive(Clone, Serialize)]
 #[serde(tag = "type")]
 enum BroadcastMessage {
+    // Consumed by the distributor; never included in client events or replay.
+    #[serde(skip)]
+    DrainBarrier(Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>),
     #[serde(rename = "agent-output")]
     AgentOutput(AgentOutput),
     #[serde(rename = "agent-status")]
@@ -300,11 +308,13 @@ fn write_persisted_agents(path: &FsPath, agents: Vec<PersistedAgent>) -> Result<
 }
 
 async fn persist_agents_state(state: &SharedState) -> Result<(), String> {
-    let snapshot = {
-        let manager = state.agent_manager.read().await;
-        manager.snapshot_persisted_agents()
-    };
-    write_persisted_agents(&state.agents_persistence_path, snapshot)
+    let manager = state.agent_manager.read().await;
+    // Keep the read lock until the atomic write completes, so an older periodic
+    // snapshot cannot overwrite an acknowledged settings change.
+    write_persisted_agents(
+        &state.agents_persistence_path,
+        manager.snapshot_persisted_agents(),
+    )
 }
 
 async fn restore_agents_state(state: &SharedState) {
@@ -490,6 +500,8 @@ async fn main() {
     let (telegram_inbound_tx, mut telegram_inbound_rx) =
         mpsc::unbounded_channel::<TelegramInboundMessage>();
     let (broadcast_tx, _) = broadcast::channel::<BroadcastEnvelope>(1000);
+    let (telegram_outbound_tx, mut telegram_outbound_rx) =
+        mpsc::unbounded_channel::<TelegramAction>();
 
     // Get workspace directory from environment or use current directory
     let workspace_dir = std::env::var("WORKSPACE_DIR")
@@ -547,53 +559,115 @@ async fn main() {
         .join(".virtual-agency")
         .join("telegram-bindings.json");
 
-    let state = Arc::new(AppState {
-        agent_manager: RwLock::new(AgentManager::new(event_tx.clone())),
-        terminal_manager: RwLock::new(TerminalManager::new(event_tx.clone())),
-        telegram_manager: RwLock::new(TelegramManager::new(
-            telegram_inbound_tx,
-            telegram_bindings_path,
-        )),
-        broadcast_tx,
-        events: RwLock::new(EventStore::new(5000)),
-        published_apps: RwLock::new(HashMap::new()),
-        workspace_dir,
-        agents_persistence_path,
-        published_apps_persistence_path,
-        agent_tools_token,
-        hosted_proxy_token,
-        public_base_url,
-        hosted_api_base_url,
-        nango_secret_key,
-        nango_base_url,
+    let state = Arc::new_cyclic(|weak: &std::sync::Weak<AppState>| {
+        let dispatch_state = weak.clone();
+        AppState {
+            telegram_dispatcher: telegram_dispatch::Dispatcher::new(move |dispatch| {
+                let state = dispatch_state.upgrade();
+                async move {
+                    if let Some(state) = state {
+                        run_telegram_dispatch(state, dispatch).await;
+                    }
+                }
+            }),
+            telegram_dispatch_changed: tokio::sync::Notify::new(),
+            agent_manager: RwLock::new(AgentManager::new(event_tx.clone())),
+            event_tx: event_tx.clone(),
+            telegram_outbound_tx,
+            terminal_manager: RwLock::new(TerminalManager::new(event_tx.clone())),
+            telegram_manager: RwLock::new(TelegramManager::new(
+                telegram_inbound_tx,
+                telegram_bindings_path,
+            )),
+            broadcast_tx,
+            events: RwLock::new(EventStore::new(5000)),
+            published_apps: RwLock::new(HashMap::new()),
+            workspace_dir,
+            agents_persistence_path,
+            published_apps_persistence_path,
+            agent_tools_token,
+            hosted_proxy_token,
+            public_base_url,
+            hosted_api_base_url,
+            nango_secret_key,
+            nango_base_url,
+        }
+    });
+
+    // Preserve outbound order without delaying command admission or model
+    // dispatch on Telegram network calls. In-flight output precedes a stop ACK;
+    // queued output from an invalidated generation is discarded.
+    let telegram_outbound_state = state.clone();
+    tokio::spawn(async move {
+        while let Some(action) = telegram_outbound_rx.recv().await {
+            if !telegram_outbound_state
+                .telegram_manager
+                .read()
+                .await
+                .is_outbound_current(&action)
+            {
+                continue;
+            }
+            match action {
+                TelegramAction::SendMessage {
+                    bot_token,
+                    chat_id,
+                    text,
+                    ..
+                } => {
+                    if let Err(err) = telegram::send_telegram_text(&bot_token, chat_id, &text).await
+                    {
+                        tracing::warn!("[telegram] Failed to send message: {}", err);
+                    }
+                }
+                TelegramAction::SendTyping {
+                    bot_token, chat_id, ..
+                } => {
+                    if let Err(err) = telegram::send_telegram_typing(&bot_token, chat_id).await {
+                        tracing::debug!("[telegram] Failed to send typing action: {}", err);
+                    }
+                }
+                _ => unreachable!("Only outbound actions enter the delivery queue"),
+            }
+        }
     });
 
     // Distributor: persists events to ring buffer and broadcasts to WS clients.
     let distributor_state = state.clone();
     tokio::spawn(async move {
         while let Some(msg) = event_rx.recv().await {
+            if let BroadcastMessage::DrainBarrier(waiter) = &msg {
+                if let Ok(mut waiter) = waiter.lock() {
+                    if let Some(sender) = waiter.take() {
+                        let _ = sender.send(());
+                    }
+                }
+                continue;
+            }
             let envelope = {
                 let mut store = distributor_state.events.write().await;
                 store.push(msg.clone())
             };
             let _ = distributor_state.broadcast_tx.send(envelope);
 
-            let telegram_actions = {
-                let mut telegram = distributor_state.telegram_manager.write().await;
-                telegram.handle_broadcast(&msg)
-            };
-            execute_telegram_actions(distributor_state.clone(), telegram_actions).await;
+            let mut telegram = distributor_state.telegram_manager.write().await;
+            let actions = telegram.handle_broadcast(&msg);
+            execute_telegram_actions(distributor_state.clone(), actions);
         }
     });
 
     let telegram_dispatch_state = state.clone();
     tokio::spawn(async move {
         while let Some(msg) = telegram_inbound_rx.recv().await {
-            let actions = {
-                let mut telegram = telegram_dispatch_state.telegram_manager.write().await;
-                telegram.handle_inbound(msg)
+            let supports_steering = {
+                let manager = telegram_dispatch_state.agent_manager.read().await;
+                agent_info(&manager, &msg.agent_id)
+                    .map(|agent| agent.cli_type == "codex")
+                    .unwrap_or(false)
             };
-            execute_telegram_actions(telegram_dispatch_state.clone(), actions).await;
+            let mut telegram = telegram_dispatch_state.telegram_manager.write().await;
+            let actions = telegram.handle_inbound_with_steering(msg, supports_steering);
+            execute_telegram_actions(telegram_dispatch_state.clone(), actions);
         }
     });
 
@@ -604,13 +678,9 @@ async fn main() {
 
         loop {
             interval.tick().await;
-            let actions = {
-                let mut telegram = telegram_typing_state.telegram_manager.write().await;
-                telegram.collect_typing_heartbeats()
-            };
-            if !actions.is_empty() {
-                execute_telegram_actions(telegram_typing_state.clone(), actions).await;
-            }
+            let mut telegram = telegram_typing_state.telegram_manager.write().await;
+            let actions = telegram.collect_typing_heartbeats();
+            execute_telegram_actions(telegram_typing_state.clone(), actions);
         }
     });
 
@@ -639,9 +709,15 @@ async fn main() {
                     run.scheduled_at_ms,
                     &run.prompt,
                 );
-                let manager = scheduled_automation_state.agent_manager.read().await;
-                if let Err(err) =
-                    manager.send_message(&run.agent_id, &message, &[], None, Some("automation"))
+                if let Err(err) = send_agent_message(
+                    scheduled_automation_state.clone(),
+                    run.agent_id.clone(),
+                    message,
+                    Vec::new(),
+                    None,
+                    "automation",
+                )
+                .await
                 {
                     tracing::warn!(
                         "[automations] failed sending scheduled task to agent {}: {}",
@@ -1115,6 +1191,7 @@ struct AgentInfo {
     working_dir: String,
     model: String,
     thinking_enabled: bool,
+    reasoning_effort: String,
     mcp_servers: Vec<String>,
     cli_type: String,
     specialty: String,
@@ -1171,9 +1248,7 @@ async fn create_agent(
     ) {
         Ok(id) => {
             tracing::info!("[create_agent] Successfully created agent with id: {}", id);
-            let (status, session_id) = manager
-                .get_agent_runtime(&id)
-                .unwrap_or((AgentStatus::Idle, req.session_id.clone()));
+            let info = agent_info(&manager, &id)?;
             drop(manager);
 
             {
@@ -1185,18 +1260,7 @@ async fn create_agent(
                 tracing::warn!("[agents] persist failed after create_agent: {}", err);
             }
 
-            Ok(Json(AgentInfo {
-                id,
-                name: req.name,
-                working_dir: req.working_dir,
-                model,
-                thinking_enabled: req.thinking_enabled,
-                mcp_servers: req.mcp_servers,
-                cli_type: cli_type_str,
-                specialty: specialty_str.to_string(),
-                status,
-                session_id,
-            }))
+            Ok(Json(info))
         }
         Err(e) => {
             tracing::error!("[create_agent] Failed to create agent: {}", e);
@@ -1205,49 +1269,58 @@ async fn create_agent(
     }
 }
 
+fn agent_infos(manager: &AgentManager) -> Vec<AgentInfo> {
+    manager
+        .list_agents_snapshot()
+        .into_iter()
+        .map(
+            |(
+                id,
+                name,
+                working_dir,
+                model,
+                thinking_enabled,
+                reasoning_effort,
+                mcp_servers,
+                cli_type,
+                specialty,
+                status,
+                session_id,
+            )| AgentInfo {
+                id,
+                name,
+                working_dir,
+                model,
+                thinking_enabled,
+                reasoning_effort,
+                mcp_servers,
+                cli_type: match cli_type {
+                    CliType::Claude => "claude",
+                    CliType::Codex => "codex",
+                }
+                .into(),
+                specialty: match specialty {
+                    AgentSpecialty::Normal => "normal",
+                    AgentSpecialty::RobloxBuilder => "roblox_builder",
+                }
+                .into(),
+                status,
+                session_id,
+            },
+        )
+        .collect()
+}
+
+fn agent_info(manager: &AgentManager, id: &str) -> Result<AgentInfo, (StatusCode, String)> {
+    agent_infos(manager)
+        .into_iter()
+        .find(|agent| agent.id == id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Agent not found: {}", id)))
+}
+
 async fn list_agents(State(state): State<SharedState>) -> Json<Vec<AgentInfo>> {
     let manager = state.agent_manager.read().await;
-    let agents = manager.list_agents_snapshot();
-    Json(
-        agents
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    name,
-                    working_dir,
-                    model,
-                    thinking_enabled,
-                    mcp_servers,
-                    cli_type,
-                    specialty,
-                    status,
-                    session_id,
-                )| {
-                    let cli_type_str = match cli_type {
-                        CliType::Claude => "claude".to_string(),
-                        CliType::Codex => "codex".to_string(),
-                    };
-                    let specialty_str = match specialty {
-                        AgentSpecialty::Normal => "normal".to_string(),
-                        AgentSpecialty::RobloxBuilder => "roblox_builder".to_string(),
-                    };
-                    AgentInfo {
-                        id,
-                        name,
-                        working_dir,
-                        model,
-                        thinking_enabled,
-                        mcp_servers,
-                        cli_type: cli_type_str,
-                        specialty: specialty_str,
-                        status,
-                        session_id,
-                    }
-                },
-            )
-            .collect(),
-    )
+    Json(agent_infos(&manager))
 }
 
 async fn kill_agent(
@@ -1262,6 +1335,8 @@ async fn kill_agent(
             let mut telegram = state.telegram_manager.write().await;
             telegram.clear_for_agent(&id);
             drop(telegram);
+            state.telegram_dispatcher.remove(&id);
+            state.telegram_dispatch_changed.notify_waiters();
             if let Err(err) = persist_agents_state(&state).await {
                 tracing::warn!("[agents] persist failed after kill_agent: {}", err);
             }
@@ -1284,38 +1359,35 @@ async fn update_agent_settings(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateAgentRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    tracing::info!(
-        "[update_agent_settings] Updating agent {} - name: {:?}, model: {:?}, thinking: {:?}, reasoning_effort: {:?}, mcp_servers: {:?}",
-        id, req.name, req.model, req.thinking_enabled, req.reasoning_effort, req.mcp_servers
-    );
-
+) -> Result<Json<AgentInfo>, (StatusCode, String)> {
     let mut manager = state.agent_manager.write().await;
-
-    match manager.update_agent_settings(
-        &id,
-        req.name,
-        req.model,
-        req.thinking_enabled,
-        req.reasoning_effort,
-        req.mcp_servers,
+    let previous = agent_info(&manager, &id)?;
+    manager
+        .update_agent_settings(
+            &id,
+            req.name,
+            req.model,
+            req.thinking_enabled,
+            req.reasoning_effort,
+            req.mcp_servers,
+        )
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    if let Err(err) = write_persisted_agents(
+        &state.agents_persistence_path,
+        manager.snapshot_persisted_agents(),
     ) {
-        Ok(_) => {
-            drop(manager);
-            if let Err(err) = persist_agents_state(&state).await {
-                tracing::warn!(
-                    "[agents] persist failed after update_agent_settings: {}",
-                    err
-                );
-            }
-            tracing::info!("[update_agent_settings] Successfully updated agent: {}", id);
-            Ok(StatusCode::OK)
-        }
-        Err(e) => {
-            tracing::error!("[update_agent_settings] Failed: {}", e);
-            Err((StatusCode::NOT_FOUND, e))
-        }
+        // Failed saves must not leave a different setting active in memory.
+        let _ = manager.update_agent_settings(
+            &id,
+            Some(previous.name),
+            Some(previous.model),
+            Some(previous.thinking_enabled),
+            Some(previous.reasoning_effort),
+            Some(previous.mcp_servers),
+        );
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, err));
     }
+    Ok(Json(agent_info(&manager, &id)?))
 }
 
 #[derive(Deserialize)]
@@ -1738,12 +1810,18 @@ async fn create_nango_connect_session_internal(
 
     let integration_id = integration_id.trim();
     if integration_id.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "integration_id is required".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "integration_id is required".to_string(),
+        ));
     }
 
     let end_user_id = end_user_id.trim();
     if end_user_id.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "end_user_id is required".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "end_user_id is required".to_string(),
+        ));
     }
 
     let payload = NangoCreateSessionPayload {
@@ -1868,7 +1946,10 @@ fn parse_nango_connections(value: &serde_json::Value) -> Vec<NangoConnectionInfo
                 .pointer("/end_user/id")
                 .and_then(|v| v.as_str())
                 .or_else(|| item.get("end_user_id").and_then(|v| v.as_str()))
-                .or_else(|| item.pointer("/metadata/end_user_id").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    item.pointer("/metadata/end_user_id")
+                        .and_then(|v| v.as_str())
+                })
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
                 .map(|v| v.to_string());
@@ -1960,13 +2041,11 @@ fn resolve_connection_for_agent(
         .iter()
         .find(|c| {
             c.integration_id.eq_ignore_ascii_case(integration_id)
-                && c
-                    .end_user_id
+                && c.end_user_id
                     .as_deref()
                     .map(str::trim)
                     .map(|id| {
-                        id == target_agent_id
-                            || id.ends_with(&format!(":{}", target_agent_id))
+                        id == target_agent_id || id.ends_with(&format!(":{}", target_agent_id))
                     })
                     .unwrap_or(false)
         })
@@ -1979,7 +2058,10 @@ fn nango_scoped_end_user_candidates(
 ) -> Result<Vec<String>, (StatusCode, String)> {
     let end_user_id = end_user_id.trim();
     if end_user_id.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "end_user_id is required".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "end_user_id is required".to_string(),
+        ));
     }
 
     let scoped = headers
@@ -2229,7 +2311,9 @@ async fn list_nango_connections(
                 return false;
             }
             if let Some(integration_id) = integration_filter.as_deref() {
-                return connection.integration_id.eq_ignore_ascii_case(integration_id);
+                return connection
+                    .integration_id
+                    .eq_ignore_ascii_case(integration_id);
             }
             true
         })
@@ -2342,7 +2426,10 @@ async fn delete_nango_connection(
     }
 
     if let Some(integration_id) = integration_filter.as_deref() {
-        if !connection.integration_id.eq_ignore_ascii_case(integration_id) {
+        if !connection
+            .integration_id
+            .eq_ignore_ascii_case(integration_id)
+        {
             return Err((
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({
@@ -2374,53 +2461,98 @@ async fn delete_nango_connection(
     }))
 }
 
+async fn send_agent_message(
+    state: SharedState,
+    id: String,
+    message: String,
+    images: Vec<String>,
+    message_id: Option<String>,
+    source: &'static str,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = state.agent_manager.blocking_read();
+        manager.send_message(&id, &message, &images, message_id.as_deref(), Some(source))
+    })
+    .await
+    .map_err(|err| format!("Agent dispatch failed: {}", err))?
+}
+
+enum StopScope {
+    Telegram(telegram::TelegramStopRequest),
+    Manual(u64),
+}
+
+async fn interrupt_agent(
+    state: SharedState,
+    id: String,
+    scope: Option<StopScope>,
+) -> Result<(), String> {
+    let dispatch_state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let state = dispatch_state;
+        // Match the manager -> Telegram order used by binding operations.
+        let manager = state.agent_manager.blocking_read();
+        let telegram = state.telegram_manager.blocking_read();
+        let current = match &scope {
+            Some(StopScope::Telegram(request)) => telegram.is_stop_current(request),
+            Some(StopScope::Manual(generation)) => {
+                telegram.is_manual_stop_current(&id, *generation)
+            }
+            None => true,
+        };
+        if !current {
+            return Ok(());
+        }
+        // The transport confirms cancellation independently of the event
+        // distributor. Hold this guard so a newer stop cannot supersede the
+        // request between validation and the actual interrupt.
+        manager.stop_agent(&id)
+    })
+    .await
+    .map_err(|err| format!("Agent stop failed: {}", err))??;
+    // Runtime events are queued independently of RPC completion. Drain events
+    // emitted before the interrupt completed while the stop barrier is still
+    // held, so stale output cannot become a new mirrored turn after the ACK.
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    state
+        .event_tx
+        .send(BroadcastMessage::DrainBarrier(Arc::new(
+            std::sync::Mutex::new(Some(sender)),
+        )))
+        .map_err(|_| "Agent stopped, but the event distributor is unavailable".to_string())?;
+    tokio::time::timeout(TokioDuration::from_secs(10), receiver)
+        .await
+        .map_err(|_| "Agent stopped, but pending output could not be drained".to_string())?
+        .map_err(|_| "Agent stopped, but the event distributor closed".to_string())?;
+    Ok(())
+}
+
 async fn send_message(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    tracing::info!("[send_message] Attempting to send message to agent: {}", id);
-
-    let manager = state.agent_manager.read().await;
-    let existing_agents = manager.list_agents();
-    tracing::info!(
-        "[send_message] Existing agents: {:?}",
-        existing_agents
-            .iter()
-            .map(|(id, _, _, _, _, _, _, _)| id)
-            .collect::<Vec<_>>()
-    );
-
-    // Convert base64 images to temp files
-    let mut image_paths: Vec<String> = Vec::new();
-    for (i, img) in req.images.iter().enumerate() {
-        match save_base64_image(&img.data, &img.mime_type, i) {
-            Ok(path) => {
-                tracing::info!("[send_message] Saved image {} to: {}", i, path);
-                image_paths.push(path);
-            }
-            Err(e) => {
-                tracing::error!("[send_message] Failed to save image {}: {}", i, e);
-            }
-        }
+    if !state.agent_manager.read().await.has_agent(&id) {
+        return Err((StatusCode::NOT_FOUND, "Agent not found".into()));
     }
-
-    match manager.send_message(
-        &id,
-        &req.message,
-        &image_paths,
-        req.client_message_id.as_deref(),
-        Some("api"),
-    ) {
-        Ok(_) => {
-            tracing::info!("[send_message] Successfully sent message to agent: {}", id);
-            Ok(StatusCode::ACCEPTED)
-        }
-        Err(e) => {
-            tracing::error!("[send_message] Failed: {}", e);
-            Err((StatusCode::NOT_FOUND, e))
-        }
+    let mut image_paths = Vec::new();
+    for (index, image) in req.images.iter().enumerate() {
+        image_paths.push(
+            save_base64_image(&image.data, &image.mime_type, index)
+                .map_err(|err| (StatusCode::BAD_REQUEST, err))?,
+        );
     }
+    send_agent_message(
+        state,
+        id,
+        req.message,
+        image_paths,
+        req.client_message_id,
+        "api",
+    )
+    .await
+    .map_err(|err| (StatusCode::CONFLICT, err))?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 fn require_agent_tools_auth(
@@ -2447,6 +2579,17 @@ fn require_agent_tools_auth(
     Ok(())
 }
 
+fn require_va_delegation(manager: &AgentManager, id: &str) -> Result<(), (StatusCode, String)> {
+    if manager
+        .native_delegation_only(id)
+        .map_err(|err| (StatusCode::NOT_FOUND, err))?
+    {
+        return Err((StatusCode::FORBIDDEN,
+            "Virtual Agency agent creation and delegation are disabled in Codex Ultra; use Codex native subagents.".into()));
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct AgentToolsListResponse {
     agents: Vec<AgentInfo>,
@@ -2464,41 +2607,7 @@ async fn agent_tools_list_agents(
         return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
     }
 
-    let agents = manager
-        .list_agents_snapshot()
-        .into_iter()
-        .map(
-            |(
-                id,
-                name,
-                working_dir,
-                model,
-                thinking_enabled,
-                mcp_servers,
-                cli_type,
-                specialty,
-                status,
-                session_id,
-            )| AgentInfo {
-                id,
-                name,
-                working_dir,
-                model,
-                thinking_enabled,
-                mcp_servers,
-                cli_type: match cli_type {
-                    CliType::Claude => "claude".to_string(),
-                    CliType::Codex => "codex".to_string(),
-                },
-                specialty: match specialty {
-                    AgentSpecialty::Normal => "normal".to_string(),
-                    AgentSpecialty::RobloxBuilder => "roblox_builder".to_string(),
-                },
-                status,
-                session_id,
-            },
-        )
-        .collect();
+    let agents = agent_infos(&manager);
 
     Ok(Json(AgentToolsListResponse { agents }))
 }
@@ -2540,20 +2649,11 @@ async fn agent_tools_create_agent(
     require_agent_tools_auth(&headers, &state.agent_tools_token)?;
 
     let cli_type = CliType::from_str(&req.cli_type);
-    let cli_type_label = match cli_type {
-        CliType::Claude => "claude".to_string(),
-        CliType::Codex => "codex".to_string(),
-    };
     let specialty = req
         .specialty
         .as_deref()
         .map(AgentSpecialty::from_str)
         .unwrap_or_default();
-    let specialty_label = match specialty {
-        AgentSpecialty::Normal => "normal".to_string(),
-        AgentSpecialty::RobloxBuilder => "roblox_builder".to_string(),
-    };
-
     let requested_dir = PathBuf::from(&req.working_dir);
     if !requested_dir.exists() || !requested_dir.is_dir() {
         return Err((
@@ -2566,6 +2666,7 @@ async fn agent_tools_create_agent(
     if !manager.has_agent(&source_agent_id) {
         return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
     }
+    require_va_delegation(&manager, &source_agent_id)?;
 
     let model = req
         .model
@@ -2590,9 +2691,7 @@ async fn agent_tools_create_agent(
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let (status, session_id) = manager
-        .get_agent_runtime(&created_id)
-        .unwrap_or((AgentStatus::Idle, req.session_id.clone()));
+    let info = agent_info(&manager, &created_id)?;
     drop(manager);
 
     {
@@ -2607,18 +2706,7 @@ async fn agent_tools_create_agent(
         );
     }
 
-    Ok(Json(AgentInfo {
-        id: created_id,
-        name: req.name,
-        working_dir: req.working_dir,
-        model,
-        thinking_enabled,
-        mcp_servers,
-        cli_type: cli_type_label,
-        specialty: specialty_label,
-        status,
-        session_id,
-    }))
+    Ok(Json(info))
 }
 
 #[derive(Deserialize)]
@@ -2866,19 +2954,19 @@ async fn delegate_to_single_agent(
     timeout_seconds: u64,
     require_response: bool,
 ) -> Result<AgentDelegationResult, (StatusCode, String)> {
-    let manager = state.agent_manager.read().await;
     let since_seq = state.events.read().await.latest_seq();
     let bridged_message = build_delegation_message(&source_agent_id, &task.message);
-    manager
-        .send_message(
-            &task.target_agent_id,
-            &bridged_message,
-            &[],
-            None,
-            Some("delegate"),
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    drop(manager);
+    let dispatch_state = state.clone();
+    let target = task.target_agent_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = dispatch_state.agent_manager.blocking_read();
+        require_va_delegation(&manager, &source_agent_id)?;
+        manager
+            .send_message(&target, &bridged_message, &[], None, Some("delegate"))
+            .map_err(|err| (StatusCode::CONFLICT, err))
+    })
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))??;
 
     if !wait_for_completion {
         return Ok(AgentDelegationResult {
@@ -2913,6 +3001,7 @@ async fn agent_tools_message_agent(
         if !manager.has_agent(&source_agent_id) {
             return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
         }
+        require_va_delegation(&manager, &source_agent_id)?;
         if !manager.has_agent(&req.target_agent_id) {
             return Err((StatusCode::NOT_FOUND, "target agent not found".to_string()));
         }
@@ -2954,6 +3043,7 @@ async fn agent_tools_delegate_many(
         if !manager.has_agent(&source_agent_id) {
             return Err((StatusCode::NOT_FOUND, "source agent not found".to_string()));
         }
+        require_va_delegation(&manager, &source_agent_id)?;
         for task in &req.tasks {
             if !manager.has_agent(&task.target_agent_id) {
                 return Err((
@@ -3189,13 +3279,17 @@ async fn agent_tools_nango_connections(
         )
         .await?;
 
-        let connections_value = proxied.get("connections").cloned().unwrap_or(serde_json::Value::Array(vec![]));
-        let connections: Vec<NangoConnectionInfo> = serde_json::from_value(connections_value).map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("invalid hosted nango connections payload: {}", e),
-            )
-        })?;
+        let connections_value = proxied
+            .get("connections")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(vec![]));
+        let connections: Vec<NangoConnectionInfo> = serde_json::from_value(connections_value)
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("invalid hosted nango connections payload: {}", e),
+                )
+            })?;
         let total = proxied
             .get("total")
             .and_then(|v| v.as_u64())
@@ -3231,7 +3325,9 @@ async fn agent_tools_nango_connections(
                 return false;
             }
             if let Some(integration_id) = integration_filter.as_deref() {
-                return connection.integration_id.eq_ignore_ascii_case(integration_id);
+                return connection
+                    .integration_id
+                    .eq_ignore_ascii_case(integration_id);
             }
             true
         })
@@ -3277,7 +3373,10 @@ async fn agent_tools_nango_proxy(
     }
     let endpoint = req.endpoint.trim();
     if endpoint.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "endpoint cannot be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "endpoint cannot be empty".to_string(),
+        ));
     }
     let normalized_endpoint = if endpoint.starts_with('/') {
         endpoint.to_string()
@@ -3419,13 +3518,11 @@ async fn agent_tools_nango_proxy(
         let has_access = available_connections.iter().any(|c| {
             c.connection_id == explicit
                 && c.integration_id.eq_ignore_ascii_case(&integration_id)
-                && c
-                    .end_user_id
+                && c.end_user_id
                     .as_deref()
                     .map(str::trim)
                     .map(|id| {
-                        id == target_agent_id
-                            || id.ends_with(&format!(":{}", target_agent_id))
+                        id == target_agent_id || id.ends_with(&format!(":{}", target_agent_id))
                     })
                     .unwrap_or(false)
         });
@@ -3442,22 +3539,24 @@ async fn agent_tools_nango_proxy(
     } else {
         resolve_connection_for_agent(&available_connections, &integration_id, &target_agent_id)
             .ok_or((
-            StatusCode::NOT_FOUND,
-            format!(
-                "no Nango connection found for target agent '{}' and integration '{}'",
-                target_agent_id, integration_id
-            ),
+                StatusCode::NOT_FOUND,
+                format!(
+                    "no Nango connection found for target agent '{}' and integration '{}'",
+                    target_agent_id, integration_id
+                ),
             ))?
     };
 
-    let mut proxy_url =
-        reqwest::Url::parse(&format!("{}/proxy{}", state.nango_base_url, normalized_endpoint))
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed building Nango proxy URL: {}", e),
-                )
-            })?;
+    let mut proxy_url = reqwest::Url::parse(&format!(
+        "{}/proxy{}",
+        state.nango_base_url, normalized_endpoint
+    ))
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed building Nango proxy URL: {}", e),
+        )
+    })?;
 
     if let Some(query) = &req.query {
         let mut pairs = proxy_url.query_pairs_mut();
@@ -4701,51 +4800,105 @@ async fn build_telegram_dispatch_payload(
     Ok((message, image_paths))
 }
 
+async fn wait_for_telegram_dispatch_cancel(state: &SharedState, dispatch: &TelegramDispatch) {
+    loop {
+        let changed = state.telegram_dispatch_changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if !state
+            .telegram_manager
+            .read()
+            .await
+            .is_dispatch_current(dispatch)
+        {
+            return;
+        }
+        changed.await;
+    }
+}
+
+async fn run_telegram_dispatch(state: SharedState, dispatch: TelegramDispatch) {
+    let check = dispatch.clone();
+    if let Err(err) = dispatch_telegram_turn(state.clone(), dispatch).await {
+        let mut telegram = state.telegram_manager.write().await;
+        let actions = if telegram.is_dispatch_current(&check) {
+            telegram.notify_dispatch_failure(&check.agent_id, &err)
+        } else {
+            Vec::new()
+        };
+        execute_telegram_actions(state.clone(), actions);
+    }
+}
+
 async fn dispatch_telegram_turn(
     state: SharedState,
     dispatch: TelegramDispatch,
 ) -> Result<(), String> {
-    let (message, image_paths) = build_telegram_dispatch_payload(&dispatch).await?;
-
-    let manager = state.agent_manager.read().await;
-    manager.send_message(
-        &dispatch.agent_id,
-        &message,
-        &image_paths,
-        None,
-        Some("telegram"),
-    )
+    // Check both before and after media preprocessing: /stop may invalidate it
+    // while transcription/download is in progress.
+    if !state
+        .telegram_manager
+        .read()
+        .await
+        .is_dispatch_current(&dispatch)
+    {
+        return Ok(());
+    }
+    let (message, image_paths) = tokio::select! {
+        prepared = build_telegram_dispatch_payload(&dispatch) => prepared?,
+        _ = wait_for_telegram_dispatch_cancel(&state, &dispatch) => return Ok(()),
+    };
+    tokio::task::spawn_blocking(move || {
+        let manager = state.agent_manager.blocking_read();
+        let telegram = state.telegram_manager.blocking_read();
+        if !telegram.is_dispatch_current(&dispatch) {
+            return Ok(());
+        }
+        // Keep the generation guard through acceptance so /stop cannot slip
+        // between validation and dispatch and subsequently restart old work.
+        manager.send_message(
+            &dispatch.agent_id,
+            &message,
+            &image_paths,
+            None,
+            Some("telegram"),
+        )
+    })
+    .await
+    .map_err(|err| format!("Telegram dispatch failed: {}", err))?
 }
 
-async fn execute_telegram_actions(state: SharedState, initial_actions: Vec<TelegramAction>) {
-    let mut queue: VecDeque<TelegramAction> = initial_actions.into_iter().collect();
-
-    while let Some(action) = queue.pop_front() {
+fn execute_telegram_actions(state: SharedState, actions: Vec<TelegramAction>) {
+    for action in actions {
         match action {
-            TelegramAction::SendMessage {
-                bot_token,
-                chat_id,
-                text,
-            } => {
-                if let Err(err) = telegram::send_telegram_text(&bot_token, chat_id, &text).await {
-                    tracing::warn!("[telegram] Failed to send message: {}", err);
-                }
+            action @ (TelegramAction::SendMessage { .. } | TelegramAction::SendTyping { .. }) => {
+                let _ = state.telegram_outbound_tx.send(action);
             }
-            TelegramAction::SendTyping { bot_token, chat_id } => {
-                if let Err(err) = telegram::send_telegram_typing(&bot_token, chat_id).await {
-                    tracing::debug!("[telegram] Failed to send typing action: {}", err);
-                }
+            TelegramAction::StopAgent(request) => {
+                state.telegram_dispatch_changed.notify_waiters();
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let result = interrupt_agent(
+                        state.clone(),
+                        request.agent_id.clone(),
+                        Some(StopScope::Telegram(request.clone())),
+                    )
+                    .await;
+                    let mut telegram = state.telegram_manager.write().await;
+                    let actions = telegram.complete_stop(&request, result);
+                    execute_telegram_actions(state.clone(), actions);
+                });
             }
             TelegramAction::DispatchToAgent(dispatch) => {
                 let agent_id = dispatch.agent_id.clone();
-                if let Err(err) = dispatch_telegram_turn(state.clone(), dispatch).await {
-                    let follow_up = {
-                        let mut telegram = state.telegram_manager.write().await;
-                        telegram.notify_dispatch_failure(&agent_id, &err)
-                    };
-                    for next in follow_up {
-                        queue.push_back(next);
-                    }
+                // Production order is preserved through asynchronous media
+                // preparation and RPC acceptance. Stop has its own direct path.
+                if state
+                    .telegram_dispatcher
+                    .enqueue(&agent_id, dispatch)
+                    .is_err()
+                {
+                    tracing::error!("[telegram] Dispatch queue closed for agent {}", agent_id);
                 }
             }
         }
@@ -4756,20 +4909,24 @@ async fn stop_agent(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    tracing::info!("[stop_agent] Stopping agent: {}", id);
-
-    let manager = state.agent_manager.read().await;
-
-    match manager.stop_agent(&id) {
-        Ok(_) => {
-            tracing::info!("[stop_agent] Successfully stopped agent: {}", id);
-            Ok(StatusCode::OK)
-        }
-        Err(e) => {
-            tracing::error!("[stop_agent] Failed: {}", e);
-            Err((StatusCode::NOT_FOUND, e))
-        }
+    if !state.agent_manager.read().await.has_agent(&id) {
+        return Err((StatusCode::NOT_FOUND, "Agent not found".into()));
     }
+    let generation = state
+        .telegram_manager
+        .write()
+        .await
+        .cancel_pending_for_agent(&id);
+    state.telegram_dispatch_changed.notify_waiters();
+    let result =
+        interrupt_agent(state.clone(), id.clone(), generation.map(StopScope::Manual)).await;
+    if let Some(generation) = generation {
+        let mut telegram = state.telegram_manager.write().await;
+        let actions = telegram.complete_manual_stop(&id, generation, result.clone());
+        execute_telegram_actions(state.clone(), actions);
+    }
+    result.map_err(|err| (StatusCode::CONFLICT, err))?;
+    Ok(StatusCode::OK)
 }
 
 // Terminal endpoints

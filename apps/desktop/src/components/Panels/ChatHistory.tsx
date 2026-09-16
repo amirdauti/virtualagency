@@ -26,6 +26,7 @@ const ACTIVITY_COLORS = {
   search: { border: "#ec4899", bg: "rgba(236, 72, 153, 0.08)", icon: "🔍" },
   thinking: { border: "#8b5cf6", bg: "rgba(139, 92, 246, 0.08)", icon: "💭" },
   todo: { border: "#22c55e", bg: "rgba(34, 197, 94, 0.08)", icon: "✅" },
+  delegation: { border: "#38bdf8", bg: "rgba(56, 189, 248, 0.08)", icon: "↗" },
   tool: { border: "#64748b", bg: "rgba(100, 116, 139, 0.08)", icon: "🔧" },
 } as const;
 
@@ -326,6 +327,29 @@ function MessageBubble({
         {message.activityType === 'todo' && message.todoData && (
           <TodoCard message={message} />
         )}
+        {message.activityType === "delegation" && message.delegation && (
+          <div style={{ padding: "10px 12px", color: "#cbd5e1", fontSize: 12, overflowWrap: "anywhere" }}>
+            <div>Internal subagents · {message.delegation.status.replace(/_/g, " ")}</div>
+            {message.delegation.prompt && (
+              <details style={{ marginTop: 8 }}>
+                <summary>Task</summary>
+                <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{message.delegation.prompt}</pre>
+              </details>
+            )}
+            {message.delegation.agents.map((subagent) => (
+              <div key={subagent.id} style={{ marginTop: 8 }}>
+                <span title={subagent.id}>{subagent.path || `Subagent ${subagent.id.slice(0, 8)}`}</span>
+                {" · "}{subagent.status.replace(/_/g, " ")}
+                {subagent.message && (
+                  <details>
+                    <summary>Result</summary>
+                    <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{subagent.message}</pre>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -384,6 +408,7 @@ function MessageBubble({
           </div>
         ) : (
           <div style={markdownContainerStyle}>
+            {message.phase === "commentary" && <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 6 }}>Update</div>}
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{

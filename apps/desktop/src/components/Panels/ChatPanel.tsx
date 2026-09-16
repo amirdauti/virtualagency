@@ -32,6 +32,7 @@ import { writeFile, mkdir, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { join, tempDir } from "@tauri-apps/api/path";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { canSendAgentMessage, confirmedAgentSettings, createSettingsUpdateCoordinator, type AgentSettingsChange } from "../../lib/agentSettings";
 
 interface ChatPanelProps {
   agentId: string;
@@ -112,6 +113,17 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   // Initialize input from draft if available
   const [input, setInput] = useState(() => getDraft(agentId));
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const currentAgentId = useRef(agentId);
+  currentAgentId.current = agentId;
+  const settingsUpdates = useRef(createSettingsUpdateCoordinator());
+  const [settingsFeedback, setSettingsFeedback] = useState<Record<string, { pending: boolean; error?: string }>>({});
+  const settingsPending = Boolean(settingsFeedback[agentId]?.pending);
+  const settingsError = settingsFeedback[agentId]?.error;
+  const [sendError, setSendError] = useState<{ agentId: string; message: string } | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const stoppingRef = useRef(false);
+  const [stopError, setStopError] = useState<{ agentId: string; message: string } | null>(null);
   const attachedImages = useChatUIStore(
     (state) => state.draftImagesByAgent[agentId] ?? EMPTY_DRAFT_IMAGES
   );
@@ -130,8 +142,8 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const [thinkingEnabled, setThinkingEnabled] = useState(
     agent?.thinkingEnabled || false
   );
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
-    agent?.reasoningEffort || "medium"
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | "">(
+    agent?.reasoningEffort || ""
   );
   const codexReasoningEfforts = getCodexReasoningEfforts(selectedModel);
   const [promptKind, setPromptKind] = useState<PromptKind>("one_off");
@@ -154,21 +166,13 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   // Sync with agent state when it changes
   useEffect(() => {
     if (agent) {
-      if (agent.model) setSelectedModel(agent.model);
-      if (agent.thinkingEnabled !== undefined)
-        setThinkingEnabled(agent.thinkingEnabled);
-      if (agent.reasoningEffort) {
-        setReasoningEffort(
-          isCodexAgent
-            ? normalizeCodexReasoningEffort(
-                agent.model || DEFAULT_CODEX_MODEL,
-                agent.reasoningEffort
-              )
-            : agent.reasoningEffort
-        );
-      }
+      setSelectedModel(agent.model || (isCodexAgent ? DEFAULT_CODEX_MODEL : "sonnet"));
+      setThinkingEnabled(agent.thinkingEnabled || false);
+      // Display the confirmed value, including unknown/unavailable combinations.
+      // Normalization belongs to an explicit user change, not snapshot display.
+      setReasoningEffort(agent.reasoningEffort || "");
     }
-  }, [agent?.model, agent?.thinkingEnabled, agent?.reasoningEffort, isCodexAgent]);
+  }, [agentId, agent?.model, agent?.thinkingEnabled, agent?.reasoningEffort, isCodexAgent]);
 
   // Load draft when agentId changes (switching between agents)
   useEffect(() => {
@@ -181,52 +185,30 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     setDraft(agentId, input);
   }, [input, agentId, setDraft]);
 
-  const handleModelChange = useCallback(
-    async (newModel: string) => {
-      const nextReasoningEffort = isCodexAgent
-        ? normalizeCodexReasoningEffort(newModel, reasoningEffort)
-        : reasoningEffort;
-      setSelectedModel(newModel);
-      setReasoningEffort(nextReasoningEffort);
-      updateAgent(agentId, {
-        model: newModel,
-        reasoningEffort: isCodexAgent ? nextReasoningEffort : undefined,
-      });
+  const saveAgentSettings = useCallback(
+    async (changes: AgentSettingsChange) => {
+      if (settingsUpdates.current.isPending(agentId) || sendingRef.current) return;
+      setSettingsFeedback((previous) => ({ ...previous, [agentId]: { pending: true } }));
       try {
-        await updateAgentSettings(agentId, {
-          model: newModel,
-          reasoningEffort: isCodexAgent ? nextReasoningEffort : undefined,
+        await settingsUpdates.current.update(agentId, changes, updateAgentSettings, (id, settings) => {
+          updateAgent(id, confirmedAgentSettings(settings));
         });
+        setSettingsFeedback((previous) => ({ ...previous, [agentId]: { pending: false } }));
       } catch (err) {
-        console.error("[ChatPanel] Failed to update model:", err);
-      }
-    },
-    [agentId, updateAgent, isCodexAgent, reasoningEffort]
-  );
-
-  const handleThinkingToggle = useCallback(async () => {
-    const newValue = !thinkingEnabled;
-    setThinkingEnabled(newValue);
-    updateAgent(agentId, { thinkingEnabled: newValue });
-    try {
-      await updateAgentSettings(agentId, { thinkingEnabled: newValue });
-    } catch (err) {
-      console.error("[ChatPanel] Failed to update thinking mode:", err);
-    }
-  }, [agentId, thinkingEnabled, updateAgent]);
-
-  const handleReasoningEffortChange = useCallback(
-    async (effort: ReasoningEffort) => {
-      setReasoningEffort(effort);
-      updateAgent(agentId, { reasoningEffort: effort });
-      try {
-        await updateAgentSettings(agentId, { reasoningEffort: effort });
-      } catch (err) {
-        console.error("[ChatPanel] Failed to update reasoning effort:", err);
+        setSettingsFeedback((previous) => ({ ...previous, [agentId]: { pending: false, error: `Could not confirm the settings change. The last confirmed selection is shown. ${err instanceof Error ? err.message : String(err)}` } }));
       }
     },
     [agentId, updateAgent]
   );
+
+  const handleModelChange = (newModel: string) => saveAgentSettings({
+    model: newModel,
+    reasoningEffort: isCodexAgent ? normalizeCodexReasoningEffort(newModel, reasoningEffort || "medium") : undefined,
+  });
+
+  const handleThinkingToggle = () => saveAgentSettings({ thinkingEnabled: !thinkingEnabled });
+
+  const handleReasoningEffortChange = (effort: ReasoningEffort) => saveAgentSettings({ reasoningEffort: effort });
 
   const handleCreateAutomation = useCallback(() => {
     const prompt = input.trim() || scheduledTaskDescription.trim();
@@ -580,152 +562,70 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   );
 
   const handleSend = useCallback(async () => {
-    if ((!input.trim() && attachedImages.length === 0) || sending) return;
-
-    const messageContent = input.trim() || "(image attached)";
-    const outgoingMessage =
-      promptKind === "scheduled"
-        ? buildScheduledMessage(scheduledTaskDescription, messageContent)
-        : messageContent;
-    const imagesToSend = [...attachedImages];
-
-    // Resolve paths for API call (in Tauri mode we need real filesystem paths)
-    const imagePaths: string[] = [];
-    if (isTauri()) {
-      for (const img of imagesToSend) {
-        if (img.path.startsWith("blob:") && img.file) {
-          try {
-            const tempPath = await tempDir();
-            await mkdir("virtual-agency-pasted-images", {
-              baseDir: BaseDirectory.Temp,
-            }).catch(() => {});
-
-            const inferredExt = img.file.type?.split("/")[1] || "png";
-            const fileName = `pasted-${Date.now()}-${Math.random().toString(36).slice(2)}.${inferredExt}`;
-            const filePath = await join(
-              tempPath,
-              "virtual-agency-pasted-images",
-              fileName
-            );
-
-            const arrayBuffer = await img.file.arrayBuffer();
-            await writeFile(
-              `virtual-agency-pasted-images/${fileName}`,
-              new Uint8Array(arrayBuffer),
-              {
-                baseDir: BaseDirectory.Temp,
-              }
-            );
-
-            imagePaths.push(filePath);
-          } catch (err) {
-            console.warn(
-              "[ChatPanel] Failed to materialize blob image to file path for Tauri:",
-              err
-            );
-          }
-        } else {
-          imagePaths.push(img.path);
-        }
-      }
-    } else {
-      // Browser mode: paths are blob: URLs for upload conversion
-      imagePaths.push(...imagesToSend.map((img) => img.path));
-    }
-
+    if (!canSendAgentMessage(input, attachedImages.length, sendingRef.current || stoppingRef.current, settingsUpdates.current.isPending(agentId), agent)) return;
+    sendingRef.current = true;
     setSending(true);
-
-    // Set agent to thinking state immediately for visual feedback
-    updateAgent(agentId, { status: "thinking" });
-
+    setSendError(null);
+    const messageContent = input.trim() || "(image attached)";
+    const outgoingMessage = promptKind === "scheduled"
+      ? buildScheduledMessage(scheduledTaskDescription, messageContent)
+      : messageContent;
+    const imagesToSend = [...attachedImages];
+    const imagePaths: string[] = [];
     const clientMessageId = createClientMessageId(agentId);
 
-    // Add user message to chat history immediately with images.
-    // Server echo (browser mode) uses the same message id, so it de-dupes cleanly.
-    addUserMessage(
-      agentId,
-      messageContent,
-      imagePaths.length > 0 ? imagePaths : undefined,
-      clientMessageId
-    );
-    setInput("");
-    clearDraft(agentId); // Clear the draft after sending
-
-    // Note: We intentionally don't revoke blob URLs here because they're used
-    // by the chat history for displaying image previews. They'll be cleaned up
-    // when the page is closed/refreshed.
-    clearDraftImages(agentId);
-
     try {
-      console.log("[ChatPanel] Sending message:", {
-        agentId,
-        outgoingMessage,
-        imagePaths,
-        promptKind,
-      });
-      await sendMessage(
-        agentId,
-        outgoingMessage,
-        imagePaths,
-        clientMessageId,
-        agent?.runtime === "hosted" ? "hosted" : "local"
-      );
-      console.log("[ChatPanel] Message sent successfully");
-    } catch (err) {
-      if (!isTauri() && agent && isAgentNotFoundError(err)) {
-        try {
-          console.warn(
-            "[ChatPanel] Agent missing on server, attempting recreate + retry:",
-            agentId
-          );
-          await createAgent(agent.id, agent.workingDirectory, {
-            model: agent.model,
-            thinkingEnabled: agent.thinkingEnabled,
-            reasoningEffort: agent.reasoningEffort,
-            mcpServers: agent.mcpServers,
-            sessionId: agent.sessionId,
-            cliType: agent.cliType,
-            specialty: agent.specialty,
-            runtime: agent.runtime || "local",
-          });
-          await sendMessage(
-            agentId,
-            outgoingMessage,
-            imagePaths,
-            clientMessageId,
-            agent.runtime === "hosted" ? "hosted" : "local"
-          );
-          console.log(
-            "[ChatPanel] Message sent successfully after agent recreate"
-          );
-          return;
-        } catch (recreateErr) {
-          console.error(
-            "[ChatPanel] Agent recreate + retry failed:",
-            recreateErr
-          );
+      if (isTauri()) {
+        for (const image of imagesToSend) {
+          if (image.path.startsWith("blob:") && image.file) {
+            const temporaryDirectory = await tempDir();
+            await mkdir("virtual-agency-pasted-images", { baseDir: BaseDirectory.Temp }).catch(() => {});
+            const extension = image.file.type?.split("/")[1] || "png";
+            const filename = `pasted-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+            const bytes = new Uint8Array(await image.file.arrayBuffer());
+            await writeFile(`virtual-agency-pasted-images/${filename}`, bytes, { baseDir: BaseDirectory.Temp });
+            imagePaths.push(await join(temporaryDirectory, "virtual-agency-pasted-images", filename));
+          } else {
+            imagePaths.push(image.path);
+          }
         }
+      } else {
+        imagePaths.push(...imagesToSend.map((image) => image.path));
       }
-      console.error("[ChatPanel] Failed to send message:", err);
-      // Reset agent status on error since the backend won't emit status events
-      updateAgent(agentId, { status: "error" });
+
+      const submit = () => sendMessage(agentId, outgoingMessage, imagePaths, clientMessageId, agent?.runtime === "hosted" ? "hosted" : "local");
+      try {
+        await submit();
+      } catch (error) {
+        if (isTauri() || !agent || !isAgentNotFoundError(error)) throw error;
+        await createAgent(agent.id, agent.workingDirectory, {
+          model: agent.model,
+          thinkingEnabled: agent.thinkingEnabled,
+          reasoningEffort: agent.reasoningEffort,
+          mcpServers: agent.mcpServers,
+          sessionId: agent.sessionId,
+          cliType: agent.cliType,
+          specialty: agent.specialty,
+          runtime: agent.runtime || "local",
+        });
+        await submit();
+      }
+
+      // Acknowledgement means the new turn or steering input was accepted.
+      // The server echo has the same ID, so this also works without duplicate rows.
+      addUserMessage(agentId, messageContent, imagePaths.length ? imagePaths : undefined, clientMessageId);
+      if (currentAgentId.current === agentId) setInput("");
+      clearDraft(agentId);
+      clearDraftImages(agentId);
+    } catch (error) {
+      // Keep the draft and attachments available for retry. A rejected steering
+      // request must not mark a still-running agent as failed.
+      setSendError({ agentId, message: error instanceof Error ? error.message : String(error) });
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
-  }, [
-    agentId,
-    input,
-    attachedImages,
-    sending,
-    addUserMessage,
-    updateAgent,
-    clearDraft,
-    clearDraftImages,
-    agent,
-    isAgentNotFoundError,
-    promptKind,
-    scheduledTaskDescription,
-  ]);
+  }, [agentId, input, attachedImages, addUserMessage, clearDraft, clearDraftImages, agent, isAgentNotFoundError, promptKind, scheduledTaskDescription]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -735,12 +635,17 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   };
 
   const handleStop = useCallback(async () => {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    setStopping(true);
+    setStopError(null);
     try {
-      console.log("[ChatPanel] Stopping agent:", agentId);
       await stopAgent(agentId);
-      console.log("[ChatPanel] Agent stopped successfully");
     } catch (err) {
-      console.error("[ChatPanel] Failed to stop agent:", err);
+      setStopError({ agentId, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      stoppingRef.current = false;
+      setStopping(false);
     }
   }, [agentId]);
 
@@ -830,7 +735,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     [agentId, attachedImages, removeDraftImage]
   );
 
-  const canSend = input.trim() || attachedImages.length > 0;
+  const canSend = canSendAgentMessage(input, attachedImages.length, sending || stopping, settingsPending, agent);
   const showInlineAdvancedControls = !isMobile;
   const renderAdvancedControls = () => (
     <>
@@ -854,7 +759,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           <select
             value={selectedModel}
             onChange={(e) => handleModelChange(e.target.value)}
-            disabled={sending}
+            disabled={sending || settingsPending}
             style={{
               ...selectStyle,
               height: isMobile ? 38 : 28,
@@ -889,7 +794,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               onChange={(e) =>
                 handleReasoningEffortChange(e.target.value as ReasoningEffort)
               }
-              disabled={sending}
+              disabled={sending || settingsPending}
               style={{
                 ...selectStyle,
                 height: isMobile ? 38 : 28,
@@ -897,6 +802,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
                 fontSize: isMobile ? 13 : 12,
               }}
             >
+              {!codexReasoningEfforts.some((option) => option.value === reasoningEffort) && (
+                <option value={reasoningEffort} disabled>{reasoningEffort || "Not confirmed"}</option>
+              )}
               {codexReasoningEfforts.map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.name}
@@ -923,7 +831,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
                 type="checkbox"
                 checked={thinkingEnabled}
                 onChange={handleThinkingToggle}
-                disabled={sending}
+                disabled={sending || settingsPending}
                 style={checkboxStyle}
               />
               Thinking
@@ -980,6 +888,12 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
           </div>
         )}
       </div>
+
+      {settingsPending && <p role="status" style={{ color: "#94a3b8", margin: "6px 12px", fontSize: 12 }}>Saving settings…</p>}
+      {settingsError && <p role="alert" style={{ color: "#fca5a5", margin: "6px 12px", fontSize: 12 }}>{settingsError}</p>}
+      {sendError?.agentId === agentId && <p role="alert" style={{ color: "#fca5a5", margin: "6px 12px", fontSize: 12 }}>Message was not accepted: {sendError.message}</p>}
+      {stopError?.agentId === agentId && <p role="alert" style={{ color: "#fca5a5", margin: "6px 12px", fontSize: 12 }}>Could not stop the agent: {stopError.message}</p>}
+      {isAgentWorking && <p style={{ color: "#94a3b8", margin: "6px 12px", fontSize: 12 }}>{isCodexAgent ? "Send a message to steer the current task. " : "Wait for this task to finish before sending another message. "}Model and reasoning changes apply to the next turn.</p>}
 
       {promptKind === "scheduled" && (
         <div
@@ -1276,7 +1190,9 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
-              isSmallPhone
+              isAgentWorking && isCodexAgent
+                ? "Add an instruction to the current task…"
+                : isSmallPhone
                 ? "Ask anything… (Shift+Enter for newline)"
                 : "Ask me anything... (Shift+Enter for new line, Ctrl+V to paste images)"
             }
@@ -1299,10 +1215,11 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             }}
           />
 
-          {/* Send/Stop button - inside input on right */}
-          {isAgentWorking ? (
+          {/* Sending steers an active Codex turn; Stop remains a separate action. */}
+          {isAgentWorking && (
             <button
               onClick={handleStop}
+              disabled={stopping}
               style={{
                 margin: isMobile ? "8px" : "6px",
                 padding: isMobile ? "10px 14px" : "8px 16px",
@@ -1328,9 +1245,10 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               }}
               aria-label="Stop agent"
             >
-              Stop
+              {stopping ? "Stopping…" : "Stop"}
             </button>
-          ) : (
+          )}
+          {(!isAgentWorking || isCodexAgent) && (
             <button
               onClick={handleSend}
               disabled={!canSend || sending}

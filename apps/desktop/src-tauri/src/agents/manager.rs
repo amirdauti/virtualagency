@@ -92,7 +92,10 @@ impl AgentManager {
         }
     }
 
-    pub fn get_agent_settings(&self, id: &str) -> Result<(String, bool, Vec<String>), String> {
+    pub fn get_agent_settings(
+        &self,
+        id: &str,
+    ) -> Result<(String, bool, String, Vec<String>), String> {
         match self.agents.get(id) {
             Some(agent) => Ok(agent.get_settings()),
             None => Err("Agent not found".to_string()),

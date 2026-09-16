@@ -11,6 +11,7 @@ import type {
   ReasoningEffort,
 } from "@virtual-agency/shared";
 import { DEFAULT_CODEX_MODEL } from "@virtual-agency/shared";
+import { readAgentSettingsSnapshot, type AgentSettingsChange, type AgentSettingsSnapshot } from "./agentSettings";
 
 export type { CodexModel, ReasoningEffort } from "@virtual-agency/shared";
 
@@ -1210,16 +1211,11 @@ export async function listAgents(
 
 export async function updateAgentSettings(
   id: string,
-  options: {
-    name?: string;
-    model?: string;
-    thinkingEnabled?: boolean;
-    reasoningEffort?: ReasoningEffort;
-    mcpServers?: string[];
-  }
-): Promise<void> {
+  options: AgentSettingsChange
+): Promise<AgentSettingsSnapshot> {
+  let response: unknown;
   if (isTauri()) {
-    return tauriInvoke("update_agent_settings", {
+    response = await tauriInvoke("update_agent_settings", {
       id,
       model: options.model,
       thinkingEnabled: options.thinkingEnabled,
@@ -1228,7 +1224,7 @@ export async function updateAgentSettings(
     });
   } else {
     const runtime = getAgentRuntime(id);
-    await fetchApiForRuntime<void>(runtime, `/api/agents/${id}`, {
+    response = await fetchApiForRuntime<unknown>(runtime, `/api/agents/${id}`, {
       method: "PATCH",
       body: JSON.stringify({
         name: options.name,
@@ -1238,7 +1234,18 @@ export async function updateAgentSettings(
         mcp_servers: options.mcpServers,
       }),
     });
+    // Older servers returned an empty response. Read back instead of assuming
+    // the requested values were accepted by the running agent.
+    if (!readAgentSettingsSnapshot(response)) {
+      const agents = await fetchApiForRuntime<ServerAgentInfo[]>(runtime, "/api/agents");
+      response = agents.find((agent) => agent.id === id);
+    }
   }
+  const confirmed = readAgentSettingsSnapshot(response);
+  if (!confirmed) {
+    throw new Error("The server did not confirm the model settings. Refresh after updating the server before trying again.");
+  }
+  return confirmed;
 }
 
 export interface AgentTelegramSettings {
@@ -1402,6 +1409,7 @@ export interface ServerAgentInfo {
   working_dir: string;
   model: string;
   thinking_enabled: boolean;
+  reasoning_effort?: ReasoningEffort;
   mcp_servers: string[];
   cli_type: string;
   specialty: string;

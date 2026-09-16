@@ -3,6 +3,7 @@ import { useAgentOutputListener, useAgentUserMessageListener } from "./useTauriE
 import { useChatStore, ChatMessage } from "../stores/chatStore";
 import { useAgentStore } from "../stores/agentStore";
 import { fetchAgentApi } from "../lib/api";
+import { codexDelegationActivity, codexDelegationKey } from "../lib/codexDelegation";
 const MAX_DIFF_PREVIEW_CHARS = 20_000;
 const MAX_DIFF_PREVIEW_LINES = 400;
 const MAX_FILE_CACHE_CHARS = 200_000;
@@ -50,6 +51,7 @@ export function useChatMessages() {
         accumulatedText: string;
         processedToolIds: Set<string>; // Track tool IDs to avoid duplicate activities
         codexItemMessageIds: Map<string, string>; // Codex item_id -> chat message id (for updates)
+        codexSubagentMessageIds: Map<string, string>; // Internal thread lifecycle across turns
         fileContentCache: Map<string, string>; // workspace-relative path -> last known content
       }
     >
@@ -64,6 +66,7 @@ export function useChatMessages() {
         accumulatedText: "",
         processedToolIds: new Set(),
         codexItemMessageIds: new Map(),
+        codexSubagentMessageIds: new Map(),
         fileContentCache: new Map(),
       });
     }
@@ -87,6 +90,41 @@ export function useChatMessages() {
             json.type.startsWith("turn.") ||
             json.type.startsWith("item."))
         ) {
+          // Codex subagents belong to this CLI conversation, not the VA board.
+          // Merge their call lifecycle into one parent-owned activity card.
+          if (["item.started", "item.updated", "item.completed"].includes(json.type)) {
+            const subagentKey = codexDelegationKey(json.item);
+            const itemId = subagentKey || getCodexItemId(json.item);
+            const messageIds = subagentKey ? state.codexSubagentMessageIds : state.codexItemMessageIds;
+            const messageId = itemId ? messageIds.get(itemId) : undefined;
+            const previousMessage = messageId
+              ? useChatStore.getState().messages.find((message) => message.id === messageId)
+              : undefined;
+            if (json.item?.type === "agent_message" && typeof json.item.text === "string") {
+              // The transport emits cumulative text, scoped by item ID. A final
+              // item replaces its own stream without duplicating commentary.
+              const complete = json.type === "item.completed";
+              if (previousMessage?.isStreaming === false && !complete) return;
+              const phase = json.item.phase === "commentary" ? "commentary"
+                : ["final", "final_answer"].includes(json.item.phase) ? "final" : previousMessage?.phase;
+              const id = messageId || addAssistantMessage(agentId, json.item.text);
+              updateMessage(id, { content: json.item.text, phase, isStreaming: !complete });
+              if (itemId) messageIds.set(itemId, id);
+              addActivity(agentId, "");
+              return;
+            }
+            const activity = codexDelegationActivity(json.item, previousMessage?.delegation);
+            if (activity) {
+              if (messageId) {
+                updateMessage(messageId, { content: activity.text, delegation: activity.delegation });
+              } else {
+                const id = addActivityMessage(agentId, activity.text, "delegation", undefined, undefined, undefined, undefined, undefined, activity.delegation);
+                if (itemId) messageIds.set(itemId, id);
+              }
+              addActivity(agentId, json.type === "item.completed" ? "" : activity.text);
+              return;
+            }
+          }
           switch (json.type) {
             case "thread.started": {
               if (json.thread_id) {

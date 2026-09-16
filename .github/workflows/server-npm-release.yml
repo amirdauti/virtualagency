@@ -6,6 +6,7 @@ on:
     branches: [ main ]
     paths:
       - "apps/server/**"
+      - "apps/shared/**"
       - ".github/workflows/server-npm-release.yml"
 
 jobs:
@@ -32,6 +33,13 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release -p virtual-agency-server
+
+      - name: Test agent runtime and Telegram control
+        run: cargo test -p virtual-agency-server
+
+      - name: Test isolated control plane
+        if: runner.os == 'Linux'
+        run: python3 apps/server/tests/control_plane_smoke.py target/release/virtual-agency-server
 
       - name: Stage binary artifact
         shell: bash

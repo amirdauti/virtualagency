@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import type { CodexDelegation } from "../lib/codexDelegation";
 
 export interface ChatMessage {
   id: string;
@@ -8,9 +9,11 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   isStreaming?: boolean;
+  phase?: "commentary" | "final";
   // Activity-specific fields
-  activityType?: "read" | "write" | "edit" | "bash" | "search" | "tool" | "thinking" | "todo";
+  activityType?: "read" | "write" | "edit" | "bash" | "search" | "tool" | "thinking" | "todo" | "delegation";
   activityDetails?: string; // e.g., file path, command
+  delegation?: CodexDelegation;
   // Image attachments (for user messages)
   images?: string[]; // Array of image file paths
   // Thinking content (for expandable thinking blocks)
@@ -48,7 +51,7 @@ interface ChatState {
     images?: string[],
     messageId?: string
   ) => void;
-  addAssistantMessage: (agentId: string, content: string) => void;
+  addAssistantMessage: (agentId: string, content: string) => string;
   appendToLastAssistantMessage: (agentId: string, content: string) => void;
   replaceLastAssistantMessage: (agentId: string, content: string) => void;
   finishStreaming: (agentId: string) => void;
@@ -63,7 +66,8 @@ interface ChatState {
     diffData?: ChatMessage["diffData"],
     todoData?: ChatMessage["todoData"],
     thinkingContent?: string,
-    thinkingTokens?: number
+    thinkingTokens?: number,
+    delegation?: CodexDelegation
   ) => string;
   updateMessage: (messageId: string, updates: Partial<ChatMessage>) => void;
   clearActivity: (agentId: string) => void;
@@ -164,6 +168,11 @@ function buildPersistedMessages(messages: ChatMessage[]): ChatMessage[] {
           typeof msg.content === "string"
             ? clampString(msg.content, MAX_PERSIST_MESSAGE_CHARS)
             : "",
+        delegation: msg.delegation ? {
+          ...msg.delegation,
+          prompt: msg.delegation.prompt ? clampString(msg.delegation.prompt, 2000) : undefined,
+          agents: msg.delegation.agents.slice(0, 20).map((agent) => ({ ...agent, message: agent.message ? clampString(agent.message, 1000) : undefined })),
+        } : undefined,
         thinkingContent:
           typeof msg.thinkingContent === "string"
             ? clampString(msg.thinkingContent, MAX_PERSIST_THINKING_CHARS)
@@ -231,7 +240,7 @@ export const useChatStore = create<ChatState>()(
 
       addAssistantMessage: (agentId, content) => {
         const message: ChatMessage = {
-          id: `${agentId}-assistant-${Date.now()}`,
+          id: `${agentId}-assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           agentId,
           role: "assistant",
           content,
@@ -242,6 +251,7 @@ export const useChatStore = create<ChatState>()(
           messages: [...state.messages, message],
           activities: { ...state.activities, [agentId]: "" }, // Clear activity when message starts
         }));
+        return message.id;
       },
 
       appendToLastAssistantMessage: (agentId, content) => {
@@ -325,7 +335,8 @@ export const useChatStore = create<ChatState>()(
         diffData,
         todoData,
         thinkingContent,
-        thinkingTokens
+        thinkingTokens,
+        delegation
       ) => {
         const id = `${agentId}-activity-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const message: ChatMessage = {
@@ -340,6 +351,7 @@ export const useChatStore = create<ChatState>()(
           todoData,
           thinkingContent,
           thinkingTokens,
+          delegation,
         };
         set((state) => ({
           messages: [...state.messages, message],

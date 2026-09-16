@@ -1,3 +1,5 @@
+use futures::future::{AbortHandle, Abortable, BoxFuture};
+use futures::stream::{FuturesOrdered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -32,6 +34,19 @@ pub struct TelegramInboundMessage {
     pub from_handle: Option<String>,
     pub text: String,
     pub media: Vec<TelegramInboundMedia>,
+    pub command: Option<TelegramCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelegramCommand {
+    Stop,
+}
+
+#[derive(Debug, Clone)]
+pub struct TelegramStopRequest {
+    pub agent_id: String,
+    pub chat_id: i64,
+    pub update_id: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -66,19 +81,29 @@ pub struct TelegramDispatch {
     pub agent_id: String,
     pub text: String,
     pub media: Vec<TelegramInboundMedia>,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TelegramDeliveryScope {
+    pub agent_id: String,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone)]
 pub enum TelegramAction {
     DispatchToAgent(TelegramDispatch),
+    StopAgent(TelegramStopRequest),
     SendMessage {
         bot_token: String,
         chat_id: i64,
         text: String,
+        scope: Option<TelegramDeliveryScope>,
     },
     SendTyping {
         bot_token: String,
         chat_id: i64,
+        scope: Option<TelegramDeliveryScope>,
     },
 }
 
@@ -107,6 +132,7 @@ struct PendingTelegramMediaGroup {
 #[derive(Debug, Default)]
 struct TelegramMediaGroupBuffer {
     pending: HashMap<(i64, String), PendingTelegramMediaGroup>,
+    discarded_groups: VecDeque<(i64, String)>,
 }
 
 impl TelegramMediaGroupBuffer {
@@ -117,6 +143,12 @@ impl TelegramMediaGroupBuffer {
         now: Instant,
     ) -> Vec<TelegramInboundMessage> {
         let chat_id = message.chat_id;
+        if self
+            .discarded_groups
+            .contains(&(chat_id, media_group_id.clone()))
+        {
+            return Vec::new();
+        }
         let mut ready = self.flush_chat_except(chat_id, &media_group_id);
         let key = (chat_id, media_group_id);
 
@@ -151,6 +183,41 @@ impl TelegramMediaGroupBuffer {
 
     fn flush_chat(&mut self, chat_id: i64) -> Vec<TelegramInboundMessage> {
         self.drain_matching(|_, group| group.message.chat_id == chat_id)
+    }
+
+    fn discard_chat(&mut self, chat_id: i64) {
+        let keys: Vec<_> = self
+            .pending
+            .keys()
+            .filter(|(chat, _)| *chat == chat_id)
+            .cloned()
+            .collect();
+        for (chat, group) in keys {
+            self.discard_group(chat, group);
+        }
+    }
+
+    fn discard_group(&mut self, chat_id: i64, group: String) {
+        let key = (chat_id, group);
+        self.pending.remove(&key);
+        if !self.discarded_groups.contains(&key) {
+            self.discarded_groups.push_back(key);
+            if self.discarded_groups.len() > 128 {
+                self.discarded_groups.pop_front();
+            }
+        }
+    }
+
+    fn discard_through(&mut self, update_id: i64) {
+        let keys: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|(_, group)| group.message.update_id <= update_id)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for (chat, group) in keys {
+            self.discard_group(chat, group);
+        }
     }
 
     fn flush_chat_except(
@@ -218,6 +285,10 @@ fn route_telegram_inbound(
     message: TelegramInboundMessage,
     now: Instant,
 ) -> Vec<TelegramInboundMessage> {
+    if message.command == Some(TelegramCommand::Stop) {
+        media_groups.discard_chat(message.chat_id);
+        return vec![message];
+    }
     if let Some(media_group_id) = media_group_id {
         return media_groups.push(media_group_id, message, now);
     }
@@ -247,6 +318,13 @@ struct TelegramActiveTurn {
     last_typing_at: Option<Instant>,
     sent_update_ids: HashSet<String>,
     file_snapshots: HashMap<String, String>,
+    stream_agent_replies: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TelegramPendingStop {
+    Command(i64),
+    Manual(u64),
 }
 
 struct TelegramAgentState {
@@ -262,7 +340,11 @@ struct TelegramAgentState {
     queue: VecDeque<TelegramQueuedTurn>,
     active_turn: Option<TelegramActiveTurn>,
     passive_turn: Option<TelegramActiveTurn>,
+    dispatch_generation: u64,
+    stop_pending: Option<TelegramPendingStop>,
+    stopped_through_update_id: Option<i64>,
     worker_stop: Option<watch::Sender<bool>>,
+    worker_cancel: Option<watch::Sender<Option<i64>>>,
 }
 
 impl TelegramAgentState {
@@ -346,7 +428,11 @@ impl TelegramManager {
                     queue: VecDeque::new(),
                     active_turn: None,
                     passive_turn: None,
+                    dispatch_generation: 0,
+                    stop_pending: None,
+                    stopped_through_update_id: None,
                     worker_stop: None,
+                    worker_cancel: None,
                 };
                 (agent_id, state)
             })
@@ -371,13 +457,16 @@ impl TelegramManager {
         }
 
         let initial_offset = state.last_update_id.map(|id| id + 1).unwrap_or(0);
-        let stop_tx = spawn_polling_worker(
+        let (stop_tx, cancel_tx) = spawn_polling_worker(
             self.inbound_tx.clone(),
             agent_id.to_string(),
             state.config.bot_token.clone(),
             initial_offset,
+            state.allowed_chat_id,
+            state.config.allowed_handle.clone(),
         );
         state.worker_stop = Some(stop_tx);
+        state.worker_cancel = Some(cancel_tx);
         state.polling = true;
         state.connected = true;
     }
@@ -513,7 +602,11 @@ impl TelegramManager {
                         queue: VecDeque::new(),
                         active_turn: None,
                         passive_turn: None,
+                        dispatch_generation: 0,
+                        stop_pending: None,
+                        stopped_through_update_id: None,
                         worker_stop: None,
+                        worker_cancel: None,
                     });
 
             if let Some(stop_tx) = state.worker_stop.take() {
@@ -538,17 +631,21 @@ impl TelegramManager {
 
             if state.config.enabled {
                 let initial_offset = state.last_update_id.map(|id| id + 1).unwrap_or(0);
-                let stop_tx = spawn_polling_worker(
+                let (stop_tx, cancel_tx) = spawn_polling_worker(
                     self.inbound_tx.clone(),
                     agent_id.to_string(),
                     state.config.bot_token.clone(),
                     initial_offset,
+                    state.allowed_chat_id,
+                    state.config.allowed_handle.clone(),
                 );
                 state.worker_stop = Some(stop_tx);
+                state.worker_cancel = Some(cancel_tx);
                 state.polling = true;
                 state.connected = true;
             } else {
                 state.worker_stop = None;
+                state.worker_cancel = None;
                 state.polling = false;
             }
 
@@ -579,6 +676,14 @@ impl TelegramManager {
     }
 
     pub fn handle_inbound(&mut self, msg: TelegramInboundMessage) -> Vec<TelegramAction> {
+        self.handle_inbound_with_steering(msg, false)
+    }
+
+    pub fn handle_inbound_with_steering(
+        &mut self,
+        msg: TelegramInboundMessage,
+        supports_steering: bool,
+    ) -> Vec<TelegramAction> {
         let mut actions = Vec::new();
         let agent_id = msg.agent_id.clone();
         let should_persist = {
@@ -590,7 +695,7 @@ impl TelegramManager {
             }
 
             let mut should_persist = false;
-            if state.last_update_id != Some(msg.update_id) {
+            if state.last_update_id.is_none_or(|id| msg.update_id > id) {
                 state.last_update_id = Some(msg.update_id);
                 should_persist = true;
             }
@@ -620,13 +725,56 @@ impl TelegramManager {
                 should_persist = true;
             }
 
-            state.queue.push_back(TelegramQueuedTurn {
-                chat_id: msg.chat_id,
-                text: msg.text,
-                media: msg.media,
-            });
-
-            maybe_start_next_turn(&agent_id, state, &mut actions);
+            if state
+                .stopped_through_update_id
+                .is_some_and(|id| msg.update_id <= id)
+            {
+                return actions;
+            }
+            if msg.command == Some(TelegramCommand::Stop) {
+                state.dispatch_generation = state.dispatch_generation.wrapping_add(1);
+                state.stopped_through_update_id = Some(msg.update_id);
+                state.stop_pending = Some(TelegramPendingStop::Command(msg.update_id));
+                state.queue.clear();
+                if let Some(cancel) = &state.worker_cancel {
+                    let _ = cancel.send(Some(msg.update_id));
+                }
+                actions.push(TelegramAction::StopAgent(TelegramStopRequest {
+                    agent_id: agent_id.clone(),
+                    chat_id: msg.chat_id,
+                    update_id: msg.update_id,
+                }));
+            } else if supports_steering
+                && state.stop_pending.is_none()
+                && (state.active_turn.is_some()
+                    || state.passive_turn.is_some()
+                    || state.status_active)
+            {
+                if state.active_turn.is_none() {
+                    state.active_turn = Some(
+                        state
+                            .passive_turn
+                            .take()
+                            .unwrap_or_else(|| new_turn(msg.chat_id)),
+                    );
+                }
+                if let Some(turn) = state.active_turn.as_mut() {
+                    turn.stream_agent_replies = true;
+                }
+                actions.push(TelegramAction::DispatchToAgent(TelegramDispatch {
+                    agent_id: agent_id.clone(),
+                    text: msg.text,
+                    media: msg.media,
+                    generation: state.dispatch_generation,
+                }));
+            } else {
+                state.queue.push_back(TelegramQueuedTurn {
+                    chat_id: msg.chat_id,
+                    text: msg.text,
+                    media: msg.media,
+                });
+                maybe_start_next_turn(&agent_id, state, &mut actions);
+            }
             should_persist
         };
 
@@ -645,6 +793,138 @@ impl TelegramManager {
         actions
     }
 
+    pub fn cancel_pending_for_agent(&mut self, agent_id: &str) -> Option<u64> {
+        let state = self.agents.get_mut(agent_id)?;
+        state.dispatch_generation = state.dispatch_generation.wrapping_add(1);
+        state.queue.clear();
+        state.stop_pending = Some(TelegramPendingStop::Manual(state.dispatch_generation));
+        state.stopped_through_update_id = state.last_update_id;
+        if let Some(cancel) = &state.worker_cancel {
+            let _ = cancel.send(None);
+        }
+        Some(state.dispatch_generation)
+    }
+
+    pub fn complete_manual_stop(
+        &mut self,
+        agent_id: &str,
+        generation: u64,
+        result: Result<(), String>,
+    ) -> Vec<TelegramAction> {
+        let Some(state) = self.agents.get_mut(agent_id) else {
+            return Vec::new();
+        };
+        if state.stop_pending != Some(TelegramPendingStop::Manual(generation)) {
+            return Vec::new();
+        }
+        state.stop_pending = None;
+        match result {
+            Ok(()) => {
+                state.status_active = false;
+                state.active_turn = None;
+                state.passive_turn = None;
+                state.last_error = None;
+            }
+            Err(error) => state.last_error = Some(error),
+        }
+        let mut actions = Vec::new();
+        maybe_start_next_turn(agent_id, state, &mut actions);
+        actions
+    }
+
+    /// Check again after asynchronous media preparation and immediately before
+    /// delivery, holding the manager read lock until delivery is submitted.
+    pub fn is_dispatch_current(&self, dispatch: &TelegramDispatch) -> bool {
+        self.agents.get(&dispatch.agent_id).is_some_and(|state| {
+            state.config.enabled
+                && state.stop_pending.is_none()
+                && state.dispatch_generation == dispatch.generation
+        })
+    }
+
+    /// The single outbound worker checks this just before sending, so a stop
+    /// discards replies and typing indicators queued by the preceding generation.
+    pub fn is_outbound_current(&self, action: &TelegramAction) -> bool {
+        let (scope, bot_token, chat_id) = match action {
+            TelegramAction::SendMessage {
+                scope,
+                bot_token,
+                chat_id,
+                ..
+            }
+            | TelegramAction::SendTyping {
+                scope,
+                bot_token,
+                chat_id,
+            } => (scope, bot_token, chat_id),
+            _ => return false,
+        };
+        let Some(scope) = scope else {
+            return true;
+        };
+        self.agents.get(&scope.agent_id).is_some_and(|state| {
+            state.config.enabled
+                && state.dispatch_generation == scope.generation
+                && state.config.bot_token == *bot_token
+                && resolve_mirror_chat_id(state) == Some(*chat_id)
+        })
+    }
+
+    pub fn is_stop_current(&self, request: &TelegramStopRequest) -> bool {
+        self.agents.get(&request.agent_id).is_some_and(|state| {
+            state.config.enabled
+                && state.allowed_chat_id == Some(request.chat_id)
+                && state.stop_pending == Some(TelegramPendingStop::Command(request.update_id))
+        })
+    }
+
+    pub fn is_manual_stop_current(&self, agent_id: &str, generation: u64) -> bool {
+        self.agents.get(agent_id).is_some_and(|state| {
+            state.stop_pending == Some(TelegramPendingStop::Manual(generation))
+        })
+    }
+
+    pub fn complete_stop(
+        &mut self,
+        request: &TelegramStopRequest,
+        result: Result<(), String>,
+    ) -> Vec<TelegramAction> {
+        let Some(state) = self.agents.get_mut(&request.agent_id) else {
+            return Vec::new();
+        };
+        if !state.config.enabled
+            || state.allowed_chat_id != Some(request.chat_id)
+            || state.stop_pending != Some(TelegramPendingStop::Command(request.update_id))
+        {
+            return Vec::new();
+        }
+        state.stop_pending = None;
+        let text = match result {
+            Ok(()) => {
+                state.status_active = false;
+                state.active_turn = None;
+                state.passive_turn = None;
+                state.last_error = None;
+                "Stopped. Pending messages were cleared.".to_string()
+            }
+            Err(error) => {
+                state.last_error = Some(error.clone());
+                format!("Could not stop the agent: {error}")
+            }
+        };
+        let mut actions = vec![TelegramAction::SendMessage {
+            bot_token: state.config.bot_token.clone(),
+            chat_id: request.chat_id,
+            text,
+            scope: Some(TelegramDeliveryScope {
+                agent_id: request.agent_id.clone(),
+                generation: state.dispatch_generation,
+            }),
+        }];
+        maybe_start_next_turn(&request.agent_id, state, &mut actions);
+        actions
+    }
+
     pub fn notify_dispatch_failure(&mut self, agent_id: &str, error: &str) -> Vec<TelegramAction> {
         let mut actions = Vec::new();
         let Some(state) = self.agents.get_mut(agent_id) else {
@@ -659,6 +939,10 @@ impl TelegramManager {
                 bot_token: state.config.bot_token.clone(),
                 chat_id: active.chat_id,
                 text: format!("Failed to deliver message to agent: {}", error),
+                scope: Some(TelegramDeliveryScope {
+                    agent_id: agent_id.to_string(),
+                    generation: state.dispatch_generation,
+                }),
             });
         }
 
@@ -675,6 +959,9 @@ impl TelegramManager {
                     return actions;
                 };
                 if !state.config.enabled {
+                    return actions;
+                }
+                if state.stop_pending.is_some() {
                     return actions;
                 }
 
@@ -698,20 +985,26 @@ impl TelegramManager {
                 apply_agent_output_to_turn(&output.data, turn);
                 let chat_id = turn.chat_id;
 
-                if state.config.send_updates {
+                if state.config.send_updates
+                    || (turn.stream_agent_replies && is_completed_codex_reply(&output.data))
+                {
                     for message in collect_incremental_updates(&output.data, turn) {
                         for chunk in split_for_telegram(&message) {
                             actions.push(TelegramAction::SendMessage {
                                 bot_token: bot_token.clone(),
                                 chat_id,
                                 text: chunk,
+                                scope: Some(TelegramDeliveryScope {
+                                    agent_id: output.agent_id.clone(),
+                                    generation: state.dispatch_generation,
+                                }),
                             });
                         }
                     }
                 }
 
                 if using_active_turn {
-                    maybe_enqueue_typing(state, &mut actions);
+                    maybe_enqueue_typing(&output.agent_id, state, &mut actions);
                 }
             }
             crate::BroadcastMessage::AgentStatus(status) => {
@@ -719,6 +1012,9 @@ impl TelegramManager {
                     return actions;
                 };
                 if !state.config.enabled {
+                    return actions;
+                }
+                if state.stop_pending.is_some() {
                     return actions;
                 }
 
@@ -733,7 +1029,7 @@ impl TelegramManager {
                         }
                     }
                     if state.active_turn.is_some() {
-                        maybe_enqueue_typing(state, &mut actions);
+                        maybe_enqueue_typing(&status.agent_id, state, &mut actions);
                     }
                 }
 
@@ -752,6 +1048,10 @@ impl TelegramManager {
                                     bot_token: state.config.bot_token.clone(),
                                     chat_id: active.chat_id,
                                     text: chunk,
+                                    scope: Some(TelegramDeliveryScope {
+                                        agent_id: status.agent_id.clone(),
+                                        generation: state.dispatch_generation,
+                                    }),
                                 });
                             }
                         }
@@ -772,6 +1072,10 @@ impl TelegramManager {
                                         bot_token: state.config.bot_token.clone(),
                                         chat_id: passive.chat_id,
                                         text: chunk,
+                                        scope: Some(TelegramDeliveryScope {
+                                            agent_id: status.agent_id.clone(),
+                                            generation: state.dispatch_generation,
+                                        }),
                                     });
                                 }
                             }
@@ -788,11 +1092,11 @@ impl TelegramManager {
 
     pub fn collect_typing_heartbeats(&mut self) -> Vec<TelegramAction> {
         let mut actions = Vec::new();
-        for state in self.agents.values_mut() {
-            if !state.config.enabled || !state.status_active {
+        for (agent_id, state) in &mut self.agents {
+            if !state.config.enabled || !state.status_active || state.stop_pending.is_some() {
                 continue;
             }
-            maybe_enqueue_typing(state, &mut actions);
+            maybe_enqueue_typing(agent_id, state, &mut actions);
         }
         actions
     }
@@ -803,7 +1107,7 @@ fn maybe_start_next_turn(
     state: &mut TelegramAgentState,
     actions: &mut Vec<TelegramAction>,
 ) {
-    if state.active_turn.is_some() || state.passive_turn.is_some() {
+    if state.active_turn.is_some() || state.passive_turn.is_some() || state.stop_pending.is_some() {
         return;
     }
     let Some(next) = state.queue.pop_front() else {
@@ -818,6 +1122,7 @@ fn maybe_start_next_turn(
         agent_id: agent_id.to_string(),
         text: next.text,
         media: next.media,
+        generation: state.dispatch_generation,
     }));
 }
 
@@ -831,6 +1136,7 @@ fn new_turn(chat_id: i64) -> TelegramActiveTurn {
         last_typing_at: None,
         sent_update_ids: HashSet::new(),
         file_snapshots: HashMap::new(),
+        stream_agent_replies: false,
     }
 }
 
@@ -850,7 +1156,8 @@ fn resolve_allowed_chat_id_from_persisted(binding: &PersistedBinding) -> Option<
 
 fn normalize_allowed_chat_ids(chat_ids: Vec<i64>, allowed_chat_id: Option<i64>) -> Vec<i64> {
     let mut seen = HashSet::new();
-    let mut normalized = Vec::with_capacity(chat_ids.len() + usize::from(allowed_chat_id.is_some()));
+    let mut normalized =
+        Vec::with_capacity(chat_ids.len() + usize::from(allowed_chat_id.is_some()));
     for chat_id in chat_ids {
         if seen.insert(chat_id) {
             normalized.push(chat_id);
@@ -864,7 +1171,11 @@ fn normalize_allowed_chat_ids(chat_ids: Vec<i64>, allowed_chat_id: Option<i64>) 
     normalized
 }
 
-fn maybe_enqueue_typing(state: &mut TelegramAgentState, actions: &mut Vec<TelegramAction>) {
+fn maybe_enqueue_typing(
+    agent_id: &str,
+    state: &mut TelegramAgentState,
+    actions: &mut Vec<TelegramAction>,
+) {
     if !state.config.send_typing {
         return;
     }
@@ -886,6 +1197,10 @@ fn maybe_enqueue_typing(state: &mut TelegramAgentState, actions: &mut Vec<Telegr
     actions.push(TelegramAction::SendTyping {
         bot_token: state.config.bot_token.clone(),
         chat_id: active.chat_id,
+        scope: Some(TelegramDeliveryScope {
+            agent_id: agent_id.to_string(),
+            generation: state.dispatch_generation,
+        }),
     });
 }
 
@@ -954,6 +1269,17 @@ fn apply_agent_output_to_turn(raw: &str, turn: &mut TelegramActiveTurn) {
         }
         _ => {}
     }
+}
+
+fn is_completed_codex_reply(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw).is_ok_and(|value| {
+        value.get("type").and_then(|kind| kind.as_str()) == Some("item.completed")
+            && value
+                .get("item")
+                .and_then(|item| item.get("type"))
+                .and_then(|kind| kind.as_str())
+                == Some("agent_message")
+    })
 }
 
 fn collect_incremental_updates(raw: &str, turn: &mut TelegramActiveTurn) -> Vec<String> {
@@ -2053,18 +2379,222 @@ fn load_persisted_bindings(path: &Path) -> Result<HashMap<String, PersistedBindi
     Ok(parsed.bindings)
 }
 
+fn parse_telegram_command(text: &str, bot_username: Option<&str>) -> Option<TelegramCommand> {
+    let text = text.trim();
+    if text == "/stop" {
+        return Some(TelegramCommand::Stop);
+    }
+    let recipient = text.strip_prefix("/stop@")?;
+    if !recipient.is_empty()
+        && recipient
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        && bot_username.is_some_and(|username| recipient.eq_ignore_ascii_case(username))
+    {
+        return Some(TelegramCommand::Stop);
+    }
+    None
+}
+
+struct TelegramPollAuthorization {
+    allowed_chat_id: Option<i64>,
+    allowed_handle: String,
+}
+
+impl TelegramPollAuthorization {
+    fn authorize(&mut self, message: &TelegramMessage) -> bool {
+        if message
+            .from
+            .as_ref()
+            .and_then(|user| user.is_bot)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        if let Some(chat) = self.allowed_chat_id {
+            return chat == message.chat.id;
+        }
+        let handle = normalize_handle(
+            message
+                .from
+                .as_ref()
+                .and_then(|user| user.username.as_deref())
+                .unwrap_or_default(),
+        );
+        if handle.is_empty() || handle != self.allowed_handle {
+            return false;
+        }
+        self.allowed_chat_id = Some(message.chat.id);
+        true
+    }
+}
+
+struct PreparedTelegramUpdate {
+    update_id: i64,
+    message: TelegramMessage,
+    command: Option<TelegramCommand>,
+}
+
+fn prepare_telegram_updates(
+    updates: Vec<TelegramUpdate>,
+    authorization: &mut TelegramPollAuthorization,
+    bot_username: Option<&str>,
+    media_groups: &mut TelegramMediaGroupBuffer,
+) -> Vec<PreparedTelegramUpdate> {
+    let mut prepared = Vec::new();
+    let mut stopped_through = None;
+    for update in updates {
+        let Some(message) = update.message else {
+            continue;
+        };
+        let text = message
+            .text
+            .as_deref()
+            .or(message.caption.as_deref())
+            .unwrap_or_default()
+            .trim();
+        let command = parse_telegram_command(text, bot_username);
+        // Commands addressed to another bot, or whose recipient cannot yet be
+        // verified, must not become model instructions.
+        if command.is_none() && text.starts_with("/stop@") {
+            continue;
+        }
+        if !authorization.authorize(&message) {
+            continue;
+        }
+        if command == Some(TelegramCommand::Stop) {
+            stopped_through = Some(update.update_id);
+            media_groups.discard_chat(message.chat.id);
+        }
+        prepared.push(PreparedTelegramUpdate {
+            update_id: update.update_id,
+            message,
+            command,
+        });
+    }
+    if let Some(cutoff) = stopped_through {
+        prepared.retain(|update| {
+            if update.update_id >= cutoff {
+                return true;
+            }
+            if let Some(group) = &update.message.media_group_id {
+                media_groups.discard_group(update.message.chat.id, group.clone());
+            }
+            false
+        });
+    }
+    prepared
+}
+
+async fn fetch_bot_username(client: &reqwest::Client, bot_token: &str) -> Option<String> {
+    let response = client
+        .post(format!("{TELEGRAM_API_BASE}/bot{bot_token}/getMe"))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload = response
+        .json::<TelegramApiResponse<TelegramUser>>()
+        .await
+        .ok()?;
+    if !payload.ok {
+        return None;
+    }
+    payload.result?.username
+}
+
+fn apply_poll_cancellation(
+    media_groups: &mut TelegramMediaGroupBuffer,
+    canceled_through: &mut i64,
+    cancellation: Option<i64>,
+    offset: i64,
+) {
+    *canceled_through =
+        (*canceled_through).max(cancellation.unwrap_or_else(|| offset.saturating_sub(1)));
+    media_groups.discard_through(*canceled_through);
+}
+
+struct PendingTelegramDownload {
+    abort: AbortHandle,
+    chat_id: i64,
+    media_group_id: Option<String>,
+}
+
+struct DownloadedTelegramUpdate {
+    inbound: TelegramInboundMessage,
+    media_group_id: Option<String>,
+}
+
+fn cancel_telegram_downloads(
+    downloads: &mut HashMap<i64, PendingTelegramDownload>,
+    media_groups: &mut TelegramMediaGroupBuffer,
+    through: i64,
+) {
+    downloads.retain(|update_id, download| {
+        if *update_id > through {
+            return true;
+        }
+        download.abort.abort();
+        if let Some(group) = &download.media_group_id {
+            media_groups.discard_group(download.chat_id, group.clone());
+        }
+        false
+    });
+}
+
+fn inbound_from_prepared(
+    agent_id: String,
+    update: PreparedTelegramUpdate,
+    media: Vec<TelegramInboundMedia>,
+) -> DownloadedTelegramUpdate {
+    let msg = update.message;
+    DownloadedTelegramUpdate {
+        media_group_id: msg.media_group_id,
+        inbound: TelegramInboundMessage {
+            agent_id,
+            update_id: update.update_id,
+            chat_id: msg.chat.id,
+            from_handle: msg.from.and_then(|user| user.username),
+            text: msg
+                .text
+                .or(msg.caption)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            media,
+            command: update.command,
+        },
+    }
+}
+
 fn spawn_polling_worker(
     inbound_tx: mpsc::UnboundedSender<TelegramInboundMessage>,
     agent_id: String,
     bot_token: String,
     initial_offset: i64,
-) -> watch::Sender<bool> {
+    allowed_chat_id: Option<i64>,
+    allowed_handle: String,
+) -> (watch::Sender<bool>, watch::Sender<Option<i64>>) {
     let (stop_tx, mut stop_rx) = watch::channel(false);
+    let (cancel_tx, mut cancel_rx) = watch::channel(None);
 
     tokio::spawn(async move {
         let client = reqwest::Client::new();
         let mut offset: i64 = initial_offset;
         let mut media_groups = TelegramMediaGroupBuffer::default();
+        let mut authorization = TelegramPollAuthorization {
+            allowed_chat_id,
+            allowed_handle,
+        };
+        let mut bot_username = None;
+        let mut canceled_through = initial_offset.saturating_sub(1);
+        let mut downloads: FuturesOrdered<BoxFuture<'static, Option<DownloadedTelegramUpdate>>> =
+            FuturesOrdered::new();
+        let mut pending_downloads = HashMap::new();
+        let download_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
 
         loop {
             if *stop_rx.borrow() {
@@ -2074,13 +2604,31 @@ fn spawn_polling_worker(
             let next_flush_delay = media_groups
                 .next_flush_delay(Instant::now())
                 .unwrap_or_default();
-            let has_pending_media_group = !media_groups.pending.is_empty();
+            let has_pending_media_group =
+                !media_groups.pending.is_empty() && pending_downloads.is_empty();
             let poll_fut = poll_once(&client, &bot_token, offset);
             let updates = tokio::select! {
                 biased;
                 changed = stop_rx.changed() => {
                     if changed.is_err() || *stop_rx.borrow() {
                         break;
+                    }
+                    continue;
+                }
+                changed = cancel_rx.changed() => {
+                    if changed.is_err() { break; }
+                    apply_poll_cancellation(&mut media_groups, &mut canceled_through, *cancel_rx.borrow_and_update(), offset);
+                    cancel_telegram_downloads(&mut pending_downloads, &mut media_groups, canceled_through);
+                    continue;
+                }
+                completed = downloads.next(), if !downloads.is_empty() => {
+                    if let Some(Some(update)) = completed {
+                        pending_downloads.remove(&update.inbound.update_id);
+                        if update.inbound.update_id > canceled_through
+                            && (!update.inbound.text.is_empty() || !update.inbound.media.is_empty()) {
+                            let ready = route_telegram_inbound(&mut media_groups, update.media_group_id, update.inbound, Instant::now());
+                            forward_telegram_inbound(&inbound_tx, ready);
+                        }
                     }
                     continue;
                 }
@@ -2094,47 +2642,80 @@ fn spawn_polling_worker(
 
             match updates {
                 Ok(list) => {
-                    for update in list {
-                        offset = update.update_id + 1;
-                        if let Some(msg) = update.message {
-                            if msg.from.as_ref().and_then(|u| u.is_bot).unwrap_or(false) {
-                                continue;
-                            }
-
-                            let media_group_id = msg.media_group_id.clone();
-                            let text = msg
-                                .text
-                                .as_deref()
-                                .or(msg.caption.as_deref())
-                                .unwrap_or_default()
-                                .trim()
-                                .to_string();
-                            let media = collect_message_media(&client, &bot_token, &msg).await;
-
-                            if text.is_empty() && media.is_empty() {
-                                continue;
-                            }
-
-                            let inbound = TelegramInboundMessage {
-                                agent_id: agent_id.clone(),
-                                update_id: update.update_id,
-                                chat_id: msg.chat.id,
-                                from_handle: msg.from.and_then(|u| u.username),
-                                text,
-                                media,
-                            };
-                            let ready = route_telegram_inbound(
-                                &mut media_groups,
-                                media_group_id,
-                                inbound,
-                                Instant::now(),
-                            );
-                            forward_telegram_inbound(&inbound_tx, ready);
+                    if let Some(last) = list.last() {
+                        offset = last.update_id.saturating_add(1);
+                    }
+                    if bot_username.is_none()
+                        && list.iter().any(|update| {
+                            update
+                                .message
+                                .as_ref()
+                                .and_then(|message| {
+                                    message.text.as_deref().or(message.caption.as_deref())
+                                })
+                                .is_some_and(|text| text.trim().starts_with("/stop@"))
+                        })
+                    {
+                        bot_username = fetch_bot_username(&client, &bot_token).await;
+                    }
+                    let prepared = prepare_telegram_updates(
+                        list,
+                        &mut authorization,
+                        bot_username.as_deref(),
+                        &mut media_groups,
+                    );
+                    for update in prepared {
+                        if update.update_id <= canceled_through {
+                            continue;
                         }
+                        if update.command == Some(TelegramCommand::Stop) {
+                            canceled_through = canceled_through.max(update.update_id);
+                            cancel_telegram_downloads(
+                                &mut pending_downloads,
+                                &mut media_groups,
+                                canceled_through,
+                            );
+                            let command =
+                                inbound_from_prepared(agent_id.clone(), update, Vec::new());
+                            forward_telegram_inbound(&inbound_tx, vec![command.inbound]);
+                            continue;
+                        }
+                        let (abort, registration) = AbortHandle::new_pair();
+                        pending_downloads.insert(
+                            update.update_id,
+                            PendingTelegramDownload {
+                                abort,
+                                chat_id: update.message.chat.id,
+                                media_group_id: update.message.media_group_id.clone(),
+                            },
+                        );
+                        let client = client.clone();
+                        let token = bot_token.clone();
+                        let agent_id = agent_id.clone();
+                        let slots = download_slots.clone();
+                        downloads.push_back(Box::pin(async move {
+                            Abortable::new(
+                                async move {
+                                    let _permit = slots
+                                        .acquire()
+                                        .await
+                                        .expect("download semaphore is never closed");
+                                    let media =
+                                        collect_message_media(&client, &token, &update.message)
+                                            .await;
+                                    inbound_from_prepared(agent_id, update, media)
+                                },
+                                registration,
+                            )
+                            .await
+                            .ok()
+                        }));
                     }
 
-                    let ready = media_groups.flush_expired(Instant::now());
-                    forward_telegram_inbound(&inbound_tx, ready);
+                    if pending_downloads.is_empty() {
+                        let ready = media_groups.flush_expired(Instant::now());
+                        forward_telegram_inbound(&inbound_tx, ready);
+                    }
                 }
                 Err(err) => {
                     tracing::warn!("[telegram] Polling error for agent {}: {}", agent_id, err);
@@ -2148,16 +2729,23 @@ fn spawn_polling_worker(
                                 break;
                             }
                         }
+                        changed = cancel_rx.changed() => {
+                            if changed.is_err() { break; }
+                            apply_poll_cancellation(&mut media_groups, &mut canceled_through, *cancel_rx.borrow_and_update(), offset);
+                            cancel_telegram_downloads(&mut pending_downloads, &mut media_groups, canceled_through);
+                        }
                         _ = tokio::time::sleep(retry_delay) => {}
                     }
-                    let ready = media_groups.flush_expired(Instant::now());
-                    forward_telegram_inbound(&inbound_tx, ready);
+                    if pending_downloads.is_empty() {
+                        let ready = media_groups.flush_expired(Instant::now());
+                        forward_telegram_inbound(&inbound_tx, ready);
+                    }
                 }
             }
         }
     });
 
-    stop_tx
+    (stop_tx, cancel_tx)
 }
 
 async fn poll_once(
@@ -2538,6 +3126,7 @@ mod tests {
             last_typing_at: None,
             sent_update_ids: HashSet::new(),
             file_snapshots: HashMap::new(),
+            stream_agent_replies: false,
         }
     }
 
@@ -2576,7 +3165,11 @@ mod tests {
             queue: VecDeque::new(),
             active_turn: None,
             passive_turn: None,
+            dispatch_generation: 0,
+            stop_pending: None,
+            stopped_through_update_id: None,
             worker_stop: None,
+            worker_cancel: None,
         }
     }
 
@@ -2598,7 +3191,453 @@ mod tests {
                 file_name: Some("photo.jpg".to_string()),
                 bytes: vec![marker],
             }],
+            command: None,
         }
+    }
+
+    fn text_inbound(update_id: i64, text: &str) -> TelegramInboundMessage {
+        TelegramInboundMessage {
+            agent_id: "agent-1".into(),
+            update_id,
+            chat_id: 42,
+            from_handle: Some("alice".into()),
+            text: text.into(),
+            media: Vec::new(),
+            command: parse_telegram_command(text, Some("agency_bot")),
+        }
+    }
+
+    fn raw_update(update_id: i64, chat_id: i64, text: &str, group: Option<&str>) -> TelegramUpdate {
+        serde_json::from_value(serde_json::json!({
+            "update_id": update_id,
+            "message": {"chat":{"id":chat_id},"from":{"username":"alice","is_bot":false},
+                "text":text,"media_group_id":group}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn stop_command_requires_exact_command_and_this_bot_recipient() {
+        for text in ["/stop", " /stop\n", "/stop@agency_bot", "/stop@AGENCY_BOT"] {
+            assert_eq!(
+                parse_telegram_command(text, Some("agency_bot")),
+                Some(TelegramCommand::Stop)
+            );
+        }
+        for text in [
+            "please /stop",
+            "/stopping",
+            "/stop later",
+            "/stop@other_bot",
+            "/stop@",
+            "/stop@agency_bot later",
+        ] {
+            assert_eq!(
+                parse_telegram_command(text, Some("agency_bot")),
+                None,
+                "{text}"
+            );
+        }
+        assert_eq!(parse_telegram_command("/stop@agency_bot", None), None);
+        assert_eq!(
+            parse_telegram_command("/stop", None),
+            Some(TelegramCommand::Stop)
+        );
+    }
+
+    #[test]
+    fn authorized_stop_bypasses_album_debounce_and_discards_only_prior_scoped_input() {
+        let now = Instant::now();
+        let mut groups = TelegramMediaGroupBuffer::default();
+        groups.push(
+            "old-album".into(),
+            make_inbound_with_photo(10, 42, "old", 1),
+            now,
+        );
+        groups.push(
+            "other-chat".into(),
+            make_inbound_with_photo(11, 99, "other", 2),
+            now,
+        );
+        let mut auth = TelegramPollAuthorization {
+            allowed_chat_id: Some(42),
+            allowed_handle: "alice".into(),
+        };
+        let prepared = prepare_telegram_updates(
+            vec![
+                raw_update(20, 42, "another old photo", Some("in-flight-album")),
+                raw_update(21, 42, "/stop@agency_bot", None),
+                raw_update(22, 42, "new work", None),
+            ],
+            &mut auth,
+            Some("agency_bot"),
+            &mut groups,
+        );
+        assert_eq!(
+            prepared.iter().map(|u| u.update_id).collect::<Vec<_>>(),
+            [21, 22]
+        );
+        let mut prepared = prepared.into_iter();
+        let stop = inbound_from_prepared("agent-1".into(), prepared.next().unwrap(), Vec::new());
+        let ready = route_telegram_inbound(
+            &mut groups,
+            Some("ignored-command-album".into()),
+            stop.inbound,
+            now,
+        );
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].command, Some(TelegramCommand::Stop));
+        assert!(ready[0].media.is_empty());
+        for group in ["old-album", "in-flight-album"] {
+            assert!(groups
+                .push(
+                    group.into(),
+                    make_inbound_with_photo(23, 42, "late photo", 3),
+                    now
+                )
+                .is_empty());
+        }
+        let remaining = groups.flush_expired(now + Duration::from_secs(1));
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].chat_id, 99);
+    }
+
+    #[test]
+    fn unauthorized_or_foreign_bot_stop_does_not_clear_pending_album() {
+        let now = Instant::now();
+        let mut groups = TelegramMediaGroupBuffer::default();
+        groups.push(
+            "album".into(),
+            make_inbound_with_photo(1, 42, "keep", 1),
+            now,
+        );
+        let mut auth = TelegramPollAuthorization {
+            allowed_chat_id: Some(42),
+            allowed_handle: "alice".into(),
+        };
+        assert!(prepare_telegram_updates(
+            vec![
+                raw_update(2, 99, "/stop", None),
+                raw_update(3, 42, "/stop@other_bot", None)
+            ],
+            &mut auth,
+            Some("agency_bot"),
+            &mut groups
+        )
+        .is_empty());
+        assert_eq!(groups.flush_expired(now + Duration::from_secs(1)).len(), 1);
+        auth.allowed_chat_id = None;
+        assert!(prepare_telegram_updates(
+            vec![raw_update(4, 99, "/stop@other_bot", None)],
+            &mut auth,
+            Some("agency_bot"),
+            &mut groups
+        )
+        .is_empty());
+        assert_eq!(
+            auth.allowed_chat_id, None,
+            "ignored commands cannot bootstrap a chat binding"
+        );
+    }
+
+    #[test]
+    fn stop_clears_queued_turns_fences_preparation_and_acknowledges_only_success() {
+        let mut manager = make_manager_with_state("agent-1", make_enabled_state(42, false));
+        let first = manager.handle_inbound(text_inbound(1, "first"));
+        let TelegramAction::DispatchToAgent(dispatch) = &first[0] else {
+            panic!("expected dispatch");
+        };
+        assert!(manager.is_dispatch_current(dispatch));
+        assert!(manager
+            .handle_inbound(text_inbound(2, "queued before stop"))
+            .is_empty());
+        let stop = manager.handle_inbound(text_inbound(3, "/stop"));
+        let [TelegramAction::StopAgent(request)] = stop.as_slice() else {
+            panic!("stop must bypass the queue without an early acknowledgement");
+        };
+        assert_eq!(request.agent_id, "agent-1");
+        assert_eq!(request.chat_id, 42);
+        assert!(!manager.is_dispatch_current(dispatch));
+        assert_eq!(manager.get_status("agent-1").queue_depth, 0);
+        assert!(manager
+            .handle_inbound_with_steering(text_inbound(4, "after stop"), true)
+            .is_empty());
+        let idle = crate::BroadcastMessage::AgentStatus(AgentStatusChange {
+            agent_id: "agent-1".into(),
+            status: AgentStatus::Idle,
+        });
+        assert!(manager.handle_broadcast(&idle).is_empty());
+        let completed = manager.complete_stop(request, Ok(()));
+        assert!(
+            matches!(&completed[0], TelegramAction::SendMessage { chat_id:42,text,.. } if text.starts_with("Stopped."))
+        );
+        assert!(
+            matches!(&completed[1], TelegramAction::DispatchToAgent(next) if next.text == "after stop")
+        );
+        assert!(manager
+            .handle_inbound(text_inbound(2, "stale buffered album"))
+            .is_empty());
+        assert!(
+            manager.complete_stop(request, Ok(())).is_empty(),
+            "duplicate completion must not clear new work"
+        );
+    }
+
+    #[test]
+    fn stop_rechecks_enabled_binding_and_chat_and_preserves_other_agent_work() {
+        let mut manager = make_manager_with_state("agent-1", make_enabled_state(42, false));
+        manager
+            .agents
+            .insert("agent-2".into(), make_enabled_state(99, false));
+        manager
+            .agents
+            .get_mut("agent-2")
+            .unwrap()
+            .queue
+            .push_back(TelegramQueuedTurn {
+                chat_id: 99,
+                text: "keep".into(),
+                media: vec![],
+            });
+        let mut wrong_chat = text_inbound(1, "/stop");
+        wrong_chat.chat_id = 99;
+        assert!(manager.handle_inbound(wrong_chat).is_empty());
+        manager.agents.get_mut("agent-1").unwrap().config.enabled = false;
+        assert!(manager.handle_inbound(text_inbound(2, "/stop")).is_empty());
+        manager.agents.get_mut("agent-1").unwrap().config.enabled = true;
+        assert!(matches!(
+            manager.handle_inbound(text_inbound(3, "/stop")).as_slice(),
+            [TelegramAction::StopAgent(_)]
+        ));
+        assert_eq!(manager.get_status("agent-2").queue_depth, 1);
+    }
+
+    #[test]
+    fn failed_stop_reports_failure_without_claiming_success_or_erasing_active_output() {
+        let mut state = make_enabled_state(42, false);
+        let mut turn = new_turn(42);
+        turn.accumulated = "existing output".into();
+        state.active_turn = Some(turn);
+        let mut manager = make_manager_with_state("agent-1", state);
+        let actions = manager.handle_inbound(text_inbound(1, "/stop"));
+        let TelegramAction::StopAgent(request) = &actions[0] else {
+            panic!("expected stop");
+        };
+        let result = manager.complete_stop(request, Err("transport unavailable".into()));
+        assert!(
+            matches!(&result[0], TelegramAction::SendMessage {text,..} if text.starts_with("Could not stop") && !text.contains("Stopped."))
+        );
+        assert_eq!(
+            manager.agents["agent-1"]
+                .active_turn
+                .as_ref()
+                .unwrap()
+                .accumulated,
+            "existing output"
+        );
+    }
+
+    #[test]
+    fn manual_stop_holds_new_input_until_matching_completion_without_sending_ack() {
+        let mut manager = make_manager_with_state("agent-1", make_enabled_state(42, false));
+        let actions = manager.handle_inbound(text_inbound(1, "old work"));
+        let TelegramAction::DispatchToAgent(old) = &actions[0] else {
+            panic!("expected dispatch");
+        };
+        let generation = manager.cancel_pending_for_agent("agent-1").unwrap();
+        assert!(!manager.is_dispatch_current(old));
+        assert!(manager
+            .handle_inbound_with_steering(text_inbound(2, "new work"), true)
+            .is_empty());
+        assert!(manager
+            .complete_manual_stop("agent-1", generation + 1, Ok(()))
+            .is_empty());
+        let result = manager.complete_manual_stop("agent-1", generation, Ok(()));
+        assert!(
+            matches!(result.as_slice(), [TelegramAction::DispatchToAgent(next)] if next.text == "new work")
+        );
+    }
+
+    #[test]
+    fn codex_steering_preserves_reply_aggregation_while_unsupported_turns_queue() {
+        let mut state = make_enabled_state(42, false);
+        let mut turn = new_turn(42);
+        turn.accumulated = "partial reply".into();
+        state.passive_turn = Some(turn);
+        let mut manager = make_manager_with_state("agent-1", state);
+        let actions = manager.handle_inbound_with_steering(text_inbound(1, "steer now"), true);
+        assert!(
+            matches!(actions.as_slice(), [TelegramAction::DispatchToAgent(next)] if next.text == "steer now")
+        );
+        assert_eq!(
+            manager.agents["agent-1"]
+                .active_turn
+                .as_ref()
+                .unwrap()
+                .accumulated,
+            "partial reply"
+        );
+        assert_eq!(manager.get_status("agent-1").queue_depth, 0);
+        assert!(manager
+            .handle_inbound(text_inbound(2, "unsupported follow-up"))
+            .is_empty());
+        assert_eq!(manager.get_status("agent-1").queue_depth, 1);
+    }
+
+    #[test]
+    fn steering_reply_is_immediate_with_updates_disabled_and_not_repeated_at_idle() {
+        let mut state = make_enabled_state(42, false);
+        state.passive_turn = Some(new_turn(42));
+        let mut manager = make_manager_with_state("agent-1", state);
+        manager.handle_inbound_with_steering(text_inbound(1, "What have you found?"), true);
+        let output = |kind: &str, text: &str| {
+            crate::BroadcastMessage::AgentOutput(AgentOutput {
+            agent_id: "agent-1".into(), stream: OutputStream::Stdout,
+            data: serde_json::json!({"type":"item.completed", "item":{"id":kind,"type":kind,"text":text}}).to_string(),
+        })
+        };
+        assert!(manager
+            .handle_broadcast(&output("reasoning", "internal reasoning"))
+            .iter()
+            .all(|action| !matches!(action, TelegramAction::SendMessage { .. })));
+        let reply = manager.handle_broadcast(&output(
+            "agent_message",
+            "The first check passed; I am continuing.",
+        ));
+        assert_eq!(
+            reply
+                .iter()
+                .filter(
+                    |action| matches!(action, TelegramAction::SendMessage {text,..}
+            if text == "The first check passed; I am continuing.")
+                )
+                .count(),
+            1
+        );
+        let idle = crate::BroadcastMessage::AgentStatus(AgentStatusChange {
+            agent_id: "agent-1".into(),
+            status: AgentStatus::Idle,
+        });
+        assert!(manager
+            .handle_broadcast(&idle)
+            .iter()
+            .all(|action| !matches!(action, TelegramAction::SendMessage { .. })));
+    }
+
+    #[test]
+    fn a_later_stop_supersedes_old_command_and_manual_interrupt_actions() {
+        let mut manager = make_manager_with_state("agent-1", make_enabled_state(42, false));
+        let first = manager.handle_inbound(text_inbound(1, "/stop"));
+        let TelegramAction::StopAgent(first) = &first[0] else {
+            panic!("expected stop");
+        };
+        assert!(manager.is_stop_current(first));
+        let manual = manager.cancel_pending_for_agent("agent-1").unwrap();
+        assert!(!manager.is_stop_current(first));
+        assert!(manager.is_manual_stop_current("agent-1", manual));
+        let next = manager.handle_inbound(text_inbound(2, "/stop"));
+        let TelegramAction::StopAgent(next) = &next[0] else {
+            panic!("expected stop");
+        };
+        assert!(!manager.is_manual_stop_current("agent-1", manual));
+        assert!(manager.is_stop_current(next));
+    }
+
+    #[test]
+    fn stop_fences_queued_replies_and_typing_but_keeps_current_ack_and_other_agents() {
+        let mut state = make_enabled_state(42, true);
+        state.config.send_typing = true;
+        let mut manager = make_manager_with_state("agent-1", state);
+        manager
+            .agents
+            .insert("agent-2".into(), make_enabled_state(99, true));
+        manager.handle_inbound(text_inbound(1, "work"));
+        let reply = |agent_id: &str| {
+            crate::BroadcastMessage::AgentOutput(AgentOutput {
+                agent_id: agent_id.into(),
+                stream: OutputStream::Stdout,
+                data: serde_json::json!({"type":"item.completed", "item":{
+                    "id":"reply", "type":"agent_message", "text":"progress before stop"
+                }})
+                .to_string(),
+            })
+        };
+        let queued = manager.handle_broadcast(&reply("agent-1"));
+        assert!(queued
+            .iter()
+            .any(|action| matches!(action, TelegramAction::SendMessage { .. })));
+        assert!(queued
+            .iter()
+            .any(|action| matches!(action, TelegramAction::SendTyping { .. })));
+        assert!(queued
+            .iter()
+            .all(|action| manager.is_outbound_current(action)));
+        let other = manager.handle_broadcast(&reply("agent-2"));
+        assert!(!other.is_empty());
+
+        let actions = manager.handle_inbound(text_inbound(2, "/stop"));
+        let TelegramAction::StopAgent(request) = &actions[0] else {
+            panic!("expected stop");
+        };
+        assert!(queued
+            .iter()
+            .all(|action| !manager.is_outbound_current(action)));
+        assert!(other
+            .iter()
+            .all(|action| manager.is_outbound_current(action)));
+        let completed = manager.complete_stop(request, Ok(()));
+        assert!(
+            matches!(&completed[0], TelegramAction::SendMessage { text, .. } if text.starts_with("Stopped."))
+        );
+        assert!(manager.is_outbound_current(&completed[0]));
+
+        manager.cancel_pending_for_agent("agent-1").unwrap();
+        assert!(
+            !manager.is_outbound_current(&completed[0]),
+            "a later stop supersedes an unsent earlier acknowledgement"
+        );
+        assert!(other
+            .iter()
+            .all(|action| manager.is_outbound_current(action)));
+        manager.agents.get_mut("agent-2").unwrap().allowed_chat_id = Some(100);
+        assert!(
+            other
+                .iter()
+                .all(|action| !manager.is_outbound_current(action)),
+            "queued messages cannot follow a changed binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn canceling_older_download_unblocks_later_input_without_waiting_for_media() {
+        let mut groups = TelegramMediaGroupBuffer::default();
+        let mut pending = HashMap::new();
+        let (abort, registration) = AbortHandle::new_pair();
+        pending.insert(
+            1,
+            PendingTelegramDownload {
+                abort,
+                chat_id: 42,
+                media_group_id: Some("old".into()),
+            },
+        );
+        let mut ordered: FuturesOrdered<BoxFuture<'static, Option<i64>>> = FuturesOrdered::new();
+        ordered.push_back(Box::pin(async move {
+            Abortable::new(std::future::pending::<i64>(), registration)
+                .await
+                .ok()
+        }));
+        ordered.push_back(Box::pin(async { Some(3) }));
+        cancel_telegram_downloads(&mut pending, &mut groups, 2);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), ordered.next())
+                .await
+                .unwrap(),
+            Some(None)
+        );
+        assert_eq!(ordered.next().await, Some(Some(3)));
+        assert!(pending.is_empty());
+        assert!(groups.discarded_groups.contains(&(42, "old".into())));
     }
 
     #[test]
@@ -2666,6 +3705,7 @@ mod tests {
             from_handle: Some("alice".to_string()),
             text: "Now compare them".to_string(),
             media: Vec::new(),
+            command: None,
         };
         let ready = route_telegram_inbound(&mut media_groups, None, text, started_at);
 
@@ -2882,6 +3922,7 @@ mod tests {
             from_handle: Some("alice".to_string()),
             text: "telegram follow-up".to_string(),
             media: Vec::new(),
+            command: None,
         });
         assert!(
             !actions
@@ -2904,6 +3945,7 @@ mod tests {
             from_handle: Some("alice".to_string()),
             text: "should be rejected".to_string(),
             media: Vec::new(),
+            command: None,
         });
         assert!(
             rejected
@@ -2919,6 +3961,7 @@ mod tests {
             from_handle: Some("wrong_handle".to_string()),
             text: "should be accepted".to_string(),
             media: Vec::new(),
+            command: None,
         });
         assert!(
             accepted
@@ -2944,6 +3987,7 @@ mod tests {
             from_handle: Some("alice".to_string()),
             text: "bootstrap".to_string(),
             media: Vec::new(),
+            command: None,
         });
         assert!(
             actions

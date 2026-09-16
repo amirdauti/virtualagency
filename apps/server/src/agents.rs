@@ -10,15 +10,11 @@ use tokio::sync::mpsc;
 
 use crate::BroadcastMessage;
 
+#[path = "../../shared/codex_transport.rs"]
+mod codex_transport;
+
 const DEFAULT_CODEX_NPM_PACKAGE: &str = "@openai/codex";
 const DEFAULT_CODEX_NPM_VERSION: &str = "0.154.0";
-
-fn codex_model_supports_reasoning(model: &str) -> bool {
-    model.starts_with("gpt-5")
-        || model.starts_with("gpt-6")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-}
 
 fn get_mcp_server_package(id: &str) -> Option<&'static str> {
     match id {
@@ -525,7 +521,9 @@ fn codex_version_matches(bin: &PathBuf, desired_version: &str) -> bool {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.split_whitespace().any(|part| part == desired_version)
+    stdout
+        .split_whitespace()
+        .any(|part| part == desired_version)
 }
 
 #[cfg(not(windows))]
@@ -669,6 +667,10 @@ pub struct AgentProcess {
     status: Arc<Mutex<AgentStatus>>,
     session_id: Arc<Mutex<Option<String>>>,
     current_child: Arc<Mutex<Option<Child>>>,
+    codex_transport: Mutex<Option<Arc<codex_transport::CodexTransport>>>,
+    codex_generation: Arc<Mutex<u64>>,
+    codex_mcp_servers: Mutex<Vec<String>>,
+    legacy_delivery: Mutex<()>,
     images_sent_count: Arc<Mutex<u32>>,
     control_api_base_url: Option<String>,
     control_api_token: Option<String>,
@@ -756,15 +758,7 @@ impl AgentProcess {
         .any(|needle| lower.contains(needle));
 
         let wants_nango = [
-            "nango",
-            "oauth",
-            "google",
-            "gmail",
-            "drive",
-            "docs",
-            "sheets",
-            "calendar",
-            "email",
+            "nango", "oauth", "google", "gmail", "drive", "docs", "sheets", "calendar", "email",
             "inbox",
         ]
         .iter()
@@ -775,7 +769,7 @@ impl AgentProcess {
         }
 
         let mut hint_blocks: Vec<&str> = Vec::new();
-        if wants_orchestration {
+        if wants_orchestration && !self.native_delegation_only() {
             hint_blocks.push(CONTROL_PLANE_ORCHESTRATION_HINT);
         }
         if wants_nango {
@@ -815,6 +809,10 @@ impl AgentProcess {
             status: Arc::new(Mutex::new(AgentStatus::Idle)),
             session_id: Arc::new(Mutex::new(initial_session_id)),
             current_child: Arc::new(Mutex::new(None)),
+            codex_transport: Mutex::new(None),
+            codex_generation: Arc::new(Mutex::new(0)),
+            codex_mcp_servers: Mutex::new(Vec::new()),
+            legacy_delivery: Mutex::new(()),
             images_sent_count: Arc::new(Mutex::new(0)),
             control_api_base_url,
             control_api_token,
@@ -845,7 +843,155 @@ impl AgentProcess {
         self.session_id.lock().ok().and_then(|s| s.clone())
     }
 
+    fn native_delegation_only(&self) -> bool {
+        self.cli_type == CliType::Codex
+            && (self.reasoning_effort == "ultra"
+                || self
+                    .codex_transport
+                    .lock()
+                    .ok()
+                    .and_then(|transport| {
+                        transport
+                            .as_ref()
+                            .map(|transport| transport.active_uses_ultra())
+                    })
+                    .unwrap_or(false))
+    }
+
+    fn send_codex_message(&self, message: &str, images: &[String]) -> Result<(), String> {
+        let transport = {
+            let mut slot = self.codex_transport.lock().map_err(|e| e.to_string())?;
+            if slot.as_ref().is_some_and(|transport| !transport.is_alive()) {
+                *slot = None;
+            }
+            if slot
+                .as_ref()
+                .is_some_and(|transport| !transport.is_active())
+                && *self.codex_mcp_servers.lock().map_err(|e| e.to_string())? != self.mcp_servers
+            {
+                if let Some(transport) = slot.take() {
+                    transport.shutdown();
+                }
+            }
+            if slot.is_none() {
+                let path = find_codex_cli(Some(&self.working_dir))?;
+                let mut command = codex_transport::command(&path);
+                command
+                    .args(["app-server", "--listen", "stdio://"])
+                    .current_dir(&self.working_dir);
+                for config in build_codex_mcp_overrides(&self.mcp_servers) {
+                    command.arg("-c").arg(config);
+                }
+                if let Some(base_url) = &self.control_api_base_url {
+                    command.env("VA_CONTROL_BASE_URL", base_url);
+                }
+                if let Some(token) = &self.control_api_token {
+                    command.env("VA_CONTROL_TOKEN", token);
+                }
+                command.env("VA_AGENT_ID", &self.id);
+                let id = self.id.clone();
+                let tx = self.event_tx.clone();
+                let status = self.status.clone();
+                let session = self.session_id.clone();
+                let generation = self.codex_generation.clone();
+                let expected_generation = {
+                    let mut generation = generation.lock().map_err(|e| e.to_string())?;
+                    *generation += 1;
+                    *generation
+                };
+                let emit = Arc::new(move |event| {
+                    // Hold the generation guard through publication, so an old
+                    // reader cannot pass the check then overwrite its successor.
+                    let Ok(current_generation) = generation.lock() else {
+                        return;
+                    };
+                    if *current_generation != expected_generation {
+                        return;
+                    }
+                    match event {
+                        codex_transport::Event::Status(value) => {
+                            let value = match value {
+                                codex_transport::Status::Thinking => AgentStatus::Thinking,
+                                codex_transport::Status::Working => AgentStatus::Working,
+                                codex_transport::Status::Idle => AgentStatus::Idle,
+                                codex_transport::Status::Error => AgentStatus::Error,
+                            };
+                            if let Ok(mut status) = status.lock() {
+                                *status = value.clone();
+                            }
+                            let _ = tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
+                                agent_id: id.clone(),
+                                status: value,
+                            }));
+                        }
+                        codex_transport::Event::Session(value) => {
+                            if let Ok(mut session) = session.lock() {
+                                *session = Some(value);
+                            }
+                        }
+                        codex_transport::Event::Output(value) => {
+                            let _ = tx.send(BroadcastMessage::AgentOutput(AgentOutput {
+                                agent_id: id.clone(),
+                                stream: OutputStream::Stdout,
+                                data: value.to_string(),
+                            }));
+                        }
+                        codex_transport::Event::Stderr(value) => {
+                            let _ = tx.send(BroadcastMessage::AgentOutput(AgentOutput {
+                                agent_id: id.clone(),
+                                stream: OutputStream::Stderr,
+                                data: value,
+                            }));
+                        }
+                    }
+                });
+                *slot = Some(Arc::new(codex_transport::CodexTransport::spawn(
+                    command, emit,
+                )?));
+                *self.codex_mcp_servers.lock().map_err(|e| e.to_string())? =
+                    self.mcp_servers.clone();
+            }
+            slot.as_ref().unwrap().clone()
+        };
+        let session = self.get_session_id();
+        let prompt = self.maybe_attach_control_plane_hint(message);
+        let prompt = if session.is_none() && self.specialty == AgentSpecialty::RobloxBuilder {
+            format!("{}\n\n---\n\n{}", ROBLOX_BUILDER_SYSTEM_PROMPT, prompt)
+        } else {
+            prompt
+        };
+        let result = transport.send(
+            codex_transport::Settings {
+                model: &self.model,
+                effort: &self.reasoning_effort,
+                cwd: &self.working_dir,
+                sandbox: "danger-full-access",
+            },
+            session.as_deref(),
+            &prompt,
+            images,
+        );
+        if result.is_err() && !matches!(self.get_status(), AgentStatus::Working) {
+            self.emit_status(AgentStatus::Error);
+        }
+        result
+    }
+
     pub fn send_message(&self, message: &str, images: &[String]) -> Result<(), String> {
+        if self.cli_type == CliType::Codex {
+            return self.send_codex_message(message, images);
+        }
+        let _delivery = self.legacy_delivery.lock().map_err(|e| e.to_string())?;
+        if let Some(child) = self
+            .current_child
+            .lock()
+            .map_err(|e| e.to_string())?
+            .as_mut()
+        {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Err("Agent is busy; mid-turn messages are supported only for Codex".into());
+            }
+        }
         let cli_path = find_cli(&self.cli_type, Some(&self.working_dir))?;
         let message_with_hint = self.maybe_attach_control_plane_hint(message);
 
@@ -1018,98 +1164,7 @@ impl AgentProcess {
 
                 (args, "claude", prompt_for_stdin)
             }
-            CliType::Codex => {
-                // Build Codex CLI args
-                // Check if we have a session ID for continuation
-                let session_id_opt = self.session_id.lock().map_err(|e| e.to_string())?.clone();
-                let prompt = if session_id_opt.is_none()
-                    && self.specialty == AgentSpecialty::RobloxBuilder
-                {
-                    format!(
-                        "{}\n\n---\n\n{}",
-                        ROBLOX_BUILDER_SYSTEM_PROMPT, message_with_hint
-                    )
-                } else {
-                    message_with_hint
-                };
-                let prompt_for_stdin = Some(prompt);
-
-                // Codex CLI structure: codex exec [OPTIONS] <PROMPT>
-                // or: codex exec resume [OPTIONS] <SESSION_ID> <PROMPT>
-                // Options must come AFTER exec/exec resume, not before
-                let mut args = if let Some(ref sid) = session_id_opt {
-                    // Codex resume: codex exec resume [OPTIONS] <session_id> <prompt>
-                    vec![
-                        "exec".to_string(),
-                        "resume".to_string(),
-                        "--dangerously-bypass-approvals-and-sandbox".to_string(),
-                        "--skip-git-repo-check".to_string(),
-                        "--json".to_string(),
-                        "--model".to_string(),
-                        self.model.clone(),
-                        sid.clone(),
-                        "-".to_string(),
-                    ]
-                } else {
-                    // Codex new session: codex exec [OPTIONS] <prompt>
-                    vec![
-                        "exec".to_string(),
-                        "--dangerously-bypass-approvals-and-sandbox".to_string(),
-                        "--skip-git-repo-check".to_string(),
-                        "--json".to_string(),
-                        "--model".to_string(),
-                        self.model.clone(),
-                        "-".to_string(),
-                    ]
-                };
-
-                // For options that need to come before the prompt, we need to insert them
-                // before the last element (the prompt) and session_id if present
-
-                // Add reasoning effort via config flag for models that support it
-                let supports_reasoning = codex_model_supports_reasoning(&self.model);
-                if supports_reasoning && !self.reasoning_effort.is_empty() {
-                    // Insert before prompt (last element) or before session_id+prompt (last 2 elements for resume)
-                    let insert_pos = if session_id_opt.is_some() {
-                        args.len() - 2 // Before session_id and prompt
-                    } else {
-                        args.len() - 1 // Before prompt
-                    };
-                    args.insert(insert_pos, "-c".to_string());
-                    args.insert(
-                        insert_pos + 1,
-                        format!("model_reasoning_effort=\"{}\"", self.reasoning_effort),
-                    );
-                }
-
-                // Add MCP server configuration if any servers are enabled.
-                // Codex expects MCP servers via config overrides (TOML), not Claude's `--mcp-config` JSON.
-                if !self.mcp_servers.is_empty() {
-                    let insert_pos = if session_id_opt.is_some() {
-                        args.len() - 2
-                    } else {
-                        args.len() - 1
-                    };
-                    let overrides = build_codex_mcp_overrides(&self.mcp_servers);
-                    for kv in overrides.into_iter().rev() {
-                        args.insert(insert_pos, kv);
-                        args.insert(insert_pos, "-c".to_string());
-                    }
-                }
-
-                // Add images via -i flag for Codex (before prompt)
-                for img_path in images {
-                    let insert_pos = if session_id_opt.is_some() {
-                        args.len() - 2
-                    } else {
-                        args.len() - 1
-                    };
-                    args.insert(insert_pos, "-i".to_string());
-                    args.insert(insert_pos + 1, img_path.clone());
-                }
-
-                (args, "codex", prompt_for_stdin)
-            }
+            CliType::Codex => unreachable!("Codex uses the persistent app-server transport"),
         };
 
         tracing::debug!(
@@ -1215,6 +1270,7 @@ impl AgentProcess {
             }
         };
 
+        let child_pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
@@ -1236,6 +1292,7 @@ impl AgentProcess {
             let tx = self.event_tx.clone();
             let session_id_arc = Arc::clone(&self.session_id);
             let status_arc = Arc::clone(&self.status);
+            let child_arc = Arc::clone(&self.current_child);
 
             thread::spawn(move || {
                 let reader = BufReader::new(stdout_handle);
@@ -1279,7 +1336,15 @@ impl AgentProcess {
                                                     *guard = Some(sid.to_string());
                                                 }
                                             }
-                                            Some(AgentStatus::Idle)
+                                            Some(
+                                                if json.get("is_error").and_then(|v| v.as_bool())
+                                                    == Some(true)
+                                                {
+                                                    AgentStatus::Error
+                                                } else {
+                                                    AgentStatus::Idle
+                                                },
+                                            )
                                         }
                                         "message_stop" | "content_block_stop" | "message_end" => {
                                             Some(AgentStatus::Idle)
@@ -1312,12 +1377,23 @@ impl AgentProcess {
                     }
                 }
 
-                if let Ok(mut guard) = status_arc.lock() {
-                    *guard = AgentStatus::Idle;
-                }
+                let Some(success) = codex_transport::wait_for_process_exit(&child_arc, child_pid)
+                else {
+                    return;
+                };
+                let status = if let Ok(mut guard) = status_arc.lock() {
+                    if !success || matches!(*guard, AgentStatus::Error) {
+                        *guard = AgentStatus::Error;
+                    } else {
+                        *guard = AgentStatus::Idle;
+                    }
+                    guard.clone()
+                } else {
+                    AgentStatus::Error
+                };
                 let _ = tx.send(BroadcastMessage::AgentStatus(AgentStatusChange {
                     agent_id: agent_id.clone(),
-                    status: AgentStatus::Idle,
+                    status,
                 }));
             });
         }
@@ -1350,6 +1426,17 @@ impl AgentProcess {
 
     /// Stop the current operation by killing the child process, but keep the agent alive
     pub fn stop(&self) -> Result<(), String> {
+        if self.cli_type == CliType::Codex {
+            let transport = self
+                .codex_transport
+                .lock()
+                .map_err(|e| e.to_string())?
+                .clone();
+            return transport
+                .map(|transport| transport.interrupt())
+                .unwrap_or(Ok(()));
+        }
+        let _delivery = self.legacy_delivery.lock().map_err(|e| e.to_string())?;
         if let Ok(mut guard) = self.current_child.lock() {
             if let Some(ref mut child) = *guard {
                 let pid = child.id();
@@ -1394,6 +1481,14 @@ impl AgentProcess {
     }
 
     pub fn kill(&mut self) -> Result<(), String> {
+        if let Some(transport) = self
+            .codex_transport
+            .lock()
+            .map_err(|e| e.to_string())?
+            .take()
+        {
+            transport.shutdown();
+        }
         if let Ok(mut guard) = self.current_child.lock() {
             if let Some(ref mut child) = *guard {
                 #[cfg(windows)]
@@ -1435,10 +1530,11 @@ impl AgentProcess {
         }
     }
 
-    pub fn get_settings(&self) -> (String, bool, Vec<String>) {
+    pub fn get_settings(&self) -> (String, bool, String, Vec<String>) {
         (
             self.model.clone(),
             self.thinking_enabled,
+            self.reasoning_effort.clone(),
             self.mcp_servers.clone(),
         )
     }
@@ -1446,19 +1542,64 @@ impl AgentProcess {
 
 #[cfg(test)]
 mod tests {
-    use super::codex_model_supports_reasoning;
+    use super::*;
 
-    #[test]
-    fn recognizes_current_codex_reasoning_models() {
-        assert!(codex_model_supports_reasoning("gpt-6-astra"));
-        assert!(codex_model_supports_reasoning("gpt-5.6-sol"));
-        assert!(codex_model_supports_reasoning("gpt-5.3-codex-spark"));
+    fn synthetic_agent(cli_type: CliType, effort: &str) -> AgentProcess {
+        let (event_tx, _) = mpsc::unbounded_channel();
+        AgentProcess {
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            working_dir: "/tmp".into(),
+            model: "gpt-6-astra".into(),
+            thinking_enabled: false,
+            reasoning_effort: effort.into(),
+            specialty: AgentSpecialty::Normal,
+            mcp_servers: vec![],
+            cli_type,
+            status: Arc::new(Mutex::new(AgentStatus::Idle)),
+            session_id: Arc::new(Mutex::new(None)),
+            current_child: Arc::new(Mutex::new(None)),
+            codex_transport: Mutex::new(None),
+            codex_generation: Arc::new(Mutex::new(0)),
+            codex_mcp_servers: Mutex::new(Vec::new()),
+            legacy_delivery: Mutex::new(()),
+            images_sent_count: Arc::new(Mutex::new(0)),
+            control_api_base_url: Some("http://127.0.0.1:1".into()),
+            control_api_token: Some("synthetic-unused".into()),
+            event_tx,
+        }
     }
 
     #[test]
-    fn rejects_non_reasoning_model_names() {
-        assert!(!codex_model_supports_reasoning("gpt-4.1"));
-        assert!(!codex_model_supports_reasoning("unknown"));
+    fn ultra_keeps_native_delegation_and_nango_without_va_agent_creation_hint() {
+        let mut agent = synthetic_agent(CliType::Codex, "ultra");
+        let text =
+            agent.maybe_attach_control_plane_hint("Delegate and create agents to inspect my Gmail");
+        assert!(!text.contains(CONTROL_PLANE_ORCHESTRATION_HINT));
+        assert!(text.contains(CONTROL_PLANE_NANGO_HINT));
+        assert!(agent.native_delegation_only());
+        agent.reasoning_effort = "high".into();
+        assert!(agent
+            .maybe_attach_control_plane_hint("Delegate this task")
+            .contains(CONTROL_PLANE_ORCHESTRATION_HINT));
+        assert_eq!(agent.get_settings().2, "high");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn busy_claude_rejects_before_resolving_cli_or_replacing_child() {
+        let agent = synthetic_agent(CliType::Claude, "medium");
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        *agent.current_child.lock().unwrap() = Some(child);
+        assert!(agent
+            .send_message("Follow-up", &[])
+            .unwrap_err()
+            .starts_with("Agent is busy"));
+        let mut child = agent.current_child.lock().unwrap().take().unwrap();
+        assert_eq!(child.id(), pid);
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }
 
@@ -1663,7 +1804,7 @@ impl AgentManager {
         self.agents
             .iter()
             .map(|(id, agent)| {
-                let (model, thinking_enabled, mcp_servers) = agent.get_settings();
+                let (model, thinking_enabled, _, mcp_servers) = agent.get_settings();
                 (
                     id.clone(),
                     agent.name.clone(),
@@ -1686,6 +1827,7 @@ impl AgentManager {
         String,
         String,
         bool,
+        String,
         Vec<String>,
         CliType,
         AgentSpecialty,
@@ -1695,13 +1837,14 @@ impl AgentManager {
         self.agents
             .iter()
             .map(|(id, agent)| {
-                let (model, thinking_enabled, mcp_servers) = agent.get_settings();
+                let (model, thinking_enabled, reasoning_effort, mcp_servers) = agent.get_settings();
                 (
                     id.clone(),
                     agent.name.clone(),
                     agent.working_dir.clone(),
                     model,
                     thinking_enabled,
+                    reasoning_effort,
                     mcp_servers,
                     agent.cli_type.clone(),
                     agent.specialty.clone(),
@@ -1716,6 +1859,13 @@ impl AgentManager {
         self.agents
             .get(id)
             .map(|agent| (agent.get_status(), agent.get_session_id()))
+    }
+
+    pub fn native_delegation_only(&self, id: &str) -> Result<bool, String> {
+        self.agents
+            .get(id)
+            .map(AgentProcess::native_delegation_only)
+            .ok_or_else(|| format!("Agent not found: {id}"))
     }
 
     pub fn update_agent_settings(
