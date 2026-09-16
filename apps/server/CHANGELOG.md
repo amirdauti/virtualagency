@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/amirdauti/virtualagency/compare/v1.14.0...v1.14.1) (2026-09-16)
+
+### Bug Fixes
+
+* **server:** restore reasoning summaries and prevent Telegram stream spam ([48f6132](https://github.com/amirdauti/virtualagency/commit/48f6132e51028b9b3fd480acce9f4d28dc88df4d))
+* **web:** confirm runtime support before enabling live steering ([e1c828c](https://github.com/amirdauti/virtualagency/commit/e1c828c283aa0bb45372ebde19c34763464a1444))
+
 ## [1.14.0](https://github.com/amirdauti/virtualagency/compare/v1.13.0...v1.14.0) (2026-09-16)
 
 ### Features
