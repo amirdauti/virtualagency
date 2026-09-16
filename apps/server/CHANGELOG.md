@@ -1,3 +1,9 @@
+## [1.14.0](https://github.com/amirdauti/virtualagency/compare/v1.13.0...v1.14.0) (2026-09-16)
+
+### Features
+
+* **server:** add live Codex steering and Telegram stop controls ([d981115](https://github.com/amirdauti/virtualagency/commit/d9811151c62b87ae49ecb8e854c17de4d58f5eb5))
+
 ## [1.13.0](https://github.com/amirdauti/virtualagency/compare/v1.12.2...v1.13.0) (2026-09-10)
 
 ### Features
