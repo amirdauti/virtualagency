@@ -31,22 +31,25 @@ export function readAgentSettingsSnapshot(value: unknown): AgentSettingsSnapshot
   return settings as unknown as AgentSettingsSnapshot;
 }
 
-export function confirmedAgentSettings(settings: AgentSettingsSnapshot): Pick<Agent, "model" | "thinkingEnabled" | "reasoningEffort"> {
+export function confirmedAgentSettings(settings: AgentSettingsSnapshot): Pick<Agent, "model" | "thinkingEnabled" | "reasoningEffort" | "supportsSteering"> {
   return {
     model: settings.model,
     thinkingEnabled: settings.thinking_enabled,
     reasoningEffort: settings.reasoning_effort,
+    supportsSteering: readAgentSettingsSnapshot(settings) !== null,
   };
 }
 
 export function reconcileAgentSettings(
-  agent: Pick<Agent, "model" | "thinkingEnabled" | "reasoningEffort">,
-  server: { model: string; thinking_enabled: boolean; reasoning_effort?: ReasoningEffort },
+  agent: Pick<Agent, "model" | "thinkingEnabled" | "reasoningEffort" | "supportsSteering">,
+  server: { model: string; thinking_enabled: boolean; reasoning_effort?: ReasoningEffort; mcp_servers?: string[] },
 ): Partial<Agent> {
   const updates: Partial<Agent> = {};
   if (server.model !== agent.model) updates.model = server.model;
   if (server.thinking_enabled !== agent.thinkingEnabled) updates.thinkingEnabled = server.thinking_enabled;
   if (server.reasoning_effort !== agent.reasoningEffort) updates.reasoningEffort = server.reasoning_effort;
+  const supportsSteering = readAgentSettingsSnapshot(server) !== null;
+  if (supportsSteering !== agent.supportsSteering) updates.supportsSteering = supportsSteering;
   return updates;
 }
 
@@ -73,8 +76,13 @@ export function createSettingsUpdateCoordinator() {
   };
 }
 
-/** Only Codex supports steering a running turn; Claude must finish first. */
-export function canSendAgentMessage(input: string, imageCount: number, sending: boolean, savingSettings: boolean, agent?: Pick<Agent, "cliType" | "status">): boolean {
+/** Older servers start competing CLI processes on busy sends. Fail closed until confirmed. */
+export function canSteerAgent(agent?: Pick<Agent, "cliType" | "supportsSteering">, native = false): boolean {
+  return agent?.cliType === "codex" && (native || agent.supportsSteering === true);
+}
+
+/** Only a compatible Codex runtime supports steering; other agents must finish first. */
+export function canSendAgentMessage(input: string, imageCount: number, sending: boolean, savingSettings: boolean, agent?: Pick<Agent, "cliType" | "status" | "supportsSteering">, native = false): boolean {
   const working = agent?.status === "working" || agent?.status === "thinking";
-  return Boolean(agent && (input.trim() || imageCount > 0)) && !sending && !savingSettings && (!working || agent?.cliType === "codex");
+  return Boolean(agent && (input.trim() || imageCount > 0)) && !sending && !savingSettings && (!working || canSteerAgent(agent, native));
 }

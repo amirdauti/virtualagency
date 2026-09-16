@@ -18,7 +18,7 @@ import {
 } from "../lib/api";
 import { MCP_SERVERS } from "@virtual-agency/shared";
 import type { Agent, MCPServerId, AgentRuntime } from "@virtual-agency/shared";
-import { reconcileAgentSettings } from "../lib/agentSettings";
+import { readAgentSettingsSnapshot, reconcileAgentSettings } from "../lib/agentSettings";
 
 interface WorkspaceState {
   isLoading: boolean;
@@ -122,6 +122,7 @@ function serverToAgent(server: ServerAgentInfo, index: number): Agent {
     model: server.model,
     thinkingEnabled: server.thinking_enabled,
     reasoningEffort: server.reasoning_effort,
+    supportsSteering: readAgentSettingsSnapshot(server) !== null,
     mcpServers: coerceMcpServers(server.mcp_servers),
     cliType: server.cli_type === "codex" ? "codex" : "claude",
     specialty: server.specialty === "roblox_builder" ? "roblox_builder" : "normal",

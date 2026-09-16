@@ -216,6 +216,7 @@ export interface Agent {
   model?: ClaudeModel | CodexModel | string; // Model depends on CLI type
   thinkingEnabled?: boolean; // For Claude
   reasoningEffort?: ReasoningEffort; // For Codex
+  supportsSteering?: boolean; // Ephemeral capability confirmed by the current runtime; never persisted
   specialty?: AgentSpecialty;
   avatarId?: AvatarId;
   mcpServers?: MCPServerId[]; // List of enabled MCP server IDs

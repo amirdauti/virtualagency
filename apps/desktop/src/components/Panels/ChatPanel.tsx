@@ -12,6 +12,7 @@ import {
   sendMessage,
   stopAgent,
   isTauri,
+  listAgentDetails,
   updateAgentSettings,
   ClaudeModel,
 } from "../../lib/api";
@@ -32,7 +33,7 @@ import { writeFile, mkdir, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { join, tempDir } from "@tauri-apps/api/path";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { canSendAgentMessage, confirmedAgentSettings, createSettingsUpdateCoordinator, type AgentSettingsChange } from "../../lib/agentSettings";
+import { canSendAgentMessage, canSteerAgent, confirmedAgentSettings, createSettingsUpdateCoordinator, readAgentSettingsSnapshot, type AgentSettingsChange } from "../../lib/agentSettings";
 
 interface ChatPanelProps {
   agentId: string;
@@ -133,6 +134,24 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
 
   // Determine if this is a Codex agent
   const isCodexAgent = agent?.cliType === "codex";
+  const canSteer = canSteerAgent(agent, isTauri());
+
+  // Saved reasoning is not proof of runtime support. Confirm new/selected browser
+  // agents too, since they may not have participated in workspace reconciliation.
+  useEffect(() => {
+    if (isTauri() || !isCodexAgent) return;
+    let current = true;
+    const runtime = agent?.runtime || "local";
+    updateAgent(agentId, { supportsSteering: false });
+    listAgentDetails({ includeHosted: runtime === "hosted" }).then((agents) => {
+      if (!current) return;
+      const snapshot = agents.find((entry) => entry.id === agentId && (entry.runtime || "local") === runtime);
+      updateAgent(agentId, { supportsSteering: readAgentSettingsSnapshot(snapshot) !== null });
+    }).catch(() => {
+      if (current) updateAgent(agentId, { supportsSteering: false });
+    });
+    return () => { current = false; };
+  }, [agentId, agent?.runtime, isCodexAgent, updateAgent]);
 
   // Local state for model and thinking/reasoning, initialized from agent
   const defaultModel = isCodexAgent ? DEFAULT_CODEX_MODEL : "sonnet";
@@ -562,7 +581,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   );
 
   const handleSend = useCallback(async () => {
-    if (!canSendAgentMessage(input, attachedImages.length, sendingRef.current || stoppingRef.current, settingsUpdates.current.isPending(agentId), agent)) return;
+    if (!canSendAgentMessage(input, attachedImages.length, sendingRef.current || stoppingRef.current, settingsUpdates.current.isPending(agentId), agent, isTauri())) return;
     sendingRef.current = true;
     setSending(true);
     setSendError(null);
@@ -735,7 +754,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
     [agentId, attachedImages, removeDraftImage]
   );
 
-  const canSend = canSendAgentMessage(input, attachedImages.length, sending || stopping, settingsPending, agent);
+  const canSend = canSendAgentMessage(input, attachedImages.length, sending || stopping, settingsPending, agent, isTauri());
   const showInlineAdvancedControls = !isMobile;
   const renderAdvancedControls = () => (
     <>
@@ -893,7 +912,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
       {settingsError && <p role="alert" style={{ color: "#fca5a5", margin: "6px 12px", fontSize: 12 }}>{settingsError}</p>}
       {sendError?.agentId === agentId && <p role="alert" style={{ color: "#fca5a5", margin: "6px 12px", fontSize: 12 }}>Message was not accepted: {sendError.message}</p>}
       {stopError?.agentId === agentId && <p role="alert" style={{ color: "#fca5a5", margin: "6px 12px", fontSize: 12 }}>Could not stop the agent: {stopError.message}</p>}
-      {isAgentWorking && <p style={{ color: "#94a3b8", margin: "6px 12px", fontSize: 12 }}>{isCodexAgent ? "Send a message to steer the current task. " : "Wait for this task to finish before sending another message. "}Model and reasoning changes apply to the next turn.</p>}
+      {isAgentWorking && <p style={{ color: "#94a3b8", margin: "6px 12px", fontSize: 12 }}>{canSteer ? "Send a message to steer the current task. " : isCodexAgent ? "Wait for this task to finish. Sending while working requires a compatible server; refresh after updating it. " : "Wait for this task to finish before sending another message. "}Model and reasoning changes apply to the next turn.</p>}
 
       {promptKind === "scheduled" && (
         <div
@@ -1190,7 +1209,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
-              isAgentWorking && isCodexAgent
+              isAgentWorking && canSteer
                 ? "Add an instruction to the current task…"
                 : isSmallPhone
                 ? "Ask anything… (Shift+Enter for newline)"
@@ -1248,7 +1267,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
               {stopping ? "Stopping…" : "Stop"}
             </button>
           )}
-          {(!isAgentWorking || isCodexAgent) && (
+          {(!isAgentWorking || canSteer) && (
             <button
               onClick={handleSend}
               disabled={!canSend || sending}

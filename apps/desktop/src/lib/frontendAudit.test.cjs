@@ -76,13 +76,13 @@ test("authoritative snapshots preserve Ultra and reject unconfirmed legacy respo
 
 test("server reconciliation corrects stale saved reasoning instead of trusting the browser label", () => {
   const saved = { model: "gpt-6-astra", thinkingEnabled: false, reasoningEffort: "ultra" };
-  assert.deepEqual(settings.reconcileAgentSettings(saved, { ...snapshot, reasoning_effort: "medium" }), { reasoningEffort: "medium" });
-  assert.deepEqual(settings.reconcileAgentSettings(saved, snapshot), {});
-  assert.deepEqual(settings.reconcileAgentSettings(saved, { ...snapshot, reasoning_effort: undefined }), { reasoningEffort: undefined });
+  assert.deepEqual(settings.reconcileAgentSettings(saved, { ...snapshot, reasoning_effort: "medium" }), { reasoningEffort: "medium", supportsSteering: true });
+  assert.deepEqual(settings.reconcileAgentSettings(saved, snapshot), { supportsSteering: true });
+  assert.deepEqual(settings.reconcileAgentSettings(saved, { ...snapshot, reasoning_effort: undefined }), { reasoningEffort: undefined, supportsSteering: false });
 });
 
 test("steering accepts busy Codex messages but blocks busy Claude, empty input, and outstanding requests", () => {
-  const agent = { cliType: "codex", status: "working" };
+  const agent = { cliType: "codex", status: "working", supportsSteering: true };
   assert.equal(settings.canSendAgentMessage("Steer the current task", 0, false, false, agent), true);
   assert.equal(settings.canSendAgentMessage("", 1, false, false, agent), true);
   assert.equal(settings.canSendAgentMessage(" ", 0, false, false, agent), false);
@@ -90,6 +90,55 @@ test("steering accepts busy Codex messages but blocks busy Claude, empty input, 
   assert.equal(settings.canSendAgentMessage("instruction", 0, false, true, agent), false);
   assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, { cliType: "claude", status: "working" }), false);
   assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, { cliType: "claude", status: "idle" }), true);
+});
+
+test("legacy or unconfirmed runtimes cannot steer even when a saved config says Ultra", () => {
+  const saved = { cliType: "codex", status: "working", reasoningEffort: "ultra" };
+  assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, saved), false);
+  assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, { ...saved, supportsSteering: false }), false);
+  assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, { ...saved, status: "idle" }), true);
+  assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, saved, true), true);
+  assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, { ...saved, cliType: "claude", supportsSteering: true }, true), false);
+  const confirmed = { ...saved, ...settings.confirmedAgentSettings(snapshot) };
+  assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, confirmed), true);
+  const legacy = { ...confirmed, ...settings.reconcileAgentSettings(confirmed, { ...snapshot, reasoning_effort: undefined }) };
+  assert.equal(settings.canSendAgentMessage("instruction", 0, false, false, legacy), false);
+});
+
+test("workspace saves omit steering capability and restored configs require a fresh server snapshot", async () => {
+  let agents = [{ id: "parent", name: "Parent", workingDirectory: "/workspace", position: { x: 0, y: 0, z: 0 }, cliType: "codex", status: "working", runtime: "hosted", ...settings.confirmedAgentSettings(snapshot) }];
+  let saved;
+  const addedCapabilities = [];
+  const agentStore = {
+    get agents() { return agents; },
+    clearAllAgents() { agents = []; },
+    addAgent(agent) { addedCapabilities.push(agent.supportsSteering); agents.push(agent); },
+    updateAgent(id, changes) { Object.assign(agents.find((agent) => agent.id === id), changes); },
+  };
+  let server = { id: "parent", name: "Parent", working_dir: "/workspace", cli_type: "codex", status: "working", runtime: "hosted", ...snapshot, reasoning_effort: undefined };
+  const { useWorkspaceStore: workspace } = loadTs("../stores/workspaceStore.ts", {
+    zustand: { create: (initialize) => initialize(() => {}) },
+    "./agentStore": { useAgentStore: { getState: () => agentStore } },
+    "./terminalStore": { useTerminalStore: { getState: () => ({ clearAllTerminals() {} }) } },
+    "@virtual-agency/shared": { MCP_SERVERS: [] },
+    "../lib/api": {
+      saveWorkspace: async (value) => { saved = value; },
+      loadWorkspace: async () => ({ ...saved, agents: saved.agents.map((agent) => ({ ...agent, supportsSteering: true })) }),
+      isTauri: () => false,
+      listAgentDetails: async () => [server],
+      listTerminals: async () => [],
+      setAgentRuntime() {}, replaceAgentRuntimeMap() {}, getAgentRuntime: () => "hosted",
+    },
+  });
+  await workspace.save();
+  assert.equal(saved.agents[0].reasoning_effort, "ultra");
+  assert.equal(Object.hasOwn(saved.agents[0], "supportsSteering"), false);
+  await workspace.load();
+  assert.equal(addedCapabilities[0], undefined, "saved capability must never be restored");
+  assert.equal(agents[0].supportsSteering, false);
+  server = { ...server, reasoning_effort: "ultra" };
+  await workspace.load();
+  assert.equal(agents[0].supportsSteering, true);
 });
 
 const { codexDelegationActivity } = loadTs("./codexDelegation.ts");
@@ -196,7 +245,7 @@ test("streamed commentary and final response update their own item and finish ex
 test("working-agent composer renders both Send and Stop", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
-  const agent = { id: "parent", cliType: "codex", model: "gpt-6-astra", reasoningEffort: "ultra", status: "working" };
+  const agent = { id: "parent", cliType: "codex", model: "gpt-6-astra", reasoningEffort: "ultra", status: "working", supportsSteering: true };
   const chatState = { getDraft: () => "Please focus on the parser", addUserMessage() {}, setDraft() {}, clearDraft() {} };
   const agentState = { agents: [agent], updateAgent() {} };
   const imageState = { draftImagesByAgent: {}, addDraftImages() {}, removeDraftImage() {}, clearDraftImages() {} };
@@ -217,6 +266,12 @@ test("working-agent composer renders both Send and Stop", () => {
   assert.doesNotMatch(sendButton, /disabled/);
   assert.match(html, /steer the current task/);
   assert.match(html, /changes apply to the next turn/);
+  agent.supportsSteering = false;
+  const legacyHtml = renderToStaticMarkup(React.createElement(ChatPanel, { agentId: "parent" }));
+  assert.match(legacyHtml, /aria-label="Stop agent"/);
+  assert.doesNotMatch(legacyHtml, /aria-label="Send message"/);
+  assert.match(legacyHtml, /requires a compatible server/);
+  assert.doesNotMatch(legacyHtml, /Add an instruction to the current task/);
   agent.cliType = "claude";
   agent.model = "sonnet";
   const claudeHtml = renderToStaticMarkup(React.createElement(ChatPanel, { agentId: "parent" }));
@@ -231,7 +286,7 @@ function composerHarness(apiOverrides = {}) {
   const slots = [];
   let cursor = 0;
   const React = require("react");
-  const agent = { id: "parent", cliType: "codex", model: "gpt-6-astra", reasoningEffort: "ultra", status: "working" };
+  const agent = { id: "parent", cliType: "codex", model: "gpt-6-astra", reasoningEffort: "ultra", status: "working", supportsSteering: true };
   const changes = [];
   const accepted = [];
   let cleared = 0;
@@ -277,6 +332,18 @@ function composerHarness(apiOverrides = {}) {
     alerts: () => elements().filter((element) => element.props.role === "alert").map((element) => [element.props.children].flat(Infinity).join("")),
   };
 }
+
+test("Enter cannot bypass the legacy-runtime guard or clear the unsent draft", async () => {
+  let requests = 0;
+  const ui = composerHarness({ sendMessage: async () => { requests++; } });
+  ui.agent.supportsSteering = false;
+  assert.equal(ui.button("Send message"), undefined);
+  ui.find((element) => element.type === "textarea").props.onKeyDown({ key: "Enter", shiftKey: false, preventDefault() {} });
+  await Promise.resolve();
+  assert.equal(requests, 0);
+  assert.equal(ui.cleared(), 0);
+  assert.deepEqual(ui.accepted, []);
+});
 
 test("failed settings in the actual composer retain Ultra, block send while pending, and show the failure", async () => {
   let reject;
