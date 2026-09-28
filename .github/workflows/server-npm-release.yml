@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          package-manager-cache: false
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: node apps/server/bin/ensure-claude-cli.js --force
       - name: Replay the current CLI through the browser parser
@@ -49,6 +50,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          package-manager-cache: false
 
       - name: Test safe CLI upgrade fallback
         run: node --test apps/server/tests/claude-updater.test.cjs
