@@ -751,6 +751,7 @@ async fn main() {
         .expose_headers([header::CONTENT_TYPE]);
 
     let app = Router::new()
+        .route("/api/agent-tools/:source_agent_id/deepseek/v1/messages", post(deepseek_messages))
         .route("/api/providers/deepseek", get(get_deepseek).put(set_deepseek).delete(delete_deepseek))
         .route("/api/providers/deepseek/test", post(test_deepseek))
         .route("/api/agents", get(list_agents).post(create_agent))
@@ -1174,6 +1175,50 @@ async fn get_deepseek() -> Json<serde_json::Value> {
         "reasoning_efforts": deepseek::EFFORTS, "cli_installed": agents::find_claude_cli(None).is_ok(),
         "cli_version": cli.get("version"), "cli_update": update,
     }))
+}
+
+async fn deepseek_messages(
+    State(state): State<SharedState>,
+    Path(source_agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(mut body): Json<serde_json::Value>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    require_agent_tools_auth(&headers, &state.agent_tools_token)?;
+    {
+        let manager = state.agent_manager.read().await;
+        let agent = agent_info(&manager, &source_agent_id)?;
+        if agent.cli_type != "deepseek" {
+            return Err((StatusCode::FORBIDDEN, "DeepSeek agent required".into()));
+        }
+    }
+    // Use this turn's immutable settings supplied by the CLI process. Changes in
+    // the UI while it is working apply when its next process starts.
+    let thinking = match headers.get("x-va-thinking-enabled").and_then(|v| v.to_str().ok()) {
+        Some("true") => true,
+        Some("false") => false,
+        _ => return Err((StatusCode::BAD_REQUEST, "Missing DeepSeek reasoning setting".into())),
+    };
+    let effort = headers.get("x-va-reasoning-effort").and_then(|v| v.to_str().ok()).unwrap_or("");
+    deepseek::apply_reasoning(&mut body, thinking, effort).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let key = deepseek::key().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let response = reqwest::Client::new().post("https://api.deepseek.com/anthropic/v1/messages")
+        .bearer_auth(key).header("anthropic-version", "2023-06-01").json(&body)
+        .timeout(std::time::Duration::from_secs(600)).send().await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "DeepSeek connection failed".into()))?;
+    let status = response.status();
+    let content_type = response.headers().get(header::CONTENT_TYPE).cloned();
+    let stream = futures::stream::try_unfold(response, |mut response| async {
+        match response.chunk().await {
+            Ok(Some(chunk)) => Ok(Some((chunk, response))),
+            Ok(None) => Ok(None),
+            Err(_) => Err(std::io::Error::other("DeepSeek stream interrupted")),
+        }
+    });
+    let mut output = axum::response::Response::new(axum::body::Body::from_stream(stream));
+    *output.status_mut() = status;
+    if let Some(content_type) = content_type { output.headers_mut().insert(header::CONTENT_TYPE, content_type); }
+    output.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(output)
 }
 
 #[derive(Deserialize)]

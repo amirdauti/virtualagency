@@ -101,9 +101,12 @@ pub fn configure(
     model: &str,
     effort: &str,
     thinking: bool,
+    control_url: &str,
+    control_token: &str,
+    agent_id: &str,
 ) -> Result<(), String> {
     validate(model, effort)?;
-    let key = key()?;
+    key()?;
     let profile = directory().join("claude");
     private_directory(&profile)?;
     for name in [
@@ -113,13 +116,28 @@ pub fn configure(
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_USE_FOUNDRY",
+        "DEEPSEEK_API_KEY",
         "MAX_THINKING_TOKENS",
     ] {
         command.env_remove(name);
     }
     command
-        .env("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")
-        .env("ANTHROPIC_AUTH_TOKEN", key)
+        .env(
+            "ANTHROPIC_BASE_URL",
+            format!(
+                "{}/api/agent-tools/{}/deepseek",
+                control_url.trim_end_matches('/'),
+                agent_id
+            ),
+        )
+        .env("ANTHROPIC_AUTH_TOKEN", control_token)
+        .env(
+            "ANTHROPIC_CUSTOM_HEADERS",
+            format!(
+                "x-va-agent-token: {}\nx-va-thinking-enabled: {}\nx-va-reasoning-effort: {}",
+                control_token, thinking, effort
+            ),
+        )
         .env("CLAUDE_CONFIG_DIR", profile)
         .env("ANTHROPIC_MODEL", model)
         .env("ANTHROPIC_DEFAULT_OPUS_MODEL", model)
@@ -134,6 +152,28 @@ pub fn configure(
     Ok(())
 }
 
+// Claude omits `thinking` when disabled; DeepSeek defaults an omitted field to
+// enabled. Normalize both controls at the server boundary, including subagents.
+pub fn apply_reasoning(
+    body: &mut serde_json::Value,
+    thinking: bool,
+    effort: &str,
+) -> Result<(), String> {
+    if !EFFORTS.contains(&effort) || !body.is_object() {
+        return Err("Invalid DeepSeek request settings".into());
+    }
+    body["thinking"] = if thinking {
+        serde_json::json!({"type": "enabled", "budget_tokens": 32000})
+    } else {
+        serde_json::json!({"type": "disabled"})
+    };
+    if !body.get("output_config").is_some_and(|v| v.is_object()) {
+        body["output_config"] = serde_json::json!({});
+    }
+    body["output_config"]["effort"] = effort.into();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +182,17 @@ mod tests {
         assert!(validate(DEFAULT_MODEL, "max").is_ok());
         assert!(validate("sonnet", "max").is_err());
         assert!(validate(DEFAULT_MODEL, "ultra").is_err());
+    }
+
+    #[test]
+    fn omitted_thinking_is_explicitly_disabled_without_losing_output_options() {
+        let mut body = serde_json::json!({"model":"deepseek-flash", "output_config":{"format":{"type":"json_schema"}}});
+        apply_reasoning(&mut body, false, "high").unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        apply_reasoning(&mut body, true, "max").unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["output_config"]["effort"], "max");
     }
 }

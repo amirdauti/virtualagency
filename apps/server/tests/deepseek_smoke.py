@@ -15,6 +15,7 @@ def fake_claude():
               "effort": os.environ.get("CLAUDE_CODE_EFFORT_LEVEL"),
               "endpoint": os.environ.get("ANTHROPIC_BASE_URL"),
               "key_present": bool(os.environ.get("ANTHROPIC_AUTH_TOKEN")),
+              "real_key_present": os.environ.get("ANTHROPIC_AUTH_TOKEN") == "sk-isolated-test-credential" or "DEEPSEEK_API_KEY" in os.environ,
               "anthropic_key_present": "ANTHROPIC_API_KEY" in os.environ,
               "profile": os.environ.get("CLAUDE_CONFIG_DIR"),
               "thinking_tokens": os.environ.get("MAX_THINKING_TOKENS")}
@@ -44,10 +45,10 @@ def smoke(binary):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": temp,
                "WORKSPACE_DIR": temp, "VIRTUAL_AGENCY_PORT": str(port), "VIRTUAL_AGENCY_BIND_HOST": "127.0.0.1",
                "VA_AGENTS_STATE_PATH": str(state), "VA_DEEPSEEK_CONFIG_DIR": str(config),
-               "FAKE_CLAUDE_LOG": str(log), "RUST_LOG": "warn"}
+               "FAKE_CLAUDE_LOG": str(log), "RUST_LOG": "warn", "VA_AGENT_CONTROL_TOKEN": "isolated-control-token"}
         base = f"http://127.0.0.1:{port}"
-        def request(method, path, data=None, expected=200):
-            req = Request(base + path, data=None if data is None else json.dumps(data).encode(), method=method, headers={"Content-Type": "application/json"})
+        def request(method, path, data=None, expected=200, headers=None):
+            req = Request(base + path, data=None if data is None else json.dumps(data).encode(), method=method, headers={"Content-Type": "application/json", **(headers or {})})
             try: response = urlopen(req, timeout=10)
             except HTTPError as error: response = error
             raw = response.read().decode()
@@ -73,13 +74,20 @@ def smoke(binary):
             request("PUT", "/api/providers/deepseek", {"api_key": "bad"}, 400)
             created = request("POST", "/api/agents", {"id": "deepseek-test", "name": "Probe", "working_dir": temp, "cli_type": "deepseek"})
             assert created["model"] == "deepseek-flash[1m]" and created["thinking_enabled"] and created["reasoning_effort"] == "max"
+            adapter = "/api/agent-tools/deepseek-test/deepseek/v1/messages"
+            auth = {"x-va-agent-token": "isolated-control-token"}
+            request("POST", adapter, {}, 401)
+            request("POST", adapter, {}, 403, {"x-va-agent-token": "incorrect"})
+            request("POST", adapter, {}, 400, auth)
+            request("POST", adapter, {}, 400, {**auth, "x-va-thinking-enabled": "false", "x-va-reasoning-effort": "ultra"})
             request("PATCH", "/api/agents/deepseek-test", {"reasoning_effort": "ultra"}, 400)
             assert agent()["reasoning_effort"] == "max"
             request("POST", "/api/agents/deepseek-test/messages", {"message": "hello"}, 202)
             wait_for(lambda: len(records()) == 1 and agent()["status"] == "idle")
             record = records()[0]
             assert record["model"] == "deepseek-flash[1m]" and record["effort"] == "max" and record["thinking"]
-            assert record["endpoint"] == "https://api.deepseek.com/anthropic" and record["key_present"]
+            assert record["endpoint"] == base + "/api/agent-tools/deepseek-test/deepseek" and record["key_present"]
+            assert not record["real_key_present"]
             assert not record["anthropic_key_present"] and record["profile"] == str(config / "claude")
             request("PATCH", "/api/agents/deepseek-test", {"model": "deepseek-v4-pro[1m]", "thinking_enabled": False, "reasoning_effort": "high"})
             request("POST", "/api/agents/deepseek-test/messages", {"message": "hold"}, 202)
@@ -90,6 +98,7 @@ def smoke(binary):
             wait_for(lambda: len(records()) == 3 and agent()["status"] == "idle")
             assert records()[-1]["thinking_tokens"] == "0" and not records()[-1]["thinking"]
             request("POST", "/api/agents", {"id": "claude-test", "name": "Claude", "working_dir": temp, "cli_type": "claude"})
+            request("POST", "/api/agent-tools/claude-test/deepseek/v1/messages", {}, 403, auth)
             request("POST", "/api/agents/claude-test/messages", {"message": "hello"}, 202)
             wait_for(lambda: len(records()) == 4)
             assert records()[-1]["endpoint"] is None and not records()[-1]["key_present"]

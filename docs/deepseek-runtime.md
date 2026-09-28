@@ -12,7 +12,10 @@ Pro does not accept images. Model, reasoning on/off, and effort are editable in
 the conversation controls and persisted by the server. Unsupported provider
 models and effort values are rejected. DeepSeek runs through Claude Code, so
 tools, MCP integrations, scheduled tasks, Telegram updates and `/stop` share
-the Claude runtime. Mid-turn steering is still a Codex capability.
+the Claude runtime. A token-authenticated local streaming adapter sends an explicit
+thinking setting to DeepSeek, whose default differs from Claude when the setting
+is omitted. The upstream key stays in the server; the CLI receives a local
+control token. Mid-turn steering is still a Codex capability.
 
 The credential lives at `~/.virtual-agency/providers/deepseek/api-key`; its Unix
 permissions are 0600 and the directory is 0700. It is never returned by the API

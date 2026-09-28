@@ -1266,7 +1266,7 @@ impl AgentProcess {
         // with an untested version between releases.
         if managed_claude_path().as_ref() == Some(&cli_path) { cmd.env("DISABLE_AUTOUPDATER", "1"); }
         if self.cli_type == CliType::Deepseek {
-            if let Err(err) = crate::deepseek::configure(&mut cmd, &self.model, &self.reasoning_effort, self.thinking_enabled) {
+            if let Err(err) = crate::deepseek::configure(&mut cmd, &self.model, &self.reasoning_effort, self.thinking_enabled, self.control_api_base_url.as_deref().ok_or("DeepSeek requires the server control endpoint")?, self.control_api_token.as_deref().ok_or("DeepSeek requires the server control token")?, &self.id) {
                 self.emit_status(AgentStatus::Error);
                 return Err(err);
             }
