@@ -1,3 +1,14 @@
+## [1.15.0](https://github.com/amirdauti/virtualagency/compare/v1.14.1...v1.15.0) (2026-09-28)
+
+### Features
+
+* **server:** support DeepSeek agents and gate Claude CLI upgrades ([6823370](https://github.com/amirdauti/virtualagency/commit/68233709d792429389a7afdfd390d1dc1a5abd17))
+
+### Bug Fixes
+
+* **ci:** initialize pnpm before enabling package caching ([f90070b](https://github.com/amirdauti/virtualagency/commit/f90070b5ca41e21c8a0de0f46a0dc863c57b3bcc))
+* **deepseek:** explicitly enforce reasoning settings on streamed requests ([85f40d0](https://github.com/amirdauti/virtualagency/commit/85f40d03272d65403b1da0b4685f3ccb6c575939))
+
 ## [1.14.1](https://github.com/amirdauti/virtualagency/compare/v1.14.0...v1.14.1) (2026-09-16)
 
 ### Bug Fixes
