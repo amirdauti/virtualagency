@@ -28,6 +28,37 @@ function loadTs(filename, mocks = {}) {
 }
 
 const settings = loadTs("./agentSettings.ts");
+const claudeFixture = () => fs.readFileSync(path.resolve(__dirname, "../../../server/tests/fixtures/claude-2.1.283.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+
+test("current Claude CLI reasoning, replies, and task checklist render without duplicates", () => {
+  const chat = chatHarness();
+  for (const event of claudeFixture()) chat.emit(event);
+  const thinking = chat.messages.filter(message => message.activityType === "thinking");
+  assert.equal(thinking.length, 4);
+  assert.ok(thinking.every(message => message.thinkingContent === "Checking the test fixture."));
+  assert.equal(chat.messages.filter(message => message.content === "VA_COMPAT_OK").length, 1);
+  const checklist = chat.messages.filter(message => message.todoData);
+  assert.equal(checklist.length, 1);
+  assert.equal(checklist[0].todoData.todos[0].content, "Compatibility check");
+  assert.equal(checklist[0].todoData.todos[0].status, "completed");
+});
+
+test("Claude subagent output does not replace the parent's reply", () => {
+  const chat = chatHarness();
+  for (const event of claudeFixture()) chat.emit({...event, parent_tool_use_id: "nested-agent"});
+  assert.equal(chat.messages.length, 0);
+});
+
+test("Claude API errors remain errors and failed task updates do not complete a checklist", () => {
+  const chat = chatHarness();
+  chat.emit({type: "assistant", uuid: "call", message: {id: "m1", content: [{type: "tool_use", name: "TaskCreate", id: "t1", input: {subject: "Check"}}]}});
+  chat.emit({type: "user", message: {content: [{type: "tool_result", tool_use_id: "t1", content: "Task #1 created successfully: Check"}]}});
+  chat.emit({type: "assistant", uuid: "call2", message: {id: "m2", content: [{type: "tool_use", name: "TaskUpdate", id: "t2", input: {taskId: "1", status: "completed"}}]}});
+  chat.emit({type: "user", message: {content: [{type: "tool_result", tool_use_id: "t2", is_error: true, content: "Failed"}]}});
+  assert.equal(chat.messages.find(message => message.todoData).todoData.todos[0].status, "pending");
+  chat.emit({type: "result", is_error: true, errors: ["Insufficient Balance"]});
+  assert.ok(chat.agentUpdates.some(([, changes]) => changes.status === "error"));
+});
 const snapshot = { model: "gpt-6-astra", thinking_enabled: false, reasoning_effort: "ultra", mcp_servers: [] };
 
 test("settings commit only the authoritative response after acknowledgement", async () => {

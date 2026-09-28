@@ -1,4 +1,5 @@
 mod agents;
+mod deepseek;
 mod files;
 mod pty;
 mod telegram;
@@ -729,22 +730,6 @@ async fn main() {
         }
     });
 
-    // Persist runtime state periodically so session ids and publish mappings survive restarts.
-    let agents_persist_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(TokioDuration::from_secs(15));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            if let Err(err) = persist_agents_state(&agents_persist_state).await {
-                tracing::warn!("[agents] periodic persist failed: {}", err);
-            }
-            if let Err(err) = persist_published_apps_state(&agents_persist_state).await {
-                tracing::warn!("[publish] periodic persist failed: {}", err);
-            }
-        }
-    });
-
     // Build router with CORS and Private Network Access support
     let cors = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
@@ -766,6 +751,8 @@ async fn main() {
         .expose_headers([header::CONTENT_TYPE]);
 
     let app = Router::new()
+        .route("/api/providers/deepseek", get(get_deepseek).put(set_deepseek).delete(delete_deepseek))
+        .route("/api/providers/deepseek/test", post(test_deepseek))
         .route("/api/agents", get(list_agents).post(create_agent))
         .route(
             "/api/agents/:id",
@@ -953,6 +940,23 @@ async fn main() {
     if let Err(err) = persist_published_apps_state(&state).await {
         tracing::warn!("[publish] initial persist failed: {}", err);
     }
+
+    // Start persistence only after restoration; the first interval tick is immediate.
+    // Persist runtime state periodically so session ids and publish mappings survive restarts.
+    let agents_persist_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(TokioDuration::from_secs(15));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(err) = persist_agents_state(&agents_persist_state).await {
+                tracing::warn!("[agents] periodic persist failed: {}", err);
+            }
+            if let Err(err) = persist_published_apps_state(&agents_persist_state).await {
+                tracing::warn!("[publish] periodic persist failed: {}", err);
+            }
+        }
+    });
 
     axum::serve(listener, app).await.unwrap();
 }
@@ -1158,6 +1162,58 @@ async fn write_file(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+async fn get_deepseek() -> Json<serde_json::Value> {
+    let root = dirs::home_dir().unwrap_or_default().join(".virtual-agency/claude-cli");
+    let cli: serde_json::Value = std::fs::read(root.join("active.json")).ok()
+        .and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or(serde_json::Value::Null);
+    let update: serde_json::Value = std::fs::read(root.join("update-status.json")).ok()
+        .and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or(serde_json::Value::Null);
+    Json(serde_json::json!({
+        "configured": deepseek::key().is_ok(), "externally_managed": deepseek::externally_managed(),
+        "default_model": deepseek::DEFAULT_MODEL, "models": deepseek::MODELS,
+        "reasoning_efforts": deepseek::EFFORTS, "cli_installed": agents::find_claude_cli(None).is_ok(),
+        "cli_version": cli.get("version"), "cli_update": update,
+    }))
+}
+
+#[derive(Deserialize)]
+struct DeepSeekKeyRequest { api_key: String }
+
+async fn validate_deepseek_key(key: &str) -> Result<(), (StatusCode, String)> {
+    let response = reqwest::Client::new().get("https://api.deepseek.com/models")
+        .bearer_auth(key).timeout(std::time::Duration::from_secs(20)).send().await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Could not reach DeepSeek. Your saved key was not changed.".into()))?;
+    if response.status().is_success() { return Ok(()); }
+    let message = match response.status().as_u16() {
+        401 | 403 => "DeepSeek rejected this API key. Check the key and try again.",
+        402 => "DeepSeek needs account credits before this key can be used.",
+        429 => "DeepSeek is rate limiting requests. Try again shortly.",
+        _ => "DeepSeek could not validate this key. Try again shortly.",
+    };
+    Err((StatusCode::BAD_REQUEST, message.into()))
+}
+
+async fn set_deepseek(Json(req): Json<DeepSeekKeyRequest>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let key = req.api_key.trim();
+    if key.len() < 10 || key.len() > 512 || key.chars().any(char::is_whitespace) {
+        return Err((StatusCode::BAD_REQUEST, "Enter a valid DeepSeek API key.".into()));
+    }
+    validate_deepseek_key(key).await?;
+    deepseek::save_key(key).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(get_deepseek().await)
+}
+
+async fn delete_deepseek() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    deepseek::remove_key().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(get_deepseek().await)
+}
+
+async fn test_deepseek() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let key = deepseek::key().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    validate_deepseek_key(&key).await?;
+    Ok(serde_json::json!({"ok": true}).into())
+}
+
 #[derive(Deserialize)]
 struct CreateAgentRequest {
     #[serde(default)]
@@ -1167,9 +1223,9 @@ struct CreateAgentRequest {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
-    thinking_enabled: bool,
-    #[serde(default = "default_reasoning_effort")]
-    reasoning_effort: String, // Codex model_reasoning_effort config value
+    thinking_enabled: Option<bool>,
+    #[serde(default)]
+    reasoning_effort: Option<String>, // Codex model_reasoning_effort config value
     #[serde(default)]
     specialty: Option<String>,
     #[serde(default)]
@@ -1208,9 +1264,12 @@ async fn create_agent(
         .as_ref()
         .map(|s| CliType::from_str(s))
         .unwrap_or_default();
+    let thinking_enabled = req.thinking_enabled.unwrap_or(cli_type == CliType::Deepseek);
+    let reasoning_effort = req.reasoning_effort.clone().unwrap_or_else(|| if cli_type == CliType::Deepseek { "max".into() } else { default_reasoning_effort() });
     let cli_type_str = match cli_type {
         CliType::Claude => "claude".to_string(),
         CliType::Codex => "codex".to_string(),
+        CliType::Deepseek => "deepseek".to_string(),
     };
     let model = req
         .model
@@ -1229,7 +1288,7 @@ async fn create_agent(
 
     tracing::info!(
         "[create_agent] Received request - id: {:?}, name: {}, working_dir: {}, model: {}, thinking: {}, reasoning_effort: {}, specialty: {}, mcp_servers: {:?}, cli_type: {}, session_id: {:?}",
-        req.id, req.name, req.working_dir, model, req.thinking_enabled, req.reasoning_effort, specialty_str, req.mcp_servers, cli_type_str, req.session_id
+        req.id, req.name, req.working_dir, model, thinking_enabled, reasoning_effort, specialty_str, req.mcp_servers, cli_type_str, req.session_id
     );
 
     let mut manager = state.agent_manager.write().await;
@@ -1239,8 +1298,8 @@ async fn create_agent(
         &req.name,
         &req.working_dir,
         &model,
-        req.thinking_enabled,
-        &req.reasoning_effort,
+        thinking_enabled,
+        &reasoning_effort,
         specialty,
         req.mcp_servers.clone(),
         cli_type,
@@ -1297,6 +1356,7 @@ fn agent_infos(manager: &AgentManager) -> Vec<AgentInfo> {
                 cli_type: match cli_type {
                     CliType::Claude => "claude",
                     CliType::Codex => "codex",
+                    CliType::Deepseek => "deepseek",
                 }
                 .into(),
                 specialty: match specialty {
@@ -2637,6 +2697,7 @@ fn default_model_for_cli(cli_type: &CliType) -> String {
     match cli_type {
         CliType::Claude => "sonnet".to_string(),
         CliType::Codex => DEFAULT_CODEX_MODEL.to_string(),
+        CliType::Deepseek => deepseek::DEFAULT_MODEL.to_string(),
     }
 }
 
@@ -2672,8 +2733,8 @@ async fn agent_tools_create_agent(
         .model
         .clone()
         .unwrap_or_else(|| default_model_for_cli(&cli_type));
-    let thinking_enabled = req.thinking_enabled.unwrap_or(false);
-    let reasoning_effort = req.reasoning_effort.unwrap_or_else(|| "medium".to_string());
+    let thinking_enabled = req.thinking_enabled.unwrap_or(cli_type == CliType::Deepseek);
+    let reasoning_effort = req.reasoning_effort.unwrap_or_else(|| if cli_type == CliType::Deepseek { "max".into() } else { "medium".into() });
     let mcp_servers = req.mcp_servers.clone().unwrap_or_default();
 
     let created_id = manager

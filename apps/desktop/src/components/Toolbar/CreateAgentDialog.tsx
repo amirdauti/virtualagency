@@ -1,4 +1,5 @@
 import { useState, memo, useCallback, useLayoutEffect, useRef } from "react";
+import { DeepSeekSettings } from "../Settings/DeepSeekSettings";
 import { Modal } from "../common/Modal";
 import {
   createAgent,
@@ -19,6 +20,9 @@ import {
   AgentSpecialty,
   AgentRuntime,
   CODEX_MODELS,
+  DEEPSEEK_MODELS,
+  DEEPSEEK_REASONING_EFFORTS,
+  DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_CODEX_MODEL,
   getCodexReasoningEfforts,
   normalizeCodexReasoningEffort,
@@ -40,6 +44,7 @@ const CLI_TYPES: {
     badge: "Default",
   },
   { value: "codex", name: "Codex", description: "OpenAI's Codex assistant" },
+  { value: "deepseek", name: "DeepSeek", description: "Your DeepSeek API key · Claude Code" },
 ];
 
 // Agent specialty configurations
@@ -307,6 +312,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const [cliType, setCliType] = useState<CliType>("claude");
   const [claudeModel, setClaudeModel] = useState<ClaudeModel>("sonnet");
   const [codexModel, setCodexModel] = useState<CodexModel>(DEFAULT_CODEX_MODEL);
+  const [deepseekModel, setDeepseekModel] = useState<string>(DEFAULT_DEEPSEEK_MODEL);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [reasoningEffort, setReasoningEffort] =
     useState<ReasoningEffort>("medium");
@@ -317,7 +323,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [browserData, setBrowserData] = useState<BrowseResponse | null>(null);
   const [browserLoading, setBrowserLoading] = useState(false);
-  const codexReasoningEfforts = getCodexReasoningEfforts(codexModel);
+  const codexReasoningEfforts = cliType === "deepseek" ? DEEPSEEK_REASONING_EFFORTS : getCodexReasoningEfforts(codexModel);
 
   const addAgent = useAgentStore((state) => state.addAgent);
   const selectAgent = useAgentStore((state) => state.selectAgent);
@@ -389,10 +395,12 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const handleCliTypeChange = useCallback((newCliType: CliType) => {
     setCliType(newCliType);
     // Clear MCP servers when switching away from Claude
-    if (newCliType !== "claude") {
+    if (newCliType === "codex") {
       setMcpServers([]);
       setThinkingEnabled(false);
     }
+    setReasoningEffort(newCliType === "deepseek" ? "max" : "medium");
+    setThinkingEnabled(newCliType === "deepseek");
   }, []);
 
   const handleCreate = async () => {
@@ -408,13 +416,13 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
     const dir = workingDir.trim();
 
     // Select the appropriate model based on CLI type
-    const model = cliType === "codex" ? codexModel : claudeModel;
+    const model = cliType === "codex" ? codexModel : cliType === "deepseek" ? deepseekModel : claudeModel;
 
     try {
       await createAgent(id, dir, {
         model,
-        thinkingEnabled: cliType === "claude" ? thinkingEnabled : false,
-        reasoningEffort: cliType === "codex" ? reasoningEffort : undefined,
+        thinkingEnabled: cliType !== "codex" ? thinkingEnabled : false,
+        reasoningEffort: cliType !== "claude" ? reasoningEffort : undefined,
         mcpServers,
         cliType,
         specialty,
@@ -433,8 +441,8 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
         workingDirectory: dir,
         createdAt: new Date().toISOString(),
         model,
-        thinkingEnabled: cliType === "claude" ? thinkingEnabled : undefined,
-        reasoningEffort: cliType === "codex" ? reasoningEffort : undefined,
+        thinkingEnabled: cliType !== "codex" ? thinkingEnabled : undefined,
+        reasoningEffort: cliType !== "claude" ? reasoningEffort : undefined,
         specialty,
         avatarId,
         mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
@@ -461,6 +469,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
     setCliType("claude");
     setClaudeModel("sonnet");
     setCodexModel(DEFAULT_CODEX_MODEL);
+    setDeepseekModel(DEFAULT_DEEPSEEK_MODEL);
     setThinkingEnabled(false);
     setReasoningEffort("medium");
     setAvatarId("default");
@@ -595,7 +604,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
               marginTop: 12,
             }}
           >
-            {CLI_TYPES.map((cli) => (
+            {CLI_TYPES.filter(cli => !isTauri() || cli.value !== "deepseek").map((cli) => (
               <CliTypeCard
                 key={cli.value}
                 cliType={cli}
@@ -636,13 +645,14 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
                 marginTop: 12,
               }}
             >
-              {CODEX_MODELS.map((m) => (
+              {(cliType === "deepseek" ? DEEPSEEK_MODELS : CODEX_MODELS).map((m) => (
                 <ModelCard
                   key={m.value}
                   model={m}
-                  selected={codexModel === m.value}
+                  selected={(cliType === "deepseek" ? deepseekModel : codexModel) === m.value}
                   onClick={() => {
-                    setCodexModel(m.value);
+                    if (cliType === "deepseek") { setDeepseekModel(m.value); return; }
+                    setCodexModel(m.value as CodexModel);
                     setReasoningEffort((current) =>
                       normalizeCodexReasoningEffort(m.value, current)
                     );
@@ -653,7 +663,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           )}
 
           {/* Thinking Mode Toggle - only show for Claude */}
-          {cliType === "claude" && (
+          {cliType !== "codex" && (
             <div style={{ marginTop: 16 }}>
               <ToggleSwitch
                 checked={thinkingEnabled}
@@ -665,7 +675,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           )}
 
           {/* Reasoning Effort Selection - only show for Codex */}
-          {cliType === "codex" && (
+          {cliType !== "claude" && (
             <div style={{ marginTop: 16 }}>
               <label
                 style={{
@@ -725,6 +735,8 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           )}
         </section>
 
+        {cliType === "deepseek" && <DeepSeekSettings key={runtime} runtime={runtime} />}
+
         {/* Avatar Selection */}
         <section>
           <SectionHeader icon={<SparkleIcon />} title="Avatar" />
@@ -741,7 +753,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
         </section>
 
         {/* MCP Servers */}
-        {(cliType === "claude" || cliType === "codex") &&
+        {(cliType === "claude" || cliType === "codex" || cliType === "deepseek") &&
           MCP_SERVERS.length > 0 && (
             <section>
               <SectionHeader

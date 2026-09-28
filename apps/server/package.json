@@ -17,6 +17,8 @@
   },
   "files": [
     "bin/virtual-agency-server.js",
+    "bin/ensure-claude-cli.js",
+    "bin/claude-compatibility.js",
     "dist/virtual-agency-server-macos-arm64",
     "dist/virtual-agency-server-macos-x64",
     "dist/virtual-agency-server-linux-x64",

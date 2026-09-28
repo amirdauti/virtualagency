@@ -10,7 +10,7 @@ import type {
   CodexModel,
   ReasoningEffort,
 } from "@virtual-agency/shared";
-import { DEFAULT_CODEX_MODEL } from "@virtual-agency/shared";
+import { DEFAULT_CODEX_MODEL, DEFAULT_DEEPSEEK_MODEL } from "@virtual-agency/shared";
 import { readAgentSettingsSnapshot, type AgentSettingsChange, type AgentSettingsSnapshot } from "./agentSettings";
 
 export type { CodexModel, ReasoningEffort } from "@virtual-agency/shared";
@@ -806,7 +806,7 @@ export async function findAvailablePort(
 // Claude model aliases - these always point to the latest version of each model
 // See: claude --help for more info
 export type ClaudeModel = "sonnet" | "opus" | "haiku";
-export type CliType = "claude" | "codex";
+export type CliType = "claude" | "codex" | "deepseek";
 
 export interface AgentOptions {
   model?: ClaudeModel | CodexModel | string;
@@ -827,14 +827,15 @@ export async function createAgent(
 ): Promise<void> {
   const cliType = options?.cliType || "claude";
   const model =
-    options?.model || (cliType === "codex" ? DEFAULT_CODEX_MODEL : "sonnet");
-  const thinkingEnabled = options?.thinkingEnabled || false;
-  const reasoningEffort = options?.reasoningEffort || "medium";
+    options?.model || (cliType === "codex" ? DEFAULT_CODEX_MODEL : cliType === "deepseek" ? DEFAULT_DEEPSEEK_MODEL : "sonnet");
+  const thinkingEnabled = options?.thinkingEnabled ?? (cliType === "deepseek");
+  const reasoningEffort = options?.reasoningEffort || (cliType === "deepseek" ? "max" : "medium");
   const mcpServers = options?.mcpServers || [];
   const sessionId = options?.sessionId;
   const specialty = options?.specialty || "normal";
   const runtime = options?.runtime || "local";
 
+  if (isTauri() && cliType === "deepseek") throw new Error("DeepSeek requires a connected Virtual Agency server. Open the browser app to use it.");
   if (isTauri()) {
     return tauriInvoke("create_agent", {
       id,
@@ -848,6 +849,12 @@ export async function createAgent(
       specialty,
     });
   } else {
+    if (cliType === "deepseek") {
+      const provider = await getDeepSeekStatus(runtime);
+      if (provider.default_model !== DEFAULT_DEEPSEEK_MODEL) throw new Error("Update this Virtual Agency server before creating a DeepSeek agent.");
+      if (!provider.configured) throw new Error("Add your DeepSeek API key below before creating this agent.");
+      if (!provider.cli_installed) throw new Error("Claude Code is not installed on this server yet.");
+    }
     setAgentRuntime(id, runtime);
     if (runtime === "local" && wsListeners.size > 0) {
       void connectWebSocket();
@@ -1713,4 +1720,25 @@ export async function browseDirectory(
 ): Promise<BrowseResponse> {
   const params = path ? `?path=${encodeURIComponent(path)}` : "";
   return fetchApiForRuntime<BrowseResponse>(runtime, `/api/browse${params}`);
+}
+
+export interface DeepSeekStatus {
+  configured: boolean;
+  externally_managed: boolean;
+  default_model: string;
+  cli_installed: boolean;
+  cli_version: string | null;
+  cli_update: { status?: string; message?: string; latest_version?: string } | null;
+}
+export function getDeepSeekStatus(runtime: AgentRuntime): Promise<DeepSeekStatus> {
+  return fetchApiForRuntime(runtime, "/api/providers/deepseek");
+}
+export function saveDeepSeekKey(runtime: AgentRuntime, apiKey: string): Promise<DeepSeekStatus> {
+  return fetchApiForRuntime(runtime, "/api/providers/deepseek", {method: "PUT", body: JSON.stringify({api_key: apiKey})});
+}
+export function removeDeepSeekKey(runtime: AgentRuntime): Promise<DeepSeekStatus> {
+  return fetchApiForRuntime(runtime, "/api/providers/deepseek", {method: "DELETE"});
+}
+export function testDeepSeekConnection(runtime: AgentRuntime): Promise<{ok: boolean}> {
+  return fetchApiForRuntime(runtime, "/api/providers/deepseek/test", {method: "POST"});
 }

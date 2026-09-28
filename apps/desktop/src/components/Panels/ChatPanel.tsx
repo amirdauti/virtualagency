@@ -21,6 +21,9 @@ import { useAgentStore } from "../../stores/agentStore";
 import { useChatUIStore, DraftImageAttachment } from "../../stores/chatUIStore";
 import {
   CODEX_MODELS,
+  DEEPSEEK_MODELS,
+  DEEPSEEK_REASONING_EFFORTS,
+  DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_CODEX_MODEL,
   getCodexReasoningEfforts,
   isSupportedCodexModel,
@@ -133,6 +136,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const clearDraftImages = useChatUIStore((state) => state.clearDraftImages);
 
   // Determine if this is a Codex agent
+  const isDeepSeekAgent = agent?.cliType === "deepseek";
   const isCodexAgent = agent?.cliType === "codex";
   const canSteer = canSteerAgent(agent, isTauri());
 
@@ -154,7 +158,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   }, [agentId, agent?.runtime, isCodexAgent, updateAgent]);
 
   // Local state for model and thinking/reasoning, initialized from agent
-  const defaultModel = isCodexAgent ? DEFAULT_CODEX_MODEL : "sonnet";
+  const defaultModel = isCodexAgent ? DEFAULT_CODEX_MODEL : isDeepSeekAgent ? DEFAULT_DEEPSEEK_MODEL : "sonnet";
   const [selectedModel, setSelectedModel] = useState<string>(
     agent?.model || defaultModel
   );
@@ -164,7 +168,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | "">(
     agent?.reasoningEffort || ""
   );
-  const codexReasoningEfforts = getCodexReasoningEfforts(selectedModel);
+  const codexReasoningEfforts = isDeepSeekAgent ? DEEPSEEK_REASONING_EFFORTS : getCodexReasoningEfforts(selectedModel);
   const [promptKind, setPromptKind] = useState<PromptKind>("one_off");
   const [scheduledTaskDescription, setScheduledTaskDescription] =
     useState<string>(SCHEDULED_TASK_EXAMPLES[0]);
@@ -185,7 +189,7 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
   // Sync with agent state when it changes
   useEffect(() => {
     if (agent) {
-      setSelectedModel(agent.model || (isCodexAgent ? DEFAULT_CODEX_MODEL : "sonnet"));
+      setSelectedModel(agent.model || (isCodexAgent ? DEFAULT_CODEX_MODEL : isDeepSeekAgent ? DEFAULT_DEEPSEEK_MODEL : "sonnet"));
       setThinkingEnabled(agent.thinkingEnabled || false);
       // Display the confirmed value, including unknown/unavailable combinations.
       // Normalization belongs to an explicit user change, not snapshot display.
@@ -791,14 +795,17 @@ export function ChatPanel({ agentId }: ChatPanelProps) {
                 {selectedModel} (unsupported)
               </option>
             )}
-            {(isCodexAgent ? CODEX_MODELS : CLAUDE_MODEL_OPTIONS).map((opt) => (
+            {(isCodexAgent ? CODEX_MODELS : isDeepSeekAgent ? DEEPSEEK_MODELS : CLAUDE_MODEL_OPTIONS).map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {"name" in opt ? opt.name : opt.label}
               </option>
             ))}
           </select>
         </div>
-        {isCodexAgent ? (
+        {isDeepSeekAgent && <label style={settingLabelStyle}>
+          <input type="checkbox" checked={thinkingEnabled} disabled={sending || settingsPending} onChange={() => handleThinkingToggle()} /> Reasoning enabled
+        </label>}
+        {isCodexAgent || isDeepSeekAgent ? (
           <div
             style={{
               ...settingGroupStyle,

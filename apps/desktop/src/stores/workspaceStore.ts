@@ -28,8 +28,9 @@ interface WorkspaceState {
   load: () => Promise<void>;
 }
 
-function inferCliTypeFromModel(model?: string): "claude" | "codex" | undefined {
+function inferCliTypeFromModel(model?: string): "claude" | "codex" | "deepseek" | undefined {
   if (!model) return undefined;
+  if (model?.startsWith("deepseek-")) return "deepseek";
   if (model === "sonnet" || model === "opus" || model === "haiku") return "claude";
   return "codex";
 }
@@ -124,7 +125,7 @@ function serverToAgent(server: ServerAgentInfo, index: number): Agent {
     reasoningEffort: server.reasoning_effort,
     supportsSteering: readAgentSettingsSnapshot(server) !== null,
     mcpServers: coerceMcpServers(server.mcp_servers),
-    cliType: server.cli_type === "codex" ? "codex" : "claude",
+    cliType: server.cli_type === "codex" ? "codex" : server.cli_type === "deepseek" ? "deepseek" : "claude",
     specialty: server.specialty === "roblox_builder" ? "roblox_builder" : "normal",
     sessionId: server.session_id || undefined,
     runtime: server.runtime === "hosted" ? "hosted" : "local",

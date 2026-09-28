@@ -77,12 +77,14 @@ pub enum CliType {
     #[default]
     Claude,
     Codex,
+    Deepseek,
 }
 
 impl CliType {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "codex" => CliType::Codex,
+            "deepseek" => CliType::Deepseek,
             _ => CliType::Claude,
         }
     }
@@ -103,7 +105,7 @@ Use bash + curl for orchestration:
 - Create/update scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/set-scheduled-task
 - Delete scheduled task: POST $VA_CONTROL_BASE_URL/api/agent-tools/$VA_AGENT_ID/delete-scheduled-task
 Include header: x-va-agent-token: $VA_CONTROL_TOKEN.
-For create-agent, collect from user first: cli_type (claude/codex), name, and working_dir.
+For create-agent, collect from user first: cli_type (claude/codex/deepseek), name, and working_dir.
 For publish-app, collect target_agent_id and local_port first.
 For set-scheduled-task, collect target_agent_id, task_description, prompt, and interval_minutes first.
 Before replying to the end user, wait for delegated tasks to complete and include what was done."#;
@@ -392,7 +394,9 @@ fn push_windows_user_profile_candidates(
     );
 }
 
-fn find_claude_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
+pub fn find_claude_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
+    // VA's compatibility-tested native CLI takes precedence over stale global installs.
+    if let Some(path) = managed_claude_path() { return Ok(path); }
     // First, try PATH lookup
     if let Some(path) = find_on_path("claude") {
         return Ok(path);
@@ -647,9 +651,18 @@ fn find_codex_cli(_working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
     Err("Codex CLI not found. Install with: npm install -g @openai/codex".to_string())
 }
 
+pub fn managed_claude_path() -> Option<PathBuf> {
+    let root = dirs::home_dir()?.join(".virtual-agency/claude-cli");
+    let state: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("active.json")).ok()?).ok()?;
+    let version = state.get("version")?.as_str()?;
+    if !version.chars().all(|c| c.is_ascii_digit() || c == '.') { return None; }
+    let path = root.join(version).join(if cfg!(windows) { "claude.exe" } else { "claude" });
+    path.is_file().then_some(path)
+}
+
 fn find_cli(cli_type: &CliType, working_dir_hint: Option<&str>) -> Result<PathBuf, String> {
     match cli_type {
-        CliType::Claude => find_claude_cli(working_dir_hint),
+        CliType::Claude | CliType::Deepseek => find_claude_cli(working_dir_hint),
         CliType::Codex => find_codex_cli(working_dir_hint),
     }
 }
@@ -794,6 +807,7 @@ impl AgentProcess {
         event_tx: mpsc::UnboundedSender<BroadcastMessage>,
         initial_session_id: Option<String>,
     ) -> Result<Self, String> {
+        if cli_type == CliType::Deepseek { crate::deepseek::validate(&model, &reasoning_effort)?; }
         find_cli(&cli_type, Some(&working_dir))?;
 
         Ok(Self {
@@ -1003,12 +1017,18 @@ impl AgentProcess {
             );
         }
 
+        if self.cli_type == CliType::Deepseek {
+            crate::deepseek::key()?;
+            if self.model == "deepseek-v4-pro[1m]" && !images.is_empty() {
+                return Err("DeepSeek V4 Pro does not support images. Select 4.1 Flash to send images.".into());
+            }
+        }
         // Emit thinking status
         self.emit_status(AgentStatus::Thinking);
 
         // Build command args based on CLI type
         let (args, cli_name, prompt_for_stdin) = match self.cli_type {
-            CliType::Claude => {
+            CliType::Claude | CliType::Deepseek => {
                 // Build the prompt with embedded image paths and metadata for Claude
                 let prompt = if images.is_empty() {
                     message_with_hint.clone()
@@ -1096,10 +1116,9 @@ impl AgentProcess {
                 args.push(self.model.clone());
 
                 // Enable/disable extended thinking via CLI settings
-                if self.thinking_enabled {
-                    args.push("--settings".to_string());
-                    args.push(r#"{"alwaysThinkingEnabled": true}"#.to_string());
-                }
+                args.push("--settings".to_string());
+                args.push(serde_json::json!({"alwaysThinkingEnabled": self.thinking_enabled}).to_string());
+                args.push("--include-partial-messages".to_string());
 
                 if let Some(ref sid) = session_id_opt {
                     args.push("--resume".to_string());
@@ -1243,6 +1262,15 @@ impl AgentProcess {
             cmd.env("VA_CONTROL_TOKEN", token);
         }
         cmd.env("VA_AGENT_ID", &self.id);
+        // Only the managed CLI is version-gated by VA. Do not let it replace itself
+        // with an untested version between releases.
+        if managed_claude_path().as_ref() == Some(&cli_path) { cmd.env("DISABLE_AUTOUPDATER", "1"); }
+        if self.cli_type == CliType::Deepseek {
+            if let Err(err) = crate::deepseek::configure(&mut cmd, &self.model, &self.reasoning_effort, self.thinking_enabled) {
+                self.emit_status(AgentStatus::Error);
+                return Err(err);
+            }
+        }
 
         // On Unix, put the spawned CLI into its own process group so "stop" can
         // terminate the full tree (e.g., `codex` Node wrapper + native binary).
@@ -1262,6 +1290,11 @@ impl AgentProcess {
             }
         }
 
+        let expected_generation = {
+            let mut generation = self.codex_generation.lock().map_err(|e| e.to_string())?;
+            *generation += 1;
+            *generation
+        };
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
@@ -1293,12 +1326,19 @@ impl AgentProcess {
             let session_id_arc = Arc::clone(&self.session_id);
             let status_arc = Arc::clone(&self.status);
             let child_arc = Arc::clone(&self.current_child);
+            let generation = self.codex_generation.clone();
 
             thread::spawn(move || {
                 let reader = BufReader::new(stdout_handle);
                 for line in reader.lines() {
                     match line {
                         Ok(data) => {
+                            let Ok(current_generation) = generation.lock() else { return; };
+                            if *current_generation != expected_generation { return; }
+                            // Publish content before completion status so Telegram sees the final result.
+                            let _ = tx.send(BroadcastMessage::AgentOutput(AgentOutput {
+                                agent_id: agent_id.clone(), stream: OutputStream::Stdout, data: data.clone(),
+                            }));
                             // Parse JSON to extract session/thread id and status
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                                 // Claude: `session_id`
@@ -1317,7 +1357,7 @@ impl AgentProcess {
 
                                 if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
                                     let status = match msg_type {
-                                        "assistant"
+                                        "assistant" | "stream_event"
                                         | "content_block_delta"
                                         | "content_block_start" => Some(AgentStatus::Working),
                                         // Codex JSONL events
@@ -1336,18 +1376,12 @@ impl AgentProcess {
                                                     *guard = Some(sid.to_string());
                                                 }
                                             }
-                                            Some(
-                                                if json.get("is_error").and_then(|v| v.as_bool())
-                                                    == Some(true)
-                                                {
-                                                    AgentStatus::Error
-                                                } else {
-                                                    AgentStatus::Idle
-                                                },
-                                            )
-                                        }
-                                        "message_stop" | "content_block_stop" | "message_end" => {
-                                            Some(AgentStatus::Idle)
+                                            // The result can precede process shutdown. Keep the
+                                            // agent busy until the reader reaps the child below.
+                                            if json.get("is_error").and_then(|v| v.as_bool()) == Some(true) {
+                                                if let Ok(mut guard) = status_arc.lock() { *guard = AgentStatus::Error; }
+                                            }
+                                            None
                                         }
                                         "error" => Some(AgentStatus::Error),
                                         _ => None,
@@ -1367,11 +1401,6 @@ impl AgentProcess {
                                 }
                             }
 
-                            let _ = tx.send(BroadcastMessage::AgentOutput(AgentOutput {
-                                agent_id: agent_id.clone(),
-                                stream: OutputStream::Stdout,
-                                data,
-                            }));
                         }
                         Err(_) => break,
                     }
@@ -1381,6 +1410,8 @@ impl AgentProcess {
                 else {
                     return;
                 };
+                let Ok(current_generation) = generation.lock() else { return; };
+                if *current_generation != expected_generation { return; }
                 let status = if let Ok(mut guard) = status_arc.lock() {
                     if !success || matches!(*guard, AgentStatus::Error) {
                         *guard = AgentStatus::Error;
@@ -1402,12 +1433,15 @@ impl AgentProcess {
         if let Some(stderr_handle) = stderr {
             let agent_id = self.id.clone();
             let tx = self.event_tx.clone();
+            let generation = self.codex_generation.clone();
 
             thread::spawn(move || {
                 let reader = BufReader::new(stderr_handle);
                 for line in reader.lines() {
                     match line {
                         Ok(data) => {
+                            let Ok(current_generation) = generation.lock() else { return; };
+                            if *current_generation != expected_generation { return; }
                             tracing::debug!("[AgentProcess] STDERR: {}", data);
                             let _ = tx.send(BroadcastMessage::AgentOutput(AgentOutput {
                                 agent_id: agent_id.clone(),
@@ -1437,6 +1471,8 @@ impl AgentProcess {
                 .unwrap_or(Ok(()));
         }
         let _delivery = self.legacy_delivery.lock().map_err(|e| e.to_string())?;
+        let mut generation = self.codex_generation.lock().map_err(|e| e.to_string())?;
+        *generation += 1;
         if let Ok(mut guard) = self.current_child.lock() {
             if let Some(ref mut child) = *guard {
                 let pid = child.id();
@@ -1472,7 +1508,9 @@ impl AgentProcess {
                 // Fallback: If signals didn't work (or on platforms where we don't have process groups),
                 // attempt to kill the immediate child.
                 let _ = child.kill();
-                *guard = None;
+                if let Some(mut stopped) = guard.take() {
+                    thread::spawn(move || { let _ = stopped.wait(); });
+                }
                 // Emit idle status after stopping
                 self.emit_status(AgentStatus::Idle);
             }
@@ -1481,6 +1519,7 @@ impl AgentProcess {
     }
 
     pub fn kill(&mut self) -> Result<(), String> {
+        if self.cli_type != CliType::Codex { *self.codex_generation.lock().map_err(|e| e.to_string())? += 1; }
         if let Some(transport) = self
             .codex_transport
             .lock()
@@ -1878,6 +1917,9 @@ impl AgentManager {
         mcp_servers: Option<Vec<String>>,
     ) -> Result<(), String> {
         if let Some(agent) = self.agents.get_mut(id) {
+            if agent.cli_type == CliType::Deepseek {
+                crate::deepseek::validate(model.as_deref().unwrap_or(&agent.model), reasoning_effort.as_deref().unwrap_or(&agent.reasoning_effort))?;
+            }
             agent.update_settings(name, model, thinking_enabled, reasoning_effort, mcp_servers);
             Ok(())
         } else {

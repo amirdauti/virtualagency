@@ -10,6 +10,21 @@ on:
       - ".github/workflows/server-npm-release.yml"
 
 jobs:
+  test-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: corepack enable && pnpm install --frozen-lockfile
+      - run: node apps/server/bin/ensure-claude-cli.js --force
+      - name: Replay the current CLI through the browser parser
+        run: |
+          cp "$HOME/.virtual-agency/claude-cli/compatibility-events.jsonl" apps/server/tests/fixtures/claude-2.1.283.jsonl
+          pnpm --filter @virtual-agency/desktop exec tsc --noEmit
+          node --test apps/desktop/src/lib/frontendAudit.test.cjs
+
   build-binaries:
     strategy:
       fail-fast: false
@@ -31,6 +46,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Test safe CLI upgrade fallback
+        run: node --test apps/server/tests/claude-updater.test.cjs
+
+      - name: Verify latest Claude CLI protocol before release
+        run: node apps/server/bin/ensure-claude-cli.js --force
+
+      - name: Use current CLI events in Telegram regression tests
+        run: node -e "require('fs').copyFileSync(require('path').join(require('os').homedir(), '.virtual-agency/claude-cli/compatibility-events.jsonl'), 'apps/server/tests/fixtures/claude-2.1.283.jsonl')"
+
       - name: Build release binary
         run: cargo build --release -p virtual-agency-server
 
@@ -40,6 +68,10 @@ jobs:
       - name: Test isolated control plane
         if: runner.os == 'Linux'
         run: python3 apps/server/tests/control_plane_smoke.py target/release/virtual-agency-server
+
+      - name: Test DeepSeek isolation and persisted settings
+        if: runner.os == 'Linux'
+        run: python3 apps/server/tests/deepseek_smoke.py target/release/virtual-agency-server
 
       - name: Stage binary artifact
         shell: bash
@@ -58,7 +90,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build-binaries
+    needs: [build-binaries, test-web]
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:

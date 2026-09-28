@@ -43,7 +43,7 @@ export function ChatHistory({ messages, agentId, scrollContainerRef }: ChatHisto
   const setScrollTop = useChatUIStore((state) => state.setScrollTop);
   const activity = useChatStore((state) => state.activities[agentId]);
   const agent = useAgentStore((state) => state.agents.find((a) => a.id === agentId));
-  const assistantLabel = agent?.cliType === "codex" ? "Codex" : "Claude";
+  const assistantLabel = agent?.cliType === "codex" ? "Codex" : agent?.cliType === "deepseek" ? "DeepSeek" : "Claude";
 
   // Track message count and last message content for this specific agent
   const messageCount = messages.length;

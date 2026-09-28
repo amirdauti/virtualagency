@@ -986,7 +986,7 @@ impl TelegramManager {
                 let chat_id = turn.chat_id;
 
                 if state.config.send_updates
-                    || (turn.stream_agent_replies && is_completed_codex_reply(&output.data))
+                    || (turn.stream_agent_replies && is_completed_agent_reply(&output.data))
                 {
                     for message in collect_incremental_updates(&output.data, turn) {
                         for chunk in split_for_telegram(&message) {
@@ -1212,6 +1212,7 @@ fn apply_agent_output_to_turn(raw: &str, turn: &mut TelegramActiveTurn) {
         return;
     };
 
+    if value.get("parent_tool_use_id").is_some_and(|v| !v.is_null()) { return; }
     match event_type {
         // Claude streaming delta
         "content_block_delta" => {
@@ -1271,14 +1272,20 @@ fn apply_agent_output_to_turn(raw: &str, turn: &mut TelegramActiveTurn) {
     }
 }
 
-fn is_completed_codex_reply(raw: &str) -> bool {
+fn extract_claude_assistant_text(value: &serde_json::Value) -> Option<String> {
+    let blocks = value.get("message")?.get("content")?.as_array()?;
+    let text = blocks.iter().filter(|v| json_get_str(v, "type") == Some("text"))
+        .filter_map(|v| v.get("text").and_then(|v| v.as_str())).collect::<Vec<_>>().join("\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn is_completed_agent_reply(raw: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(raw).is_ok_and(|value| {
-        value.get("type").and_then(|kind| kind.as_str()) == Some("item.completed")
-            && value
-                .get("item")
-                .and_then(|item| item.get("type"))
-                .and_then(|kind| kind.as_str())
-                == Some("agent_message")
+        if value.get("parent_tool_use_id").is_some_and(|v| !v.is_null()) { return false; }
+        (value.get("type").and_then(|v| v.as_str()) == Some("assistant")
+            && extract_claude_assistant_text(&value).is_some_and(|s| !s.trim().is_empty()))
+        || (value.get("type").and_then(|v| v.as_str()) == Some("item.completed")
+            && value.get("item").and_then(|v| v.get("type")).and_then(|v| v.as_str()) == Some("agent_message"))
     })
 }
 
@@ -1292,8 +1299,17 @@ fn collect_incremental_updates(raw: &str, turn: &mut TelegramActiveTurn) -> Vec<
         return updates;
     };
 
+    if value.get("parent_tool_use_id").is_some_and(|v| !v.is_null()) { return updates; }
     match event_type {
         "assistant" => {
+            if let Some(text) = extract_claude_assistant_text(&value).filter(|s| !s.trim().is_empty()) {
+                let id = value.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
+                let key = format!("claude-reply:{}:{}", id, stable_hash(&text));
+                if turn.sent_update_ids.insert(key) {
+                    turn.last_sent_agent_message = Some(text.trim().to_string());
+                    updates.push(text);
+                }
+            }
             if let Some(content) = value
                 .get("message")
                 .and_then(|v| v.get("content"))
@@ -1325,21 +1341,7 @@ fn collect_incremental_updates(raw: &str, turn: &mut TelegramActiveTurn) -> Vec<
                 updates.push(update);
             }
         }
-        "content_block_start" => {
-            let block = value.get("content_block");
-            if block.and_then(|v| json_get_str(v, "type")) == Some("tool_use") {
-                let tool_name = block
-                    .and_then(|v| json_get_first_str(v, &["name", "tool"]))
-                    .unwrap_or("tool");
-                let tool_id = block
-                    .and_then(|v| json_get_first_str(v, &["id", "tool_id", "toolId"]))
-                    .map(|s| s.to_string());
-                if let Some(update) = format_claude_tool_use_update(tool_name, None, turn, tool_id)
-                {
-                    updates.push(update);
-                }
-            }
-        }
+        "content_block_start" | "stream_event" => {}
         "content_block_delta" => {
             if let Some(update) = format_claude_text_delta_update(&value, turn) {
                 updates.push(update);
@@ -1451,6 +1453,17 @@ fn format_claude_tool_use_update(
     };
 
     match tool_name {
+        "TodoWrite" => {
+            let todos = input.and_then(|v| v.get("todos")).and_then(|v| v.as_array());
+            Some(format!("Checklist\n{}", todos.map(|items| items.iter().map(|item| {
+                let status = json_get_str(item, "status").unwrap_or("pending");
+                let marker = match status { "completed" => "✓", "in_progress" => "◐", _ => "○" };
+                format!("{} {}", marker, json_get_str(item, "content").unwrap_or("Task"))
+            }).collect::<Vec<_>>().join("\n")).unwrap_or_default()))
+        }
+        "TaskCreate" => Some(format!("○ {}", input.and_then(|v| json_get_str(v, "subject")).unwrap_or("New task"))),
+        "TaskUpdate" => Some(format!("Task #{}: {}", input.and_then(|v| json_get_str(v, "taskId")).unwrap_or("?"), input.and_then(|v| json_get_str(v, "status")).unwrap_or("updated").replace('_', " "))),
+        "TaskList" => Some("Checking task checklist".into()),
         "Read" => Some(format!("Read {}", file_label)),
         "Write" => {
             let content = input
@@ -3044,6 +3057,35 @@ mod tests {
             sent_update_ids: HashSet::new(),
             file_snapshots: HashMap::new(),
             stream_agent_replies: false,
+        }
+    }
+
+    #[test]
+    fn current_claude_fixture_delivers_completed_replies_and_checklists_once() {
+        let mut turn = make_turn();
+        let mut messages = Vec::new();
+        for line in include_str!("../tests/fixtures/claude-2.1.283.jsonl").lines() {
+            apply_agent_output_to_turn(line, &mut turn);
+            messages.extend(collect_incremental_updates(line, &mut turn));
+            // Repeated transport delivery must not duplicate completed replies/tools.
+            assert!(collect_incremental_updates(line, &mut turn).is_empty());
+        }
+        assert_eq!(messages.iter().filter(|m| m.as_str() == "VA_COMPAT_OK").count(), 1);
+        assert!(messages.iter().any(|m| m.contains("Compatibility check")));
+        assert!(messages.iter().any(|m| m.contains("Task #1: completed")));
+        assert!(!messages.iter().any(|m| m.contains("Checking the test fixture.")));
+        assert!(!should_send_final_response(&turn, &finalize_turn_text(&turn, &AgentStatus::Idle)));
+    }
+
+    #[test]
+    fn wrapped_claude_deltas_and_nested_replies_never_send_partial_telegram_spam() {
+        let mut turn = make_turn();
+        for raw in [
+            serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Still writing"}}}),
+            serde_json::json!({"type":"assistant","parent_tool_use_id":"child","message":{"content":[{"type":"text","text":"Internal child answer"}]}}),
+        ] {
+            assert!(collect_incremental_updates(&raw.to_string(), &mut turn).is_empty());
+            assert!(!is_completed_agent_reply(&raw.to_string()));
         }
     }
 

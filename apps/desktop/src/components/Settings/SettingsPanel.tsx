@@ -1,3 +1,5 @@
+import { DeepSeekSettings } from "./DeepSeekSettings";
+import type { AgentRuntime } from "@virtual-agency/shared";
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import {
@@ -13,6 +15,7 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const { settings, isLoading, load, updateSettings } = useSettingsStore();
+  const [providerRuntime, setProviderRuntime] = useState<AgentRuntime>("hosted");
   const [cliPath, setCliPath] = useState<string | null>(null);
   const [settingsPath, setSettingsPath] = useState<string>("");
   const [workspacePath, setWorkspacePath] = useState<string>("");
@@ -81,6 +84,16 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         </div>
 
         <div style={contentStyle}>
+          {!isTauri() && <section style={sectionStyle}>
+            <h3 style={sectionTitleStyle}>DeepSeek</h3>
+            <label style={{ display: "block", marginBottom: 12 }}>Server
+              <select aria-label="DeepSeek server" value={providerRuntime} onChange={e => setProviderRuntime(e.target.value as AgentRuntime)} style={{ ...inputStyle, marginTop: 8 }}>
+                <option value="hosted">Cloud Agents server</option>
+                <option value="local">Connected local / remote server</option>
+              </select>
+            </label>
+            <DeepSeekSettings key={providerRuntime} runtime={providerRuntime} />
+          </section>}
           {/* CLI Configuration */}
           <section style={sectionStyle}>
             <h3 style={sectionTitleStyle}>Claude CLI</h3>

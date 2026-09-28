@@ -1,3 +1,4 @@
+import { ClaudeStream } from "../lib/claudeStream";
 import { useCallback, useRef } from "react";
 import { useAgentOutputListener, useAgentUserMessageListener } from "./useTauriEvents";
 import { useChatStore, ChatMessage } from "../stores/chatStore";
@@ -73,8 +74,9 @@ export function useChatMessages() {
     return messageState.current.get(agentId)!;
   };
 
+  const claudeStreams = useRef(new Map<string, ClaudeStream>());
   const handleOutput = useCallback(
-    (output: { agent_id: string; stream: string; data: string }) => {
+    (output: { agent_id: string; stream: string; data: string }): void => {
       // Only process stdout for chat messages
       if (output.stream !== "stdout") return;
 
@@ -82,6 +84,18 @@ export function useChatMessages() {
         const json = JSON.parse(output.data);
         const agentId = output.agent_id;
         const state = getState(agentId);
+        let claude = claudeStreams.current.get(agentId);
+        if (!claude) { claude = new ClaudeStream(); claudeStreams.current.set(agentId, claude); }
+        const normalized = claude.process(json);
+        if (normalized !== null) {
+          if (json.session_id) updateAgent(agentId, {sessionId: json.session_id});
+          normalized.forEach(event => handleOutput({...output, data: JSON.stringify(event)}));
+          return;
+        }
+        if (json.type === "va_claude_end") { finishStreaming(agentId); addActivity(agentId, ""); return; }
+        if (json.type === "va_claude_retry") { addActivity(agentId, json.message); return; }
+        if (json.type === "va_claude_tools") json.type = "assistant";
+
 
         // Codex JSONL events (codex --json)
         if (

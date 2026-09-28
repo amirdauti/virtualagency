@@ -99,7 +99,7 @@ function ensureExecutable(binaryPath) {
   fs.chmodSync(binaryPath, 0o755);
 }
 
-function start() {
+async function start() {
   let parsed;
   try {
     parsed = parseArgs(process.argv.slice(2));
@@ -140,6 +140,12 @@ function start() {
   } catch (error) {
     console.error(`[virtual-agency-server] Failed to prepare binary: ${error.message}`);
     process.exit(1);
+  }
+
+  try {
+    await require("./ensure-claude-cli").ensureClaude({release: getPackageVersion()});
+  } catch (error) {
+    console.error(`[virtual-agency-server] Claude CLI update unavailable: ${error.message}`);
   }
 
   const env = {

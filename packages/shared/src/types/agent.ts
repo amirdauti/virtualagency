@@ -9,7 +9,7 @@ export type CodexModel =
   | "gpt-5.6-luna"
   | "gpt-5.5"
   | "gpt-5.3-codex-spark";
-export type CliType = "claude" | "codex";
+export type CliType = "claude" | "codex" | "deepseek";
 export type AgentRuntime = "local" | "hosted";
 export type ReasoningEffort =
   | "low"
@@ -34,6 +34,17 @@ export interface ReasoningEffortDefinition {
   name: string;
   description: string;
 }
+
+export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash[1m]";
+export const DEEPSEEK_MODELS = [
+  { value: DEFAULT_DEEPSEEK_MODEL, name: "DeepSeek 4.1 Flash", description: "Fast, capable reasoning with image support", badge: "Default" },
+  { value: "deepseek-v4-pro[1m]", name: "DeepSeek V4 Pro", description: "Advanced reasoning for text and code" },
+] as const;
+export const DEEPSEEK_REASONING_EFFORTS: readonly ReasoningEffortDefinition[] = [
+  { value: "low", name: "Low", description: "Lighter reasoning" },
+  { value: "high", name: "High", description: "Deeper reasoning" },
+  { value: "max", name: "Max", description: "Maximum reasoning" },
+];
 
 export const DEFAULT_CODEX_MODEL: CodexModel = "gpt-6-astra";
 
