@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { isAllowedHostingProxyPath } from "./hostingProxyPaths.js";
 import {
   clerkClient,
   ClerkExpressRequireAuth,
@@ -3194,21 +3195,6 @@ async function resolveHostedUserIdFromProxyToken(req) {
   }
 
   return userId;
-}
-
-const HOSTING_PROXY_ALLOWED_PATH_PREFIXES = [
-  "/api/agents",
-  "/api/terminals",
-  "/api/files",
-  "/api/events",
-  "/api/browse",
-  "/api/integrations",
-];
-
-function isAllowedHostingProxyPath(pathname) {
-  return HOSTING_PROXY_ALLOWED_PATH_PREFIXES.some(
-    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
-  );
 }
 
 // Stripe webhook must use raw body (must come before json() for this route)

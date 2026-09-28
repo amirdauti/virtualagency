@@ -6,6 +6,14 @@ key controls appear when creating a DeepSeek agent. Keys are verified against
 DeepSeek before replacing the saved key. A connection test does not spend model
 tokens or establish that the account has enough credits for a conversation.
 
+Hosted deployments also require the billing gateway to allow
+`/api/providers/deepseek` and `/api/providers/deepseek/test` through its
+authenticated, per-user server proxy. Verify the public cloud path when
+deploying; a successful direct runtime check does not test that gateway.
+The new-agent dialog selects Cloud Agents for a workspace containing only
+cloud agents. Connection failures stop the loading indicator and offer retry
+or a switch from the connected server to Cloud Agents.
+
 Select **DeepSeek** when adding an agent. The default is **DeepSeek 4.1 Flash**
 (`deepseek-flash[1m]`), with reasoning enabled at Max. V4 Pro is also selectable;
 Pro does not accept images. Model, reasoning on/off, and effort are editable in

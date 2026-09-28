@@ -2,6 +2,8 @@ import { DeepSeekSettings } from "./DeepSeekSettings";
 import type { AgentRuntime } from "@virtual-agency/shared";
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useAgentStore } from "../../stores/agentStore";
+import { initialAgentRuntime } from "../../lib/agentRuntime";
 import {
   getCliStatus,
   getSettingsPath,
@@ -15,7 +17,7 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const { settings, isLoading, load, updateSettings } = useSettingsStore();
-  const [providerRuntime, setProviderRuntime] = useState<AgentRuntime>("hosted");
+  const [providerRuntime, setProviderRuntime] = useState<AgentRuntime>(() => initialAgentRuntime("hosted", useAgentStore.getState().agents, isTauri()));
   const [cliPath, setCliPath] = useState<string | null>(null);
   const [settingsPath, setSettingsPath] = useState<string>("");
   const [workspacePath, setWorkspacePath] = useState<string>("");
@@ -92,7 +94,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 <option value="local">Connected local / remote server</option>
               </select>
             </label>
-            <DeepSeekSettings key={providerRuntime} runtime={providerRuntime} />
+            <DeepSeekSettings key={providerRuntime} runtime={providerRuntime} onRuntimeChange={setProviderRuntime} />
           </section>}
           {/* CLI Configuration */}
           <section style={sectionStyle}>

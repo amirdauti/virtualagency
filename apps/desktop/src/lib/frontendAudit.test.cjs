@@ -28,6 +28,14 @@ function loadTs(filename, mocks = {}) {
 }
 
 const settings = loadTs("./agentSettings.ts");
+const { initialAgentRuntime } = loadTs("./agentRuntime.ts");
+test("cloud-only workspaces do not send new-agent credentials to the phone's localhost", () => {
+  assert.equal(initialAgentRuntime("local", [{runtime: "hosted"}], false), "hosted");
+  assert.equal(initialAgentRuntime("hosted", [{runtime: "local"}], false), "local");
+  assert.equal(initialAgentRuntime("local", [{runtime: "hosted"}, {runtime: "local"}], false), "local");
+  assert.equal(initialAgentRuntime("hosted", [], false), "hosted");
+  assert.equal(initialAgentRuntime("hosted", [{runtime: "hosted"}], true), "local");
+});
 const claudeFixture = () => fs.readFileSync(path.resolve(__dirname, "../../../server/tests/fixtures/claude-2.1.283.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
 
 test("current Claude CLI reasoning, replies, and task checklist render without duplicates", () => {

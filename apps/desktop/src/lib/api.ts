@@ -1730,15 +1730,37 @@ export interface DeepSeekStatus {
   cli_version: string | null;
   cli_update: { status?: string; message?: string; latest_version?: string } | null;
 }
-export function getDeepSeekStatus(runtime: AgentRuntime): Promise<DeepSeekStatus> {
-  return fetchApiForRuntime(runtime, "/api/providers/deepseek");
+async function fetchDeepSeekApi<T>(runtime: AgentRuntime, path: string, options: RequestInit = {}): Promise<T> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  if (options.signal?.aborted) cancel();
+  else options.signal?.addEventListener("abort", cancel, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("The server took too long to respond. Check your connection and try again."));
+    }, 25_000);
+  });
+  try {
+    return await Promise.race([
+      fetchApiForRuntime<T>(runtime, path, { ...options, signal: controller.signal }),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", cancel);
+  }
+}
+export function getDeepSeekStatus(runtime: AgentRuntime, signal?: AbortSignal): Promise<DeepSeekStatus> {
+  return fetchDeepSeekApi(runtime, "/api/providers/deepseek", { signal });
 }
 export function saveDeepSeekKey(runtime: AgentRuntime, apiKey: string): Promise<DeepSeekStatus> {
-  return fetchApiForRuntime(runtime, "/api/providers/deepseek", {method: "PUT", body: JSON.stringify({api_key: apiKey})});
+  return fetchDeepSeekApi(runtime, "/api/providers/deepseek", {method: "PUT", body: JSON.stringify({api_key: apiKey})});
 }
 export function removeDeepSeekKey(runtime: AgentRuntime): Promise<DeepSeekStatus> {
-  return fetchApiForRuntime(runtime, "/api/providers/deepseek", {method: "DELETE"});
+  return fetchDeepSeekApi(runtime, "/api/providers/deepseek", {method: "DELETE"});
 }
 export function testDeepSeekConnection(runtime: AgentRuntime): Promise<{ok: boolean}> {
-  return fetchApiForRuntime(runtime, "/api/providers/deepseek/test", {method: "POST"});
+  return fetchDeepSeekApi(runtime, "/api/providers/deepseek/test", {method: "POST"});
 }

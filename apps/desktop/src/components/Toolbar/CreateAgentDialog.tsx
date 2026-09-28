@@ -11,6 +11,7 @@ import {
 } from "../../lib/api";
 import { useAgentStore } from "../../stores/agentStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { initialAgentRuntime } from "../../lib/agentRuntime";
 import {
   generateId,
   AVATAR_OPTIONS,
@@ -75,9 +76,8 @@ const AGENT_RUNTIMES: {
 }[] = [
   {
     value: "local",
-    name: "Local",
-    description: "Run on this machine",
-    badge: "Default",
+    name: "Connected server",
+    description: "Use your local or remote connection",
   },
   {
     value: "hosted",
@@ -306,7 +306,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
   const [name, setName] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [runtime, setRuntime] = useState<AgentRuntime>(
-    defaultAgentRuntime || "local"
+    () => initialAgentRuntime(defaultAgentRuntime || "local", useAgentStore.getState().agents, isTauri())
   );
   const [specialty, setSpecialty] = useState<AgentSpecialty>("normal");
   const [cliType, setCliType] = useState<CliType>("claude");
@@ -331,8 +331,8 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
 
   useLayoutEffect(() => {
     if (!isOpen) return;
-    setRuntime(defaultAgentRuntime || "local");
-  }, [isOpen, defaultAgentRuntime]);
+    setRuntime(initialAgentRuntime(useSettingsStore.getState().settings.default_agent_runtime || "local", useAgentStore.getState().agents, isTauri()));
+  }, [isOpen]);
 
   const loadDirectory = useCallback(
     async (path?: string) => {
@@ -735,7 +735,7 @@ export function CreateAgentDialog({ isOpen, onClose }: CreateAgentDialogProps) {
           )}
         </section>
 
-        {cliType === "deepseek" && <DeepSeekSettings key={runtime} runtime={runtime} />}
+        {cliType === "deepseek" && <DeepSeekSettings key={runtime} runtime={runtime} onRuntimeChange={setRuntime} />}
 
         {/* Avatar Selection */}
         <section>

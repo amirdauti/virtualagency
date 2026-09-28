@@ -2,19 +2,23 @@ import { useEffect, useState } from "react";
 import type { AgentRuntime } from "@virtual-agency/shared";
 import { getDeepSeekStatus, saveDeepSeekKey, removeDeepSeekKey, testDeepSeekConnection, type DeepSeekStatus } from "../../lib/api";
 
-export function DeepSeekSettings({ runtime }: { runtime: AgentRuntime }) {
+export function DeepSeekSettings({ runtime, onRuntimeChange }: { runtime: AgentRuntime; onRuntimeChange?: (runtime: AgentRuntime) => void }) {
   const [status, setStatus] = useState<DeepSeekStatus | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [attempt, setAttempt] = useState(0);
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
-    setStatus(null); setKey(""); setError(""); setFeedback("");
-    getDeepSeekStatus(runtime).then(value => { if (active) setStatus(value); })
-      .catch(() => { if (active) setError("DeepSeek settings are unavailable. Connect to your server and make sure it has the latest Virtual Agency update."); });
-    return () => { active = false; };
-  }, [runtime]);
+    const controller = new AbortController();
+    setChecking(true); setStatus(null); setKey(""); setError(""); setFeedback("");
+    getDeepSeekStatus(runtime, controller.signal).then(value => { if (active) setStatus(value); })
+      .catch((cause) => { if (active) setError(connectionError(cause, runtime)); })
+      .finally(() => { if (active) setChecking(false); });
+    return () => { active = false; controller.abort(); };
+  }, [runtime, attempt]);
   async function run(action: "save" | "test" | "remove") {
     setBusy(true); setError(""); setFeedback("");
     try {
@@ -31,7 +35,7 @@ export function DeepSeekSettings({ runtime }: { runtime: AgentRuntime }) {
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
       <strong>DeepSeek · Claude Code</strong>
       <span style={{ color: status?.configured ? "#86efac" : "var(--text-secondary)", fontSize: 12 }}>
-        {status ? status.configured ? "API key configured" : "API key needed" : "Checking server…"}
+        {checking ? "Checking server…" : status ? status.configured ? "API key configured" : "API key needed" : "Server unavailable"}
       </span>
     </div>
     <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.6 }}>
@@ -47,6 +51,8 @@ export function DeepSeekSettings({ runtime }: { runtime: AgentRuntime }) {
       <p style={{ color: "var(--text-secondary)", fontSize: 12 }}>Stored privately on this server. The saved key is never returned to your browser.</p>
     </>}
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {!checking && !status && <button type="button" onClick={() => setAttempt(value => value + 1)} style={button}>Try again</button>}
+      {!checking && !status && runtime === "local" && onRuntimeChange && <button type="button" onClick={() => onRuntimeChange("hosted")} style={button}>Use Cloud Agents</button>}
       {!status?.externally_managed && <button type="button" disabled={busy || !status || !key.trim()} onClick={() => void run("save")} style={button}>Save &amp; connect</button>}
       {status?.configured && <button type="button" disabled={busy} onClick={() => void run("test")} style={button}>Test connection</button>}
       {status?.configured && !status.externally_managed && <button type="button" disabled={busy} onClick={() => void run("remove")} style={button}>Remove key</button>}
@@ -60,5 +66,14 @@ export function DeepSeekSettings({ runtime }: { runtime: AgentRuntime }) {
     {status?.cli_version && <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 0 }}>Claude Code {status.cli_version} · compatibility checked</p>}
     {status?.cli_update?.status === "failed" && <p role="status" style={{ color: "#fcd34d", fontSize: 12 }}>The latest CLI update did not pass checks. The previous CLI remains active. {status.cli_update.message}</p>}
   </div>;
+}
+function connectionError(cause: unknown, runtime: AgentRuntime): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (message.includes("hosted_auth_required") || message.includes("unauthorized")) return "Sign in again to connect to your Cloud Agents server.";
+  if (message.includes("hosting_proxy_forbidden_path")) return "The cloud gateway needs an update before DeepSeek settings can open. Try again once it has updated.";
+  if (message.includes("took too long")) return message;
+  return runtime === "hosted"
+    ? "Could not reach DeepSeek settings on your Cloud Agents server. Check that the server is running and updated, then try again."
+    : "Could not reach the connected server. If your agents run in the cloud, choose Use Cloud Agents. Otherwise, check your server connection and try again.";
 }
 const button = { padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", cursor: "pointer", fontSize: 12 };
